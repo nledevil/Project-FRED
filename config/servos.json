@@ -1,0 +1,53 @@
+{
+  "i2c": {
+    "address": 64,
+    "frequency": 50,
+    "channels": 16
+  },
+  "servos": {
+    "eye_x": {
+      "channel": 0,
+      "min_angle": 60,
+      "max_angle": 120,
+      "rest_angle": 90,
+      "actuation_range": 180,
+      "pulse_min_us": 500,
+      "pulse_max_us": 2500,
+      "invert": false,
+      "description": "Both eyes left/right (horizontal)"
+    },
+    "eye_y": {
+      "channel": 1,
+      "min_angle": 60,
+      "max_angle": 120,
+      "rest_angle": 90,
+      "actuation_range": 180,
+      "pulse_min_us": 500,
+      "pulse_max_us": 2500,
+      "invert": false,
+      "description": "Both eyes up/down (vertical)"
+    },
+    "jaw": {
+      "channel": 2,
+      "min_angle": 20,
+      "max_angle": 70,
+      "rest_angle": 20,
+      "actuation_range": 180,
+      "pulse_min_us": 500,
+      "pulse_max_us": 2500,
+      "invert": false,
+      "description": "Jaw open/close (rest = closed)"
+    },
+    "neck": {
+      "channel": 3,
+      "min_angle": 45,
+      "max_angle": 135,
+      "rest_angle": 90,
+      "actuation_range": 180,
+      "pulse_min_us": 500,
+      "pulse_max_us": 2500,
+      "invert": false,
+      "description": "Neck rotation left/right"
+    }
+  }
+}
