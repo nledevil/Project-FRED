@@ -38,17 +38,32 @@
            background:#04310f; color:var(--ok); border:1px solid #0a5; padding:10px 18px;
            border-radius:10px; opacity:0; transition:opacity .25s; pointer-events:none; font-weight:600; }
   #toast.show { opacity:1; }
-  .stage { display:flex; justify-content:center; margin:4px 0 20px; }
-  .stage svg { width:min(62vw,230px); height:auto; }
-  #headGroup { transform-box:fill-box; transform-origin:50% 46%; transition:transform .08s linear; }
-  .plate { fill:#1b222c; stroke:#2b3543; stroke-width:2; }
-  .neck { fill:#161b23; stroke:#2b3543; stroke-width:2; }
-  .cam { fill:#0b0e13; stroke:var(--accent); stroke-width:2; }
-  .socket { fill:#0a0d12; }
-  .pupil { fill:var(--accent); filter:drop-shadow(0 0 4px #3b82f6aa);
-           transition:cx .06s linear, cy .06s linear; }
-  .nose { fill:#141a22; }
-  .mouth { fill:#05070a; transition:height .08s linear; }
+  .stage { display:flex; justify-content:center; margin:6px 0 22px;
+           filter:drop-shadow(0 10px 22px #0009); }
+  .stage svg { width:min(64vw,250px); height:auto; }
+  #headGroup { transform-box:fill-box; transform-origin:50% 46%; transition:transform .12s ease; }
+  .skull, .nose { fill:url(#skull); stroke:#aab3bf; stroke-width:1.1; }
+  .seam { fill:none; stroke:#8f99a6; stroke-width:.8; opacity:.5;
+          stroke-linecap:round; stroke-linejoin:round; }
+  .sclera { fill:#eef2f6; }
+  .iris { transition:transform .07s linear; }
+  .irisball { fill:url(#iris); }
+  .pupil { fill:#0a1420; }
+  .glint { fill:#eaf6ff; }
+  .lid { fill:url(#skull); stroke:#aab3bf; stroke-width:.8;
+         transform:translateY(-17px); transition:transform .09s ease; }
+  #head.blinking .lid { transform:translateY(0); }
+  .brow { fill:#b9c2cd; opacity:.4; }
+  .nostril { fill:#57626f; opacity:.55; }
+  .lip { fill:none; stroke:#8f99a6; stroke-width:1.4; opacity:.65; stroke-linecap:round; }
+  #lowerlip { transition:transform .1s ease; }
+  .ear { fill:#1a1f27; stroke:#2b3543; stroke-width:1.3; }
+  .earline { fill:none; stroke:#39434f; stroke-width:1.2; }
+  .neckseg { fill:#20262f; stroke:#2b3543; stroke-width:1.1; }
+  .screw { fill:#7c8794; opacity:.5; }
+  @media (prefers-reduced-motion: reduce) {
+    #headGroup, .iris, .lid, #lowerlip { transition:none; }
+  }
 </style>
 </head>
 <body>
@@ -65,24 +80,97 @@
 </div>
 
 <div class="stage">
-  <svg id="head" viewBox="0 0 220 272" aria-label="InMoov head preview">
-    <!-- neck (static pivot behind the head) -->
-    <rect class="neck" x="92" y="196" width="36" height="66" rx="8"/>
+  <svg id="head" viewBox="0 0 240 300" aria-label="InMoov head preview">
+    <defs>
+      <linearGradient id="skull" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="#fbfcfe"/>
+        <stop offset="0.55" stop-color="#e2e7ee"/>
+        <stop offset="1" stop-color="#c1c9d4"/>
+      </linearGradient>
+      <radialGradient id="iris" cx="0.5" cy="0.5" r="0.5">
+        <stop offset="0" stop-color="#a6d8ff"/>
+        <stop offset="0.45" stop-color="#3f8fd0"/>
+        <stop offset="1" stop-color="#1b4f7d"/>
+      </radialGradient>
+      <linearGradient id="cav" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="#04060a"/>
+        <stop offset="1" stop-color="#12202f"/>
+      </linearGradient>
+      <clipPath id="clipL"><ellipse cx="96" cy="120" rx="17" ry="11"/></clipPath>
+      <clipPath id="clipR"><ellipse cx="144" cy="120" rx="17" ry="11"/></clipPath>
+    </defs>
+
+    <!-- ribbed neck (static pivot behind the head) -->
+    <g class="neck">
+      <rect class="neckseg" x="102" y="252" width="36" height="9" rx="4"/>
+      <rect class="neckseg" x="101" y="262" width="38" height="9" rx="4"/>
+      <rect class="neckseg" x="100" y="272" width="40" height="9" rx="4"/>
+      <rect class="neckseg" x="99"  y="282" width="42" height="14" rx="4"/>
+    </g>
+
     <g id="headGroup">
-      <!-- face plate -->
-      <rect class="plate" x="40" y="18" width="140" height="186" rx="36"/>
-      <!-- Camera Module 3 (top sensor) -->
-      <circle class="cam" cx="110" cy="36" r="6"/>
-      <!-- eye sockets -->
-      <ellipse class="socket" cx="85" cy="104" rx="24" ry="18"/>
-      <ellipse class="socket" cx="135" cy="104" rx="24" ry="18"/>
-      <!-- pupils move with eye_x / eye_y -->
-      <circle id="pupilL" class="pupil" cx="85" cy="104" r="8" data-cx="85" data-cy="104"/>
-      <circle id="pupilR" class="pupil" cx="135" cy="104" r="8" data-cx="135" data-cy="104"/>
+      <!-- continuous skull (forehead to chin) -->
+      <path class="skull" d="M120,34 C170,34 196,66 194,118
+        C193,152 186,182 168,206 C158,226 150,250 120,258
+        C90,250 82,226 72,206 C54,182 47,152 46,118 C44,66 70,34 120,34 Z"/>
+
+      <!-- panel seams (faceted 3D-print look) -->
+      <path class="seam" d="M120,36 L94,66 M120,36 L146,66 M94,66 L146,66
+                            M74,86 L94,66 M166,86 L146,66 M74,86 L166,86"/>
+      <path class="seam" d="M64,116 L84,150 M176,116 L156,150"/>
+
+      <!-- ear-side actuators -->
+      <g>
+        <circle class="ear" cx="50" cy="132" r="15"/>
+        <circle class="earline" cx="50" cy="132" r="9.5"/>
+        <circle class="earline" cx="50" cy="132" r="4.5"/>
+        <circle class="ear" cx="190" cy="132" r="15"/>
+        <circle class="earline" cx="190" cy="132" r="9.5"/>
+        <circle class="earline" cx="190" cy="132" r="4.5"/>
+      </g>
+
+      <!-- brow ridges -->
+      <path class="brow" d="M78,107 Q96,101 116,107 Q98,105 78,107 Z"/>
+      <path class="brow" d="M162,107 Q144,101 124,107 Q142,105 162,107 Z"/>
+
+      <!-- eyes: iris moves with eye_x/eye_y (clipped to the eye); lid drops to blink -->
+      <g clip-path="url(#clipL)">
+        <ellipse class="sclera" cx="96" cy="120" rx="17" ry="11"/>
+        <g class="iris" id="irisL">
+          <circle class="irisball" cx="96" cy="120" r="8"/>
+          <circle class="pupil"    cx="96" cy="120" r="3.4"/>
+          <circle class="glint"    cx="93" cy="117" r="1.6"/>
+        </g>
+        <ellipse class="lid" cx="96" cy="120" rx="18.5" ry="12.5"/>
+      </g>
+      <g clip-path="url(#clipR)">
+        <ellipse class="sclera" cx="144" cy="120" rx="17" ry="11"/>
+        <g class="iris" id="irisR">
+          <circle class="irisball" cx="144" cy="120" r="8"/>
+          <circle class="pupil"    cx="144" cy="120" r="3.4"/>
+          <circle class="glint"    cx="141" cy="117" r="1.6"/>
+        </g>
+        <ellipse class="lid" cx="144" cy="120" rx="18.5" ry="12.5"/>
+      </g>
+
       <!-- nose -->
-      <path class="nose" d="M110 120 l-7 26 h14 z"/>
-      <!-- mouth cavity: height grows with jaw -->
-      <rect id="mouth" class="mouth" x="76" y="156" width="68" height="4" rx="4"/>
+      <path class="nose" d="M120,124 C116,144 111,160 107,171
+        C103,178 112,182 120,182 C128,182 137,178 133,171
+        C129,160 124,144 120,124 Z"/>
+      <ellipse class="nostril" cx="112" cy="177" rx="3.2" ry="2"/>
+      <ellipse class="nostril" cx="128" cy="177" rx="3.2" ry="2"/>
+
+      <!-- mouth: cavity grows and lower lip drops with the jaw servo -->
+      <ellipse id="mouthCav" fill="url(#cav)" cx="120" cy="194" rx="26" ry="2"/>
+      <path class="lip" d="M99,192 C110,196 130,196 141,192"/>
+      <path class="lip" id="lowerlip" d="M104,198 C114,201 126,201 136,198"/>
+
+      <!-- screw-hole detail dots -->
+      <circle class="screw" cx="150" cy="92" r="1.5"/>
+      <circle class="screw" cx="90"  cy="92" r="1.5"/>
+      <circle class="screw" cx="120" cy="70" r="1.5"/>
+      <circle class="screw" cx="68"  cy="150" r="1.5"/>
+      <circle class="screw" cx="172" cy="150" r="1.5"/>
     </g>
   </svg>
 </div>
@@ -162,20 +250,35 @@ function updateHead() {
   if (!STATE) return;
   const g = document.getElementById('headGroup');
   if (g && STATE.servos.neck)
-    g.style.transform = `perspective(600px) rotateY(${_centered('neck') * 38}deg)`;
-  const ex = STATE.servos.eye_x ? _centered('eye_x') * 11 : 0;   // right = +
-  const ey = STATE.servos.eye_y ? -_centered('eye_y') * 8 : 0;   // up = -
-  for (const id of ['pupilL', 'pupilR']) {
+    g.style.transform = `perspective(640px) rotateY(${_centered('neck') * 32}deg)`;
+  const ex = STATE.servos.eye_x ? _centered('eye_x') * 8 : 0;    // right = +
+  const ey = STATE.servos.eye_y ? -_centered('eye_y') * 4 : 0;   // up = -
+  for (const id of ['irisL', 'irisR']) {
     const p = document.getElementById(id);
-    if (p) { p.setAttribute('cx', (+p.dataset.cx) + ex);
-             p.setAttribute('cy', (+p.dataset.cy) + ey); }
+    if (p) p.style.transform = `translate(${ex}px, ${ey}px)`;
   }
-  const j = _val('jaw'), m = document.getElementById('mouth');
-  if (j && m) {
+  const j = _val('jaw');
+  const cav = document.getElementById('mouthCav'), low = document.getElementById('lowerlip');
+  if (j && cav) {
     const f = Math.max(0, Math.min(1,
       (j.v - j.s.min_angle) / ((j.s.max_angle - j.s.min_angle) || 1)));
-    m.setAttribute('height', 4 + f * 40);
+    const ry = 2 + f * 13;
+    cav.setAttribute('ry', ry);
+    cav.setAttribute('cy', 192 + ry);          // keep the upper lip fixed at ~192
+    if (low) low.style.transform = `translateY(${f * 15}px)`;
   }
+}
+
+// occasional blink so the head reads as alive (skipped for reduced-motion)
+function blink() {
+  const h = document.getElementById('head');
+  if (!h) return;
+  h.classList.add('blinking');
+  setTimeout(() => h.classList.remove('blinking'), 120);
+}
+function scheduleBlink() {
+  if (window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  setTimeout(() => { blink(); scheduleBlink(); }, 2600 + Math.random() * 3600);
 }
 
 function move(name, angle) {
@@ -212,6 +315,7 @@ function setCalib() {
 }
 
 load();
+scheduleBlink();
 </script>
 </body>
 </html>
