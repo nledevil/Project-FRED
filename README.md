@@ -52,6 +52,9 @@ pip-installed Adafruit libraries).
 ```bash
 cd ~/inmoov
 
+# WEB CONTROL PANEL — open http://<pi-ip>:8080 from a phone/laptop on the LAN:
+./venv/bin/python web/app.py
+
 # no hardware needed — auto-runs in MOCK mode, printing intended moves:
 ./venv/bin/python demo.py
 
@@ -62,6 +65,20 @@ cd ~/inmoov
 ./venv/bin/python -c "from inmoov.servo_controller import ServoController; \
 c=ServoController(); c.set_angle('jaw', 45)"
 ```
+
+### Web control panel
+
+`./venv/bin/python web/app.py` serves a mobile-friendly panel on port 8080:
+
+- A live slider per servo (Rest all / Relax all buttons).
+- **Calibration mode** toggle: unlocks the full 0–`actuation_range` travel
+  (bypassing the *safe* soft limits), adds Set min / Set rest / Set max buttons
+  to record the current angle, and a Save config button that writes the new
+  limits back to `config/servos.json`. This is the fastest way to dial in a
+  fresh mechanism from the bench.
+
+Flask's built-in server is fine for a single operator on a trusted LAN. It has
+no authentication — don't expose port 8080 to the internet.
 
 ### Mock mode
 

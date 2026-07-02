@@ -85,10 +85,19 @@ class ServoController:
         return angle
 
     # ---- public API -------------------------------------------------------
-    def set_angle(self, name: str, angle: float) -> float:
-        """Move `name` to `angle` degrees (clamped to its limits). Returns actual angle."""
+    def set_angle(self, name: str, angle: float, enforce_limits: bool = True) -> float:
+        """Move `name` to `angle` degrees. Returns the actual (clamped) angle.
+
+        With enforce_limits=True (default) the angle is clamped to the servo's
+        configured [min_angle, max_angle]. With False it is clamped only to the
+        servo's physical range [0, actuation_range] — used by calibration to
+        find limits safely without letting them wander past the servo's travel.
+        """
         s = self._require(name)
-        target = self._clamp(s, angle)
+        if enforce_limits:
+            target = self._clamp(s, angle)
+        else:
+            target = max(0.0, min(s.get("actuation_range", 180), angle))
         if target != angle:
             print(f"[ServoController] {name}: {angle:.1f}° clamped to {target:.1f}° "
                   f"(limits {s['min_angle']}–{s['max_angle']})")
