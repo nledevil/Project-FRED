@@ -38,6 +38,17 @@
            background:#04310f; color:var(--ok); border:1px solid #0a5; padding:10px 18px;
            border-radius:10px; opacity:0; transition:opacity .25s; pointer-events:none; font-weight:600; }
   #toast.show { opacity:1; }
+  .stage { display:flex; justify-content:center; margin:4px 0 20px; }
+  .stage svg { width:min(62vw,230px); height:auto; }
+  #headGroup { transform-box:fill-box; transform-origin:50% 46%; transition:transform .08s linear; }
+  .plate { fill:#1b222c; stroke:#2b3543; stroke-width:2; }
+  .neck { fill:#161b23; stroke:#2b3543; stroke-width:2; }
+  .cam { fill:#0b0e13; stroke:var(--accent); stroke-width:2; }
+  .socket { fill:#0a0d12; }
+  .pupil { fill:var(--accent); filter:drop-shadow(0 0 4px #3b82f6aa);
+           transition:cx .06s linear, cy .06s linear; }
+  .nose { fill:#141a22; }
+  .mouth { fill:#05070a; transition:height .08s linear; }
 </style>
 </head>
 <body>
@@ -51,6 +62,29 @@
   <button onclick="relax()">◌ Relax all</button>
   <button id="saveBtn" class="primary hidden" onclick="save()">💾 Save config</button>
   <label class="toggle"><input type="checkbox" id="calib" onchange="setCalib()"> Calibration mode</label>
+</div>
+
+<div class="stage">
+  <svg id="head" viewBox="0 0 220 272" aria-label="InMoov head preview">
+    <!-- neck (static pivot behind the head) -->
+    <rect class="neck" x="92" y="196" width="36" height="66" rx="8"/>
+    <g id="headGroup">
+      <!-- face plate -->
+      <rect class="plate" x="40" y="18" width="140" height="186" rx="36"/>
+      <!-- Camera Module 3 (top sensor) -->
+      <circle class="cam" cx="110" cy="36" r="6"/>
+      <!-- eye sockets -->
+      <ellipse class="socket" cx="85" cy="104" rx="24" ry="18"/>
+      <ellipse class="socket" cx="135" cy="104" rx="24" ry="18"/>
+      <!-- pupils move with eye_x / eye_y -->
+      <circle id="pupilL" class="pupil" cx="85" cy="104" r="8" data-cx="85" data-cy="104"/>
+      <circle id="pupilR" class="pupil" cx="135" cy="104" r="8" data-cx="135" data-cy="104"/>
+      <!-- nose -->
+      <path class="nose" d="M110 120 l-7 26 h14 z"/>
+      <!-- mouth cavity: height grows with jaw -->
+      <rect id="mouth" class="mouth" x="76" y="156" width="68" height="4" rx="4"/>
+    </g>
+  </svg>
 </div>
 
 <div id="servos"></div>
@@ -107,10 +141,46 @@ function render() {
       </div>`;
     wrap.appendChild(el);
   }
+  updateHead();
+}
+
+// ---- live head preview -------------------------------------------------
+function _val(name) {
+  const s = STATE.servos[name];
+  if (!s) return null;
+  const el = document.getElementById('r-' + name);
+  return { v: el ? +el.value : (s.current ?? s.rest_angle), s };
+}
+function _centered(name) {           // -1..+1 around the servo's mid-travel
+  const r = _val(name);
+  if (!r) return 0;
+  const mid = (r.s.min_angle + r.s.max_angle) / 2;
+  const half = ((r.s.max_angle - r.s.min_angle) / 2) || 1;
+  return Math.max(-1, Math.min(1, (r.v - mid) / half));
+}
+function updateHead() {
+  if (!STATE) return;
+  const g = document.getElementById('headGroup');
+  if (g && STATE.servos.neck)
+    g.style.transform = `perspective(600px) rotateY(${_centered('neck') * 38}deg)`;
+  const ex = STATE.servos.eye_x ? _centered('eye_x') * 11 : 0;   // right = +
+  const ey = STATE.servos.eye_y ? -_centered('eye_y') * 8 : 0;   // up = -
+  for (const id of ['pupilL', 'pupilR']) {
+    const p = document.getElementById(id);
+    if (p) { p.setAttribute('cx', (+p.dataset.cx) + ex);
+             p.setAttribute('cy', (+p.dataset.cy) + ey); }
+  }
+  const j = _val('jaw'), m = document.getElementById('mouth');
+  if (j && m) {
+    const f = Math.max(0, Math.min(1,
+      (j.v - j.s.min_angle) / ((j.s.max_angle - j.s.min_angle) || 1)));
+    m.setAttribute('height', 4 + f * 40);
+  }
 }
 
 function move(name, angle) {
   document.getElementById('v-' + name).textContent = (+angle).toFixed(0) + '°';
+  updateHead();
   // trailing throttle: at most ~1 request / 60ms per servo, always send the last
   const t = throttle[name] || (throttle[name] = {});
   const now = performance.now();
