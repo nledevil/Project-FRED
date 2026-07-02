@@ -42,27 +42,27 @@
            filter:drop-shadow(0 10px 22px #0009); }
   .stage svg { width:min(64vw,250px); height:auto; }
   #headGroup { transform-box:fill-box; transform-origin:50% 46%; transition:transform .12s ease; }
-  .skull, .nose { fill:url(#skull); stroke:#aab3bf; stroke-width:1.1; }
-  .seam { fill:none; stroke:#8f99a6; stroke-width:.8; opacity:.5;
+  .skull, .nose { fill:url(#skull); stroke:#b3bcc7; stroke-width:1; }
+  .seam { fill:none; stroke:#95a0ac; stroke-width:.8; opacity:.55;
           stroke-linecap:round; stroke-linejoin:round; }
-  .sclera { fill:#eef2f6; }
+  .socket { fill:#060810; }
   .iris { transition:transform .07s linear; }
   .irisball { fill:url(#iris); }
-  .pupil { fill:#0a1420; }
-  .glint { fill:#eaf6ff; }
-  .lid { fill:url(#skull); stroke:#aab3bf; stroke-width:.8;
-         transform:translateY(-17px); transition:transform .09s ease; }
-  #head.blinking .lid { transform:translateY(0); }
-  .brow { fill:#b9c2cd; opacity:.4; }
-  .nostril { fill:#57626f; opacity:.55; }
-  .lip { fill:none; stroke:#8f99a6; stroke-width:1.4; opacity:.65; stroke-linecap:round; }
+  .iring { fill:none; stroke:#cfefff; stroke-width:1.6; opacity:.9; }
+  .led { fill:#dff2ff; opacity:.9; }
+  .pupil { fill:#03060c; }
+  .glint { fill:#f2fbff; opacity:.9; }
+  .rim { fill:none; stroke:#b9c1cc; stroke-width:1.6; }
+  .lash { fill:none; stroke:#77828f; stroke-width:2; opacity:.7; stroke-linecap:round; }
+  .nostril { fill:#20272f; opacity:.85; }
+  .lip { fill:none; stroke:#8f99a6; stroke-width:1.5; opacity:.7; stroke-linecap:round; }
   #lowerlip { transition:transform .1s ease; }
-  .ear { fill:#1a1f27; stroke:#2b3543; stroke-width:1.3; }
-  .earline { fill:none; stroke:#39434f; stroke-width:1.2; }
-  .neckseg { fill:#20262f; stroke:#2b3543; stroke-width:1.1; }
-  .screw { fill:#7c8794; opacity:.5; }
+  .rod { stroke:#0f1319; stroke-width:9; stroke-linecap:round; fill:none; }
+  .neckcore { fill:#14181f; stroke:#242c37; stroke-width:1; }
+  .rib { stroke:#2a323d; stroke-width:1; fill:none; }
+  .screw { fill:#7c8794; opacity:.55; }
   @media (prefers-reduced-motion: reduce) {
-    #headGroup, .iris, .lid, #lowerlip { transition:none; }
+    #headGroup, .iris, #lowerlip { transition:none; }
   }
 </style>
 </head>
@@ -88,89 +88,84 @@
         <stop offset="1" stop-color="#c1c9d4"/>
       </linearGradient>
       <radialGradient id="iris" cx="0.5" cy="0.5" r="0.5">
-        <stop offset="0" stop-color="#a6d8ff"/>
-        <stop offset="0.45" stop-color="#3f8fd0"/>
-        <stop offset="1" stop-color="#1b4f7d"/>
+        <stop offset="0" stop-color="#7ec2f5"/>
+        <stop offset="0.55" stop-color="#2f7fd8"/>
+        <stop offset="1" stop-color="#0f4f86"/>
       </radialGradient>
       <linearGradient id="cav" x1="0" y1="0" x2="0" y2="1">
         <stop offset="0" stop-color="#04060a"/>
-        <stop offset="1" stop-color="#12202f"/>
+        <stop offset="1" stop-color="#141f2b"/>
       </linearGradient>
-      <clipPath id="clipL"><ellipse cx="96" cy="120" rx="17" ry="11"/></clipPath>
-      <clipPath id="clipR"><ellipse cx="144" cy="120" rx="17" ry="11"/></clipPath>
+      <clipPath id="clipL"><path d="M62,122 Q87,110 112,122 Q87,134 62,122 Z"/></clipPath>
+      <clipPath id="clipR"><path d="M128,122 Q153,110 178,122 Q153,134 128,122 Z"/></clipPath>
     </defs>
 
-    <!-- ribbed neck (static pivot behind the head) -->
-    <g class="neck">
-      <rect class="neckseg" x="102" y="252" width="36" height="9" rx="4"/>
-      <rect class="neckseg" x="101" y="262" width="38" height="9" rx="4"/>
-      <rect class="neckseg" x="100" y="272" width="40" height="9" rx="4"/>
-      <rect class="neckseg" x="99"  y="282" width="42" height="14" rx="4"/>
-    </g>
+    <!-- mechanical neck (static pivot behind the head) -->
+    <path class="rod" d="M96,300 L110,252"/>
+    <path class="rod" d="M144,300 L130,252"/>
+    <rect class="neckcore" x="104" y="250" width="32" height="50" rx="8"/>
+    <path class="rib" d="M105,262 H135 M105,272 H135 M105,282 H135"/>
 
     <g id="headGroup">
-      <!-- continuous skull (forehead to chin) -->
-      <path class="skull" d="M120,34 C170,34 196,66 194,118
-        C193,152 186,182 168,206 C158,226 150,250 120,258
-        C90,250 82,226 72,206 C54,182 47,152 46,118 C44,66 70,34 120,34 Z"/>
+      <!-- skull -->
+      <path class="skull" d="M120,32 C172,32 198,66 196,118
+        C195,154 188,184 170,208 C160,228 150,252 120,260
+        C90,252 80,228 70,208 C52,184 45,154 44,118 C42,66 68,32 120,32 Z"/>
 
-      <!-- panel seams (faceted 3D-print look) -->
-      <path class="seam" d="M120,36 L94,66 M120,36 L146,66 M94,66 L146,66
-                            M74,86 L94,66 M166,86 L146,66 M74,86 L166,86"/>
-      <path class="seam" d="M64,116 L84,150 M176,116 L156,150"/>
+      <!-- skull-cap seam + faceted forehead (seams radiate from a point) -->
+      <path class="seam" d="M50,104 Q120,98 190,104"/>
+      <path class="seam" d="M120,42 L120,94 M74,56 L120,94 M166,56 L120,94 M120,94 L94,104 M120,94 L148,104"/>
+      <!-- jaw / cheek panel seams -->
+      <path class="seam" d="M62,172 Q74,214 108,230 M178,172 Q166,214 132,230"/>
 
-      <!-- ear-side actuators -->
-      <g>
-        <circle class="ear" cx="50" cy="132" r="15"/>
-        <circle class="earline" cx="50" cy="132" r="9.5"/>
-        <circle class="earline" cx="50" cy="132" r="4.5"/>
-        <circle class="ear" cx="190" cy="132" r="15"/>
-        <circle class="earline" cx="190" cy="132" r="9.5"/>
-        <circle class="earline" cx="190" cy="132" r="4.5"/>
-      </g>
-
-      <!-- brow ridges -->
-      <path class="brow" d="M78,107 Q96,101 116,107 Q98,105 78,107 Z"/>
-      <path class="brow" d="M162,107 Q144,101 124,107 Q142,105 162,107 Z"/>
-
-      <!-- eyes: iris moves with eye_x/eye_y (clipped to the eye); lid drops to blink -->
+      <!-- eyes: eyeball clipped to the almond opening; rim = the faceplate cut -->
       <g clip-path="url(#clipL)">
-        <ellipse class="sclera" cx="96" cy="120" rx="17" ry="11"/>
+        <path class="socket" d="M62,122 Q87,110 112,122 Q87,134 62,122 Z"/>
         <g class="iris" id="irisL">
-          <circle class="irisball" cx="96" cy="120" r="8"/>
-          <circle class="pupil"    cx="96" cy="120" r="3.4"/>
-          <circle class="glint"    cx="93" cy="117" r="1.6"/>
+          <circle class="irisball" cx="87" cy="122" r="9"/>
+          <circle class="iring"    cx="87" cy="122" r="8.2"/>
+          <circle class="led" cx="93.6" cy="125.8" r="0.9"/><circle class="led" cx="87" cy="129.6" r="0.9"/>
+          <circle class="led" cx="80.4" cy="125.8" r="0.9"/><circle class="led" cx="80.4" cy="118.2" r="0.9"/>
+          <circle class="led" cx="87" cy="114.4" r="0.9"/><circle class="led" cx="93.6" cy="118.2" r="0.9"/>
+          <circle class="pupil"    cx="87" cy="122" r="5.5"/>
+          <circle class="glint"    cx="84" cy="119" r="1.6"/>
         </g>
-        <ellipse class="lid" cx="96" cy="120" rx="18.5" ry="12.5"/>
       </g>
+      <path class="rim"  d="M62,122 Q87,110 112,122 Q87,134 62,122 Z"/>
+      <path class="lash" d="M62,122 Q87,110 112,122"/>
       <g clip-path="url(#clipR)">
-        <ellipse class="sclera" cx="144" cy="120" rx="17" ry="11"/>
+        <path class="socket" d="M128,122 Q153,110 178,122 Q153,134 128,122 Z"/>
         <g class="iris" id="irisR">
-          <circle class="irisball" cx="144" cy="120" r="8"/>
-          <circle class="pupil"    cx="144" cy="120" r="3.4"/>
-          <circle class="glint"    cx="141" cy="117" r="1.6"/>
+          <circle class="irisball" cx="153" cy="122" r="9"/>
+          <circle class="iring"    cx="153" cy="122" r="8.2"/>
+          <circle class="led" cx="159.6" cy="125.8" r="0.9"/><circle class="led" cx="153" cy="129.6" r="0.9"/>
+          <circle class="led" cx="146.4" cy="125.8" r="0.9"/><circle class="led" cx="146.4" cy="118.2" r="0.9"/>
+          <circle class="led" cx="153" cy="114.4" r="0.9"/><circle class="led" cx="159.6" cy="118.2" r="0.9"/>
+          <circle class="pupil"    cx="153" cy="122" r="5.5"/>
+          <circle class="glint"    cx="150" cy="119" r="1.6"/>
         </g>
-        <ellipse class="lid" cx="144" cy="120" rx="18.5" ry="12.5"/>
       </g>
+      <path class="rim"  d="M128,122 Q153,110 178,122 Q153,134 128,122 Z"/>
+      <path class="lash" d="M128,122 Q153,110 178,122"/>
 
       <!-- nose -->
-      <path class="nose" d="M120,124 C116,144 111,160 107,171
-        C103,178 112,182 120,182 C128,182 137,178 133,171
-        C129,160 124,144 120,124 Z"/>
-      <ellipse class="nostril" cx="112" cy="177" rx="3.2" ry="2"/>
-      <ellipse class="nostril" cx="128" cy="177" rx="3.2" ry="2"/>
+      <path class="nose" d="M120,122 C116,142 111,158 106,169
+        C101,177 110,183 120,183 C130,183 139,177 134,169
+        C129,158 124,142 120,122 Z"/>
+      <ellipse class="nostril" cx="111" cy="178" rx="3.1" ry="1.7"/>
+      <ellipse class="nostril" cx="129" cy="178" rx="3.1" ry="1.7"/>
 
-      <!-- mouth: cavity grows and lower lip drops with the jaw servo -->
-      <ellipse id="mouthCav" fill="url(#cav)" cx="120" cy="194" rx="26" ry="2"/>
-      <path class="lip" d="M99,192 C110,196 130,196 141,192"/>
-      <path class="lip" id="lowerlip" d="M104,198 C114,201 126,201 136,198"/>
+      <!-- mouth: cavity grows + lower lip drops with the jaw servo (slight smile) -->
+      <ellipse id="mouthCav" fill="url(#cav)" cx="120" cy="198" rx="24" ry="2"/>
+      <path class="lip" d="M101,196 Q120,199 139,196"/>
+      <path class="lip" id="lowerlip" d="M104,200 Q120,207 136,200"/>
 
       <!-- screw-hole detail dots -->
-      <circle class="screw" cx="150" cy="92" r="1.5"/>
-      <circle class="screw" cx="90"  cy="92" r="1.5"/>
-      <circle class="screw" cx="120" cy="70" r="1.5"/>
-      <circle class="screw" cx="68"  cy="150" r="1.5"/>
-      <circle class="screw" cx="172" cy="150" r="1.5"/>
+      <circle class="screw" cx="120" cy="58" r="1.6"/>
+      <circle class="screw" cx="88"  cy="104" r="1.5"/>
+      <circle class="screw" cx="152" cy="104" r="1.5"/>
+      <circle class="screw" cx="82"  cy="152" r="1.5"/>
+      <circle class="screw" cx="158" cy="152" r="1.5"/>
     </g>
   </svg>
 </div>
@@ -251,8 +246,8 @@ function updateHead() {
   const g = document.getElementById('headGroup');
   if (g && STATE.servos.neck)
     g.style.transform = `perspective(640px) rotateY(${_centered('neck') * 32}deg)`;
-  const ex = STATE.servos.eye_x ? _centered('eye_x') * 8 : 0;    // right = +
-  const ey = STATE.servos.eye_y ? -_centered('eye_y') * 4 : 0;   // up = -
+  const ex = STATE.servos.eye_x ? _centered('eye_x') * 10 : 0;   // right = +
+  const ey = STATE.servos.eye_y ? -_centered('eye_y') * 3 : 0;   // up = -
   for (const id of ['irisL', 'irisR']) {
     const p = document.getElementById(id);
     if (p) p.style.transform = `translate(${ex}px, ${ey}px)`;
@@ -262,23 +257,11 @@ function updateHead() {
   if (j && cav) {
     const f = Math.max(0, Math.min(1,
       (j.v - j.s.min_angle) / ((j.s.max_angle - j.s.min_angle) || 1)));
-    const ry = 2 + f * 13;
+    const ry = 2 + f * 12;
     cav.setAttribute('ry', ry);
-    cav.setAttribute('cy', 192 + ry);          // keep the upper lip fixed at ~192
-    if (low) low.style.transform = `translateY(${f * 15}px)`;
+    cav.setAttribute('cy', 196 + ry);          // keep the upper lip fixed at ~196
+    if (low) low.style.transform = `translateY(${f * 14}px)`;
   }
-}
-
-// occasional blink so the head reads as alive (skipped for reduced-motion)
-function blink() {
-  const h = document.getElementById('head');
-  if (!h) return;
-  h.classList.add('blinking');
-  setTimeout(() => h.classList.remove('blinking'), 120);
-}
-function scheduleBlink() {
-  if (window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches) return;
-  setTimeout(() => { blink(); scheduleBlink(); }, 2600 + Math.random() * 3600);
 }
 
 function move(name, angle) {
@@ -315,7 +298,6 @@ function setCalib() {
 }
 
 load();
-scheduleBlink();
 </script>
 </body>
 </html>
