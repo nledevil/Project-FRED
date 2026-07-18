@@ -1,0 +1,13 @@
+# Re-check WiFi state every ~2.5 min so the head recovers if the network drops
+# (or comes back) while it's running. Installed to:
+# /etc/systemd/system/inmoov-hotspot.timer
+[Unit]
+Description=Periodic InMoov WiFi auto-hotspot re-check
+
+[Timer]
+OnBootSec=90
+OnUnitActiveSec=150
+Unit=inmoov-hotspot-check.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,166 @@
+#!/bin/bash
+# inmoov-autohotspot — WiFi failover for the InMoov head.
+#
+# If a known network (any SSID in wpa_supplicant.conf) is in range, wlan0 stays
+# a normal client. If none is reachable, wlan0 becomes its own access point
+# (hostapd + dnsmasq) so a phone/laptop can join and open the control panel at
+# http://192.168.50.1:8080
+#
+# Modes:
+#   inmoov-autohotspot boot     wait for the boot join, then decide (systemd service)
+#   inmoov-autohotspot auto     re-evaluate now (systemd timer, every ~2.5 min)
+#   inmoov-autohotspot ap       force the access point on
+#   inmoov-autohotspot client   force client mode (rejoin known networks)
+#   inmoov-autohotspot status   print current mode and exit
+#
+# Design notes:
+#   * "Fallback only": at boot we prefer a known network; the AP is the backup.
+#   * We never kick a connected phone off the hotspot — AP->client only happens
+#     when NO station is associated to the AP and a known network reappears.
+#   * hostapd/dnsmasq are launched by hand here (their system services stay
+#     disabled) so this is the single owner of wlan0's role.
+set -u
+
+IFACE=wlan0
+AP_IP=192.168.50.1
+AP_CONF=/etc/hostapd/inmoov-hostapd.conf
+DNSMASQ_CONF=/etc/inmoov/hotspot-dnsmasq.conf
+WPA_CONF=/etc/wpa_supplicant/wpa_supplicant.conf
+HOSTAPD=/usr/sbin/hostapd
+DNSMASQ=/usr/sbin/dnsmasq
+IW=/usr/sbin/iw
+BOOT_WAIT=30        # seconds to let the normal boot join succeed first
+JOIN_WAIT=15        # seconds to wait for DHCP after (re)joining a known network
+
+log(){ logger -t inmoov-hotspot -- "$*" 2>/dev/null; echo "inmoov-hotspot: $*"; }
+
+known_ssids(){ grep -oP 'ssid="\K[^"]+' "$WPA_CONF" 2>/dev/null; }
+
+ap_active(){ pgrep -x hostapd >/dev/null 2>&1; }
+
+ap_client_count(){ $IW dev "$IFACE" station dump 2>/dev/null | grep -c '^Station'; }
+
+# 0 = associated to a real AP as a client AND holding a non-hotspot IP.
+wifi_connected(){
+  local state ip
+  state=$(wpa_cli -i "$IFACE" status 2>/dev/null | sed -n 's/^wpa_state=//p')
+  ip=$(ip -4 -o addr show "$IFACE" 2>/dev/null | awk '{print $4}' | grep -v '^192\.168\.50\.')
+  [ "$state" = "COMPLETED" ] && [ -n "$ip" ]
+}
+
+# Echo the first known SSID currently visible, or return 1. Requires wlan0 to be
+# in managed mode with wpa_supplicant running (the boot ifup provides this).
+scan_for_known(){
+  local results ssid
+  wpa_cli -i "$IFACE" scan >/dev/null 2>&1
+  sleep 4
+  results=$(wpa_cli -i "$IFACE" scan_results 2>/dev/null)
+  while IFS= read -r ssid; do
+    [ -n "$ssid" ] || continue
+    if printf '%s\n' "$results" | grep -qF "$ssid"; then
+      echo "$ssid"; return 0
+    fi
+  done < <(known_ssids)
+  return 1
+}
+
+start_ap(){
+  ap_active && { log "AP already running"; return 0; }
+  log "starting access point (no known network in range)"
+  rfkill unblock wlan 2>/dev/null
+  pkill -f "dhclient.*$IFACE" 2>/dev/null
+  wpa_cli -i "$IFACE" terminate >/dev/null 2>&1
+  pkill -f "wpa_supplicant.*$IFACE" 2>/dev/null
+  sleep 1
+  ip addr flush dev "$IFACE" 2>/dev/null
+  ip link set "$IFACE" up
+  ip addr add "$AP_IP/24" dev "$IFACE"
+  if ! "$HOSTAPD" -B "$AP_CONF"; then
+    log "hostapd failed to start — falling back to client mode"
+    start_client
+    return 1
+  fi
+  "$DNSMASQ" --conf-file="$DNSMASQ_CONF"
+  log "access point up: SSID from $AP_CONF, panel at http://$AP_IP:8080"
+}
+
+stop_ap(){
+  pkill -x hostapd 2>/dev/null
+  pkill -f "dnsmasq.*hotspot-dnsmasq" 2>/dev/null
+  ip addr flush dev "$IFACE" 2>/dev/null
+}
+
+start_client(){
+  log "entering client mode (rejoining known networks)"
+  stop_ap
+  ifdown "$IFACE" >/dev/null 2>&1
+  ip link set "$IFACE" up
+  ifup "$IFACE" >/dev/null 2>&1
+}
+
+status(){
+  if ap_active; then
+    echo "mode: ACCESS POINT ($AP_IP) — $(ap_client_count) client(s) connected"
+  elif wifi_connected; then
+    local ssid ip
+    ssid=$(wpa_cli -i "$IFACE" status 2>/dev/null | sed -n 's/^ssid=//p')
+    ip=$(ip -4 -o addr show "$IFACE" | awk '{print $4}' | grep -v '^192\.168\.50\.' | head -1)
+    echo "mode: CLIENT — joined '${ssid:-?}' as ${ip:-?}"
+  else
+    echo "mode: DISCONNECTED (no known network, AP not up)"
+  fi
+}
+
+# ---- entrypoint ----
+MODE="${1:-auto}"
+
+case "$MODE" in
+  ap)     start_ap;     exit $? ;;
+  client) start_client; exit $? ;;
+  status) status;       exit 0 ;;
+  boot)
+    # Give the normal boot-time join a chance before we consider the AP.
+    for _ in $(seq 1 "$BOOT_WAIT"); do
+      wifi_connected && { log "joined a known network at boot"; exit 0; }
+      sleep 1
+    done
+    log "no known network after ${BOOT_WAIT}s at boot"
+    MODE=auto
+    ;;
+esac
+
+# ---- auto: re-evaluate current state ----
+if ap_active; then
+  # In AP mode. Only leave it if nobody is using the hotspot.
+  if [ "$(ap_client_count)" -gt 0 ]; then
+    log "AP has clients connected — staying in AP mode"
+    exit 0
+  fi
+  # Nobody connected: drop AP briefly, scan, and rejoin a known network if back.
+  start_client
+  sleep 3
+  if ssid=$(scan_for_known); then
+    log "known network '$ssid' reappeared — staying in client mode"
+    exit 0
+  fi
+  log "still no known network — resuming AP"
+  start_ap
+  exit $?
+fi
+
+# In client mode.
+if wifi_connected; then
+  exit 0                      # all good, nothing to do
+fi
+
+# Client mode but not connected: rejoin if a known network is visible, else AP.
+if ssid=$(scan_for_known); then
+  log "known network '$ssid' in range — (re)joining"
+  start_client
+  for _ in $(seq 1 "$JOIN_WAIT"); do
+    wifi_connected && exit 0
+    sleep 1
+  done
+  log "join did not complete — starting AP instead"
+fi
+start_ap

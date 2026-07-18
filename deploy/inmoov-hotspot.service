@@ -1,0 +1,15 @@
+# Boot-time WiFi failover: join a known network, or bring up the fallback AP.
+# Installed to: /etc/systemd/system/inmoov-hotspot.service
+[Unit]
+Description=InMoov WiFi auto-hotspot (join known network or start fallback AP)
+After=network.target wpa_supplicant.service
+Wants=network.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=no
+# 'boot' waits ~30s for the normal join before deciding on the AP.
+ExecStart=/usr/local/sbin/inmoov-autohotspot boot
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,9 @@
+# Periodic re-evaluation (driven by inmoov-hotspot.timer): fall back to the AP if
+# the known network drops, or return to it if one reappears and nobody is on the
+# hotspot. Installed to: /etc/systemd/system/inmoov-hotspot-check.service
+[Unit]
+Description=InMoov WiFi auto-hotspot re-check
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/inmoov-autohotspot auto

@@ -6,10 +6,10 @@
   },
   "servos": {
     "eye_x": {
-      "channel": 0,
-      "min_angle": 60,
-      "max_angle": 120,
-      "rest_angle": 90,
+      "channel": 13,
+      "min_angle": 53.0,
+      "max_angle": 160.0,
+      "rest_angle": 99.0,
       "actuation_range": 180,
       "pulse_min_us": 500,
       "pulse_max_us": 2500,
@@ -17,10 +17,10 @@
       "description": "Both eyes left/right (horizontal)"
     },
     "eye_y": {
-      "channel": 1,
-      "min_angle": 60,
-      "max_angle": 120,
-      "rest_angle": 90,
+      "channel": 12,
+      "min_angle": 118.0,
+      "max_angle": 180.0,
+      "rest_angle": 148.0,
       "actuation_range": 180,
       "pulse_min_us": 500,
       "pulse_max_us": 2500,
@@ -28,10 +28,10 @@
       "description": "Both eyes up/down (vertical)"
     },
     "jaw": {
-      "channel": 2,
-      "min_angle": 20,
-      "max_angle": 70,
-      "rest_angle": 20,
+      "channel": 14,
+      "min_angle": 34.0,
+      "max_angle": 96.0,
+      "rest_angle": 34.0,
       "actuation_range": 180,
       "pulse_min_us": 500,
       "pulse_max_us": 2500,
@@ -39,15 +39,37 @@
       "description": "Jaw open/close (rest = closed)"
     },
     "neck": {
-      "channel": 3,
-      "min_angle": 45,
-      "max_angle": 135,
-      "rest_angle": 90,
+      "channel": 15,
+      "min_angle": 15.0,
+      "max_angle": 170.0,
+      "rest_angle": 88.0,
       "actuation_range": 180,
       "pulse_min_us": 500,
       "pulse_max_us": 2500,
       "invert": false,
       "description": "Neck rotation left/right"
+    },
+    "head_tilt_lr": {
+      "channel": 11,
+      "min_angle": 67.0,
+      "max_angle": 138.0,
+      "rest_angle": 101.0,
+      "actuation_range": 180,
+      "pulse_min_us": 500,
+      "pulse_max_us": 2500,
+      "invert": false,
+      "description": "Head tilt left/right (ear-to-shoulder roll)"
+    },
+    "head_tilt_fb": {
+      "channel": 10,
+      "min_angle": 47.0,
+      "max_angle": 126.0,
+      "rest_angle": 90.0,
+      "actuation_range": 180,
+      "pulse_min_us": 500,
+      "pulse_max_us": 2500,
+      "invert": false,
+      "description": "Head tilt forward/back (nod pitch)"
     }
   }
 }
