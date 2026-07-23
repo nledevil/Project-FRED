@@ -1,0 +1,10 @@
+# Run pi-bluetooth's bthelper on the chest Pi.
+#
+# Upstream /lib/udev/rules.d/90-pi-bluetooth.rules gates this on
+# TEST=="/dev/serial1", a symlink Raspberry Pi OS creates but DietPi does not.
+# So on DietPi bthelper never ran, and hci0 was left half-initialised: it kept
+# the BCM4345C0 ROM default address AA:AA:AA:AA:AA:AA and bluetoothd registered
+# almost no profiles, which is what made the PAN client crash instead of
+# connecting. Trigger it on the hci device appearing instead.
+ACTION=="add", SUBSYSTEM=="bluetooth", KERNEL=="hci[0-9]", \
+  TAG+="systemd", ENV{SYSTEMD_WANTS}+="bthelper@%k.service"

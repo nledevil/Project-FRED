@@ -1,0 +1,28 @@
+#!/bin/sh
+# Keep the chest's Bluetooth PAN link to the head alive, in either boot order.
+#
+# bt-network does not notice when the peer disappears. If the head reboots (or
+# its pan-server restarts), the BNEP link dies but bt-network stays running with
+# a stale bnep0 still holding 10.0.0.2. systemd sees a healthy Type=simple
+# process, Restart=always never fires, and the link is silently dead until
+# somebody notices by hand. So probe the head and rebuild the link when it stops
+# answering.
+#
+# This also backstops the chest booting first: pan-client retries on its own
+# (Restart=always, StartLimitIntervalSec=0), and this catches the case where it
+# wedges in a "connected" state that carries no traffic.
+#
+# Driven by pan-check.timer, once a minute. Run by hand to force a check:
+#   sudo /usr/local/sbin/inmoov-pan-check
+PEER=10.0.0.1
+
+# Do not stomp on a start that is still in progress: ExecStartPre waits ~10s for
+# bthelper's reinit, and bt-network takes a few more seconds to bring bnep0 up.
+[ "$(systemctl show -P ActiveState pan-client)" = "activating" ] && exit 0
+
+if ping -c 2 -W 2 "$PEER" >/dev/null 2>&1; then
+    exit 0
+fi
+
+logger -t inmoov-pan "no reply from $PEER -- rebuilding PAN link"
+systemctl restart pan-client

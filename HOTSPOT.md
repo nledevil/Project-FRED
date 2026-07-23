@@ -86,3 +86,56 @@ Then bring a known network back and reboot; it should rejoin as a client.
 panel at `http://10.0.0.1:8080` even with no WiFi at all. Note that **iPhones do
 not support joining a Bluetooth PAN**, which is why the WiFi AP above is the
 primary fallback.
+
+### The head↔chest link
+
+The chest display Pi is a permanent client of that PAN, so the head can reach it
+at a **fixed** address no matter what the venue's DHCP does. This is the link
+`config/settings.json` → `display.host` points at.
+
+| | address | MAC | unit |
+|---|---|---|---|
+| **Head** | `10.0.0.1` (`pan0`) | `E4:5F:01:49:60:BB` | `pan-server.service` |
+| **Chest** | `10.0.0.2` (`bnep0`) | `DC:A6:32:C8:F6:17` | `pan-client.service` |
+
+Source of truth is `deploy/pan/` in this repo. Install/reinstall:
+
+```bash
+sudo deploy/pan/install.sh head      # on the head
+sudo deploy/pan/install.sh chest     # on the chest (reboot after first install)
+```
+
+The installer prints the one-time pairing recipe, which is not automated.
+
+**Either machine can boot first**, and either can reboot without a human:
+
+- Head first → it registers NAP and waits; the chest connects when it comes up.
+- Chest first → `pan-client` retries every ~10s (`Restart=always`, and
+  `StartLimitIntervalSec=0` so hours of retrying can never exhaust a start
+  limit) until the head answers.
+- **Head reboots mid-session** → this is the one systemd cannot handle alone.
+  `bt-network` does not notice the peer vanishing: it keeps running with a stale
+  `bnep0` still holding `10.0.0.2`, so `Restart=always` never fires and the link
+  is silently dead. `pan-check.timer` on the chest pings the head once a minute
+  and rebuilds the link when it stops answering — recovery takes ~35s.
+
+```bash
+sudo /usr/local/sbin/inmoov-pan-check    # force a check now
+sudo journalctl -t inmoov-pan            # what the watchdog has been doing
+ping 10.0.0.2                            # from the head: is the link alive?
+```
+
+### Gotchas
+
+- **A stock DietPi image cannot do Bluetooth PAN on a Pi 4 at all.** There is no
+  `brcm/BCM4345C0.hcd`, so the adapter never gets its firmware patch, keeps the
+  ROM default address `AA:AA:AA:AA:AA:AA`, and registers almost no profiles.
+  `bt-network` then asserts (`SEGV`) instead of reporting an error. Fixed by the
+  `bluez-firmware` + `pi-bluetooth` packages the installer pulls in; a **reboot**
+  is required because the patch only loads during HCI device setup.
+- **`bthelper` needs the extra udev rule** in `deploy/pan/`. Upstream's rule is
+  gated on `/dev/serial1`, which DietPi never creates.
+- **Re-pair after any adapter MAC change.** Changing the BD address gives BlueZ a
+  fresh identity and silently invalidates both link keys.
+- **Scan on the BR/EDR transport when pairing.** A default `bluetoothctl scan on`
+  is LE-only and will not find the other Pi, even though `hcitool scan` does.

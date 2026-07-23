@@ -1,0 +1,13 @@
+[Unit]
+Description=Periodically verify the chest's Bluetooth PAN link to the head
+
+[Timer]
+# First check once the boot-time connect has had time to finish (pan-client
+# waits ~10s for bthelper, then a few seconds to bring bnep0 up), then keep
+# checking so a head reboot is picked up within a minute.
+OnBootSec=90s
+OnUnitActiveSec=60s
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target

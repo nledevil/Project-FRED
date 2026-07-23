@@ -1,0 +1,8 @@
+[Unit]
+Description=Verify the Bluetooth PAN link to the head, rebuild it if dead
+Documentation=file:///home/dietpi/inmoov/HOTSPOT.md
+After=pan-client.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/inmoov-pan-check

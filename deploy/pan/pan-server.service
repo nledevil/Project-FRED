@@ -1,0 +1,25 @@
+[Unit]
+Description=Bluetooth PAN NAP server (head, 10.0.0.1)
+Documentation=file:///home/dietpi/inmoov/HOTSPOT.md
+After=bluetooth.service
+Requires=bluetooth.service
+# The head is the passive half: it registers a NAP service and waits. It never
+# reaches out to the chest, so boot order does not matter here -- whenever the
+# chest comes up (or comes back), it connects to this. Retries are unlimited so
+# a slow bluetoothd at boot can never trip systemd's start-limit and leave the
+# NAP service unregistered for good.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStartPre=-/sbin/ip link add name pan0 type bridge
+ExecStartPre=-/sbin/ip addr add 10.0.0.1/24 dev pan0
+ExecStartPre=/sbin/ip link set pan0 up
+ExecStart=/usr/bin/bt-network -s nap pan0
+ExecStopPost=-/sbin/ip link set pan0 down
+ExecStopPost=-/sbin/ip link delete pan0
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
