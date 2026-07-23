@@ -1,0 +1,21 @@
+[Unit]
+Description=InMoov web control panel (Flask, port 8080)
+After=network-online.target inmoov-announce-ip.service
+Wants=network-online.target
+# Ordered after the IP announcement so the two don't clash on the (single-open)
+# USB audio device at boot. Ordering only — the app still starts if the
+# announcement is disabled or fails.
+
+[Service]
+Type=simple
+User=dietpi
+Group=dietpi
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-/home/dietpi/inmoov/config/secrets.env
+WorkingDirectory=/home/dietpi/inmoov
+ExecStart=/home/dietpi/inmoov/venv/bin/python /home/dietpi/inmoov/web/app.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -1,7 +1,8 @@
-# InMoov on Raspberry Pi 4 (DietPi)
+# FRED — InMoov on Raspberry Pi 4 (DietPi)
 
-Servo + camera control for an InMoov robot head. Phase 1 controls the **eyes
-(2 servos), jaw, and neck** via a PCA9685 16-channel PWM driver on I2C.
+Meet **FRED** — **F**acial **R**ecognition & **E**xpression **D**roid: an InMoov
+robot head. Servo + camera control on a Raspberry Pi 4. Phase 1 controls the
+**eyes (2 servos), jaw, and neck** via a PCA9685 16-channel PWM driver on I2C.
 
 - Board: Raspberry Pi 4B, DietPi (Debian 13 "trixie"), Python 3.13
 - Servo driver: **PCA9685** @ I2C address `0x40`
@@ -52,7 +53,11 @@ pip-installed Adafruit libraries).
 ```bash
 cd ~/inmoov
 
-# WEB CONTROL PANEL — open http://<pi-ip>:8080 from a phone/laptop on the LAN:
+# WEB CONTROL PANEL — open http://<pi-ip>:8080 from a phone/laptop on the LAN.
+# It runs automatically at boot as a systemd service (see SERVICE.md):
+sudo systemctl restart inmoov      # restart after code/config changes
+sudo systemctl stop inmoov         # stop (frees port 8080 for manual runs)
+# ...or run it by hand for debugging:
 ./venv/bin/python web/app.py
 
 # no hardware needed — auto-runs in MOCK mode, printing intended moves:
@@ -79,6 +84,18 @@ c=ServoController(); c.set_angle('jaw', 45)"
 
 Flask's built-in server is fine for a single operator on a trusted LAN. It has
 no authentication — don't expose port 8080 to the internet.
+
+### Admin screen (`/admin`)
+
+The ⚙ link in the top bar opens **`/admin`** — operator preferences, kept in
+`config/settings.json` (separate from hardware calibration in `servos.json`):
+
+- **Iris colour** of the head animation (drives `--iris-color` in the SVG face).
+- **Camera defaults applied on load** — 180° flip on/off, focus mode
+  (Manual / Continuous AF), and the manual lens position.
+
+Saving pushes the camera settings to the live camera immediately *and* records
+them as the boot defaults. Like the rest of the panel, it has no auth (LAN-only).
 
 ### Mock mode
 

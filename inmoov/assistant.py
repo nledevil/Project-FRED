@@ -1,0 +1,342 @@
+"""FRED's voice assistant — wires the wake-word listener, the hybrid brain, and
+lip-synced speech into one object the web app owns.
+
+Flow: Listener hears "Hey FRED ..." -> Brain turns it into an action + reply ->
+Assistant speaks the reply while animating the jaw in time with the audio.
+
+Speech is *pipelined*, because a talking head is judged on how fast it answers.
+The brain hands over each sentence the moment it's written, one sentence renders
+while the previous one is still playing, and the jaw is scheduled against
+``Sound.audio_epoch()`` — the moment audio actually becomes audible — rather than
+against "now", which would run the mouth ahead of the voice by the whole lead-in.
+
+Everything degrades gracefully: no mic/model -> not listening; no API key ->
+local commands only; no speaker -> silent. ``status()`` reports what's live.
+"""
+from __future__ import annotations
+
+import queue
+import threading
+import time
+import types
+import wave
+
+import numpy as np
+
+from .brain import Brain
+from .listener import Listener
+
+
+class Assistant:
+    def __init__(self, controller, led, tracker, sound, *, api_key: str | None = None,
+                 device: str = "plughw:0,0", log=None, mic_gain: float = 1.0,
+                 model: str | None = None):
+        self._ctx = types.SimpleNamespace(controller=controller, led=led,
+                                          tracker=tracker, sound=sound)
+        self._sound = sound
+        self._controller = controller
+        self._log = log                           # ConversationLog (optional)
+        self.brain = Brain(self._ctx, api_key=api_key, model=model)
+        self.listener = Listener(on_command=self._on_command, on_wake=self._on_wake,
+                                 device=device, gain=mic_gain)
+        self._speaking = False
+        # True from "FRED heard you" until the first audio of his reply — the
+        # Claude round-trip made visible. The chest display shows it as a state.
+        self._thinking = False
+        self._speak_lock = threading.Lock()
+        self._last_heard = ""
+        self._last_reply = ""
+        self._last_source = ""
+        # The envelope currently driving the jaw, published for the web face so
+        # the on-screen mouth is the same motion, not a lookalike. Bumped once
+        # per clip; the browser refetches when the sequence number changes.
+        self._mouth: dict | None = None
+        self._mouth_seq = 0
+
+    # ---- capability / status ---------------------------------------------
+    def available(self) -> bool:
+        return self.listener.available()
+
+    def is_speaking(self) -> bool:
+        return self._speaking
+
+    def is_thinking(self) -> bool:
+        """Heard you, hasn't answered yet. Cheap enough to poll."""
+        return self._thinking
+
+    def mouth_seq(self) -> int:
+        """Which clip's envelope is current. Cheap enough for the head poll."""
+        return self._mouth_seq
+
+    def mouth(self) -> dict | None:
+        """The envelope driving the jaw right now, for the on-screen face.
+
+        ``starts_in`` is seconds from *now* until frame 0 is audible (negative if
+        the clip is already playing), so the browser can line its animation up with
+        the same audio the servo is following without knowing our monotonic clock.
+        """
+        m = self._mouth
+        if not m:
+            return None
+        return {"seq": m["seq"], "frame_dt": m["frame_dt"],
+                "starts_in": m["epoch"] - time.monotonic(),
+                "levels": m["levels"]}
+
+    def _publish_mouth(self, levels, frame_dt: float, epoch: float | None) -> None:
+        if not levels or epoch is None:
+            return
+        self._mouth = {"seq": self._mouth_seq + 1, "frame_dt": frame_dt,
+                       "epoch": epoch,
+                       "levels": [round(float(v), 3) for v in levels]}
+        self._mouth_seq += 1        # publish last: the seq is the browser's trigger
+
+    def status(self) -> dict:
+        return {
+            "available": self.available(),          # mic + Vosk model present
+            "listening": self.listener.is_running(),
+            "speaking": self._speaking,
+            "thinking": self._thinking,
+            "ai_available": self.brain.ai_available(),
+            "can_speak": self._sound.can_speak(),
+            "last_heard": self._last_heard,
+            "last_reply": self._last_reply,
+            "last_source": self._last_source,
+        }
+
+    # ---- lifecycle --------------------------------------------------------
+    def start(self, greet: bool = True) -> bool:
+        ok = self.listener.start()
+        if ok and greet:
+            msg = "Hi, I'm Fred. I'm listening."
+            if self._log:
+                self._log.fred(msg, source="local")
+            threading.Thread(target=self.speak, args=(msg,), daemon=True).start()
+        return ok
+
+    def stop(self) -> None:
+        self.listener.stop()
+
+    # ---- conversation -----------------------------------------------------
+    def converse(self, text: str, source: str = "text") -> dict:
+        """Run text through the brain, speak the reply, and record it. ``source``
+        is 'voice' or 'text'. Used by both the wake-word path and the web box.
+
+        The speaker runs alongside the brain: Claude streams a sentence, the
+        speaker renders and plays it, and by the time FRED reaches the full stop
+        the next sentence is usually already synthesised. Blocks until he has
+        finished speaking, as the old sequential version did.
+        """
+        text = (text or "").strip()
+        self._last_heard = text
+        if not text:                                # nothing to say: don't cycle the mic
+            return {"reply": "", "source": "none", "actions": []}
+        if self._log:
+            self._log.user(text, source=source)
+
+        # Thinking starts the moment we have something to answer, and is cleared
+        # by the speaker thread the instant real audio starts (or here, if the
+        # brain fails and no audio ever comes).
+        self._thinking = True
+
+        sentences: queue.Queue = queue.Queue()      # unbounded: never stall the brain
+        speaker = threading.Thread(target=self.speak_stream, args=(_drain(sentences),),
+                                   name="speaker", daemon=True)
+        speaker.start()
+        try:
+            # respond() emits every sentence it will return, so speaking is
+            # entirely the speaker thread's job — don't also speak result["reply"].
+            result = self.brain.respond(text, on_sentence=sentences.put)
+        finally:
+            sentences.put(None)                     # end of stream, even on error
+            speaker.join()
+            self._thinking = False                  # covers the never-spoke path
+
+        self._last_reply = result.get("reply", "")
+        self._last_source = result.get("source", "")
+        if self._log and self._last_reply:
+            self._log.fred(self._last_reply, source=self._last_source,
+                           actions=result.get("actions"))
+        return result
+
+    def _on_command(self, text: str) -> None:
+        self.converse(text, source="voice")
+
+    def _on_wake(self) -> None:
+        if self._log:
+            self._log.event("Heard “Hey FRED” — listening…")
+        self.speak("Yes?")
+
+    # ---- lip-synced speech ------------------------------------------------
+    def speak(self, text: str) -> bool:
+        """Speak ``text`` as a single utterance, jaw in time with the audio."""
+        text = (text or "").strip()
+        if not text:
+            return False
+        return self.speak_stream([text])
+
+    def speak_stream(self, sentences) -> bool:
+        """Speak an iterable of sentences back-to-back, lip-syncing each.
+
+        ``sentences`` may be a lazy iterator that blocks — that's the point: it's
+        fed by Claude as the reply streams in. A helper thread renders one
+        sentence ahead of playback, so the gap between sentences is just aplay's
+        restart, not a whole synthesis.
+
+        Serialised so two replies never overlap; sets ``_speaking`` (once audio is
+        genuinely coming out) so the listener and the web face know FRED is
+        talking. Returns True if anything was spoken.
+        """
+        if not self._sound.can_speak():
+            return False
+        with self._speak_lock:
+            # Mic off first, and pause() blocks until arecord has really released
+            # the USB card — capture and playback must never overlap on this rig.
+            self.listener.pause()
+            # Remember where the mouth is, so we RESTORE it after speaking rather
+            # than force-closing — e.g. "open your mouth" opens the jaw first, then
+            # says "Ahhh", and the mouth stays open afterwards.
+            jaw = self._controller.servos.get("jaw")
+            hold_angle = self._controller.get_angle("jaw")
+            if hold_angle is None and jaw:
+                hold_angle = jaw["rest_angle"]
+
+            abort = threading.Event()
+            rendered: queue.Queue = queue.Queue(maxsize=2)   # render-ahead depth
+            renderer = threading.Thread(target=self._render_ahead,
+                                        args=(sentences, rendered, abort),
+                                        name="tts-render", daemon=True)
+            renderer.start()
+            spoke = False
+            try:
+                first = True
+                while True:
+                    path = rendered.get()
+                    if path is None:               # renderer finished
+                        break
+                    # Only the first clip gets the lead-in padding; re-padding each
+                    # sentence would insert a silent gap mid-reply.
+                    if self._play_chunk(path, pad=first):
+                        spoke, first = True, False
+            except Exception as exc:  # noqa: BLE001 - speech must NEVER kill the caller (e.g. the listener thread)
+                print(f"[Assistant] speak failed: {exc}")
+            finally:
+                abort.set()                        # unblock the renderer if it's mid-put
+                _drain_queue(rendered)
+                renderer.join(timeout=5.0)
+                if jaw and hold_angle is not None:
+                    self._controller.set_angle("jaw", hold_angle)   # restore prior mouth position
+                self._speaking = False
+                self.listener.resume()             # mic capture back on
+            return spoke
+
+    def _render_ahead(self, sentences, out: queue.Queue, abort: threading.Event) -> None:
+        """Synthesise each sentence and hand the WAV to the player, one ahead."""
+        try:
+            for sentence in sentences:
+                if abort.is_set():
+                    break
+                sentence = (sentence or "").strip()
+                if not sentence:
+                    continue
+                path = self._sound.render_tts(sentence, speed=150)
+                if path is None:                   # no TTS backend, or it failed
+                    continue
+                _put(out, path, abort)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[Assistant] render failed: {exc}")
+        finally:
+            _put(out, None, abort)                 # sentinel: end of stream
+
+    def _play_chunk(self, path: str, pad: bool) -> bool:
+        """Play one rendered sentence and drive the jaw through it. True if it played."""
+        levels, frame_dt = self._envelope(path)
+        if not self._sound.play_file(path, wait=False, pad=pad):     # async aplay
+            return False
+        # Only flap the jaw if audio is really playing — never mime silently.
+        # Flip _speaking HERE, once sound is actually coming out: the web face
+        # animation polls is_speaking(), so raising it any earlier (e.g. during
+        # the TTS render) makes the on-screen mouth move before the jaw does.
+        if self._sound.is_playing():
+            epoch = self._sound.audio_epoch()
+            # Publish before raising _speaking, so the poll that first sees
+            # "speaking" already carries the new envelope's sequence number.
+            self._publish_mouth(levels, frame_dt, epoch)
+            self._speaking = True
+            self._thinking = False      # sound is out: he's answering, not pondering
+            self._animate_jaw(levels, frame_dt, epoch)
+            while self._sound.is_playing():                          # let audio finish
+                time.sleep(0.02)
+        return True
+
+    def _envelope(self, path: str, frame_ms: float = 40.0):
+        """Return (levels 0..1 per frame, seconds-per-frame) from a WAV's RMS."""
+        try:
+            w = wave.open(path)
+            rate = w.getframerate()
+            data = np.frombuffer(w.readframes(w.getnframes()), np.int16).astype(np.float32)
+            w.close()
+        except Exception:      # noqa: BLE001
+            return [], frame_ms / 1000.0
+        if data.size == 0:
+            return [], frame_ms / 1000.0
+        n = max(1, int(rate * frame_ms / 1000.0))
+        frames = [data[i:i + n] for i in range(0, data.size, n)]
+        rms = np.array([float(np.sqrt((f ** 2).mean())) for f in frames])
+        peak = rms.max()
+        levels = (rms / peak) if peak > 1e-6 else rms
+        return levels.tolist(), n / rate
+
+    def _animate_jaw(self, levels, frame_dt: float, epoch: float | None) -> None:
+        """Step the jaw through the envelope, timed to when the audio is *audible*.
+
+        ``epoch`` is ``Sound.audio_epoch()`` — the monotonic instant the clip's
+        first real sample reaches the speaker, which is later than now by the
+        lead-in silence plus the device's own start-up latency. Starting the
+        envelope at ``time.monotonic()`` instead (as this used to) marched the jaw
+        through the whole utterance a lead-in ahead of the voice.
+        """
+        s = self._controller.servos.get("jaw")
+        if not s or not levels:
+            return
+        closed, opened = s["rest_angle"], s["max_angle"]
+        span = opened - closed
+        start = epoch if epoch is not None else time.monotonic()
+        for i, lvl in enumerate(levels):
+            dt = (start + i * frame_dt) - time.monotonic()
+            if dt > 0:
+                time.sleep(dt)
+            elif dt < -frame_dt:
+                continue          # running late (a stalled servo write?) — skip to catch up
+            # a small floor so the mouth still flutters on quiet syllables
+            open_amt = min(1.0, 0.15 + 0.85 * float(lvl))
+            self._controller.set_angle("jaw", closed + span * open_amt)
+
+
+def _drain(q: queue.Queue):
+    """Yield items from ``q`` until the None sentinel. Turns the brain's push of
+    sentences into the pull-style iterable speak_stream() consumes."""
+    while True:
+        item = q.get()
+        if item is None:
+            return
+        yield item
+
+
+def _put(q: queue.Queue, item, abort: threading.Event) -> None:
+    """Block until ``item`` fits in ``q``, giving up if ``abort`` is set — so the
+    render-ahead thread can't wedge on a full queue nobody is draining."""
+    while not abort.is_set():
+        try:
+            q.put(item, timeout=0.1)
+            return
+        except queue.Full:
+            continue
+
+
+def _drain_queue(q: queue.Queue) -> None:
+    """Discard anything buffered, freeing a producer blocked on put()."""
+    while True:
+        try:
+            q.get_nowait()
+        except queue.Empty:
+            return

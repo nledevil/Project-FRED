@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 from pathlib import Path
 
@@ -47,26 +48,40 @@ class ServoController:
         self.mock = mock
 
         self._current: dict[str, float] = {}
+        # Suspended = we've released the I2C bus / PCA9685 to another owner (e.g.
+        # MyRobotLab). While suspended, _kit is None and every write is a no-op.
+        self._suspended = False
+        # Serialises hardware I2C writes. Several threads drive servos without
+        # coordinating through the web app's lock — the lip-sync jaw animation,
+        # the face tracker, and the request handlers — and concurrent I2C
+        # transactions on the PCA9685 corrupt/raise. This makes every write safe.
+        self._io_lock = threading.Lock()
 
         if self.mock:
             self._kit = None
             print("[ServoController] MOCK mode — no hardware I/O "
                   "(no /dev/i2c-1 or mock forced).")
         else:
-            from adafruit_servokit import ServoKit
-            self._kit = ServoKit(
-                channels=i2c.get("channels", 16),
-                address=i2c.get("address", 0x40),
-                frequency=i2c.get("frequency", 50),
-            )
-            for name, s in self.servos.items():
-                ch = s["channel"]
-                self._kit.servo[ch].set_pulse_width_range(
-                    s["pulse_min_us"], s["pulse_max_us"])
-                self._kit.servo[ch].actuation_range = s.get("actuation_range", 180)
+            self._build_kit()
 
         if move_to_rest:
             self.rest()
+
+    def _build_kit(self) -> None:
+        """Open the PCA9685 over I2C and apply each servo's pulse/actuation range.
+        Used at construction and again on resume() after a suspend() released it."""
+        from adafruit_servokit import ServoKit
+        i2c = self.config.get("i2c", {})
+        self._kit = ServoKit(
+            channels=i2c.get("channels", 16),
+            address=i2c.get("address", 0x40),
+            frequency=i2c.get("frequency", 50),
+        )
+        for name, s in self.servos.items():
+            ch = s["channel"]
+            self._kit.servo[ch].set_pulse_width_range(
+                s["pulse_min_us"], s["pulse_max_us"])
+            self._kit.servo[ch].actuation_range = s.get("actuation_range", 180)
 
     # ---- internal helpers -------------------------------------------------
     def _require(self, name: str) -> dict:
@@ -98,6 +113,8 @@ class ServoController:
             target = self._clamp(s, angle)
         else:
             target = max(0.0, min(s.get("actuation_range", 180), angle))
+        if self._suspended:
+            return target        # bus released to another owner — don't touch it
         if target != angle:
             print(f"[ServoController] {name}: {angle:.1f}° clamped to {target:.1f}° "
                   f"(limits {s['min_angle']}–{s['max_angle']})")
@@ -105,7 +122,8 @@ class ServoController:
         if self.mock:
             print(f"[MOCK] {name} (ch{s['channel']}) -> {target:.1f}° (phys {phys:.1f}°)")
         else:
-            self._kit.servo[s["channel"]].angle = phys
+            with self._io_lock:
+                self._kit.servo[s["channel"]].angle = phys
         self._current[name] = target
         return target
 
@@ -136,13 +154,96 @@ class ServoController:
 
         Pass a name to relax one servo, or nothing to relax all.
         """
+        if self._suspended:
+            return                          # bus released; nothing to relax
         names = [name] if name else list(self.servos)
         for n in names:
             s = self._require(n)
             if self.mock:
                 print(f"[MOCK] relax {n} (ch{s['channel']})")
             else:
-                self._kit.servo[s["channel"]].angle = None  # release: no pulse
+                with self._io_lock:
+                    self._kit.servo[s["channel"]].angle = None  # release: no pulse
+
+    def set_channel(self, name: str, channel: int) -> int:
+        """Reassign which PCA9685 port drives `name`. Returns the new channel.
+
+        Relaxes the old port (cuts its pulse) and applies this servo's pulse
+        range + actuation range to the new port, mirroring what __init__ does.
+        The servo's position on the new port is unknown until the next move, so
+        the cached angle is cleared.
+        """
+        s = self._require(name)
+        channel = int(channel)
+        n_ch = self.config.get("i2c", {}).get("channels", 16)
+        if not 0 <= channel < n_ch:
+            raise ValueError(f"channel must be 0..{n_ch - 1}, got {channel}")
+        old = s["channel"]
+        if channel == old:
+            return old
+        if not self.mock and not self._suspended:
+            with self._io_lock:
+                self._kit.servo[old].angle = None            # stop driving old port
+                self._kit.servo[channel].set_pulse_width_range(
+                    s["pulse_min_us"], s["pulse_max_us"])
+                self._kit.servo[channel].actuation_range = s.get("actuation_range", 180)
+        else:
+            print(f"[MOCK] remap {name}: ch{old} -> ch{channel}")
+        s["channel"] = channel
+        self._current.pop(name, None)                        # position now unknown
+        return channel
+
+    def identify(self, name: str, sweep: float = 12.0, cycles: int = 3,
+                 dwell: float = 0.13) -> None:
+        """Wiggle `name` around its rest angle so you can spot which servo it is.
+
+        Stays within the servo's soft [min_angle, max_angle] limits, then returns
+        to rest — a safe way to confirm a port maps to the servo you expect.
+        """
+        s = self._require(name)
+        rest = s["rest_angle"]
+        lo = max(s["min_angle"], rest - sweep)
+        hi = min(s["max_angle"], rest + sweep)
+        for _ in range(max(1, cycles)):
+            self.set_angle(name, lo)
+            time.sleep(dwell)
+            self.set_angle(name, hi)
+            time.sleep(dwell)
+        self.set_angle(name, rest)
+
+    # ---- hardware handoff -------------------------------------------------
+    def is_suspended(self) -> bool:
+        return self._suspended
+
+    def suspend(self) -> None:
+        """Release the I2C bus / PCA9685 so another process (e.g. MyRobotLab) can
+        drive the servos. Relaxes every servo (cuts pulses) while we still own the
+        bus, then drops our handle. set_angle()/relax() become no-ops until
+        resume(). Idempotent; safe in mock mode."""
+        if self._suspended:
+            return
+        if not self.mock and self._kit is not None:
+            self.relax()                     # cut all pulses before we let go
+            with self._io_lock:
+                try:
+                    self._kit._pca.deinit()  # close the underlying I2C handle
+                except Exception:            # noqa: BLE001 - best-effort; drop it regardless
+                    pass
+                self._kit = None
+        self._suspended = True
+        print("[ServoController] suspended — I2C/PCA9685 released.")
+
+    def resume(self) -> None:
+        """Re-open the I2C bus, re-apply servo ranges, and take the servos back to
+        rest. Idempotent; safe in mock mode."""
+        if not self._suspended:
+            return
+        self._suspended = False
+        if not self.mock:
+            with self._io_lock:
+                self._build_kit()
+        self.rest()
+        print("[ServoController] resumed — I2C/PCA9685 reacquired.")
 
     # context-manager sugar: relax everything on exit
     def __enter__(self):

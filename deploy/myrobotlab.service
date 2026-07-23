@@ -1,0 +1,31 @@
+[Unit]
+Description=MyRobotLab (headless, WebGui on port 8888)
+After=network-online.target
+Wants=network-online.target
+# Independent of inmoov.service — the two run side by side on different ports
+# (MRL 8888, InMoov panel 8080). Only ONE of them should own the shared hardware
+# (PCA9685/I2C, USB audio, Pi camera) at a time; that handoff is managed in the
+# InMoov app, not here (see TODO.md "hardware handoff toggle").
+
+[Service]
+Type=simple
+User=dietpi
+Group=dietpi
+# Heap: left to the JVM's default ergonomics, which cap the max heap at ~25% of
+# RAM (~460 MB on this 1.8 GB Pi) — already a safe ceiling for coexisting with
+# the InMoov app. NOTE: do NOT set _JAVA_OPTIONS/JAVA_TOOL_OPTIONS to force -Xmx
+# here — the JVM prints a "Picked up ..." banner that myrobotlab.sh's
+# `java -version | head -1` version check parses, so it mis-reads the Java
+# version and refuses to start. If a tighter cap is ever needed, append -Xmx to
+# JAVA_OPTIONS inside myrobotlab.sh instead.
+# Run from the install dir: myrobotlab.sh sets java.library.path to the RELATIVE
+# path libraries/native, so the cwd must be the install root. "current" is a
+# symlink to the active myrobotlab-<version> dir, so an upgrade is just a
+# re-point of the symlink — no unit edit needed.
+WorkingDirectory=/home/dietpi/mrl/current
+ExecStart=/home/dietpi/mrl/current/myrobotlab.sh
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

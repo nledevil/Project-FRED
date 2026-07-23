@@ -1,0 +1,29 @@
+[Unit]
+Description=InMoov camera MJPEG streamer (libcamera imx708 -> :8081)
+After=network-online.target
+Wants=network-online.target
+# Owns ONLY the Pi camera (via picamera2/libcamera) and serves it as MJPEG so
+# MyRobotLab's OpenCV service (or anything) can consume it over HTTP. Touches no
+# I2C/audio, so it coexists with MRL driving the servos on the I2C bus. See
+# deploy/camera_stream.py and SERVICE.md ("Camera into MyRobotLab").
+
+[Service]
+Type=simple
+User=dietpi
+Group=dietpi
+Environment=PYTHONUNBUFFERED=1
+# Tuning (see camera_stream.py for all knobs). 640x480 is plenty for OpenCV
+# face detection and keeps CPU/bandwidth low; manual focus (~0.5 m) because
+# continuous AF hunts on this rig.
+Environment=CAM_STREAM_PORT=8081
+Environment=CAM_STREAM_SIZE=640x480
+Environment=CAM_STREAM_FPS=15
+Environment=CAM_AF_MODE=0
+Environment=CAM_LENS_POSITION=2.0
+WorkingDirectory=/home/dietpi/inmoov
+ExecStart=/home/dietpi/inmoov/venv/bin/python /home/dietpi/inmoov/deploy/camera_stream.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

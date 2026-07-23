@@ -1,0 +1,477 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FRED · Admin</title>
+<style>
+  :root { --bg:#0c0c0e; --panel:#161619; --border:#2a2b31; --fg:#e8e9ec;
+          --mut:#868b95; --accent:#2d7ff9; --ok:#22c55e; }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+         font:15px/1.45 system-ui,-apple-system,sans-serif; padding:20px; }
+  .app { max-width:720px; margin:0 auto; }
+  .topbar { display:flex; align-items:baseline; gap:12px; margin:2px 4px 22px; }
+  .topbar h1 { font-size:16px; font-weight:700; letter-spacing:.02em; margin:0; }
+  .topbar .sub { color:var(--mut); font-size:13px; }
+  .back { margin-left:auto; color:var(--mut); font-size:13px; text-decoration:none;
+          padding:6px 12px; border:1px solid var(--border); border-radius:999px; }
+  .back:hover { color:var(--fg); background:rgba(255,255,255,.04); }
+
+  .panel { background:var(--panel); border:1px solid var(--border); border-radius:14px;
+           padding:20px 22px; margin-bottom:16px; }
+  .phead { text-transform:uppercase; letter-spacing:.09em; font-size:12.5px;
+           font-weight:700; color:#d7dae0; margin:0 0 18px; }
+
+  .row { display:flex; align-items:center; gap:14px; margin-bottom:20px; }
+  .row:last-child { margin-bottom:0; }
+  .row .label { min-width:170px; }
+  .row .label b { display:block; font-weight:600; font-size:14px; }
+  .row .label span { color:var(--mut); font-size:12px; }
+  .grow { flex:1; }
+
+  input[type=color] { width:46px; height:34px; padding:0; border:1px solid var(--border);
+                      border-radius:8px; background:var(--panel); cursor:pointer; }
+  input[type=text], input[type=password] {
+                     font:inherit; color:var(--fg); background:#0e0e11; width:110px;
+                     border:1px solid var(--border); border-radius:8px; padding:8px 10px;
+                     font-variant-numeric:tabular-nums; }
+  input.wide { width:154px; }
+  input.narrow { width:78px; }
+  select { font:inherit; font-weight:600; color:var(--fg); background:var(--panel);
+           border:1px solid var(--border); border-radius:8px; padding:8px 11px; cursor:pointer; }
+  input[type=range] { flex:1; height:26px; accent-color:var(--accent); cursor:pointer; }
+  .switch { display:flex; align-items:center; gap:9px; cursor:pointer; }
+  .switch input { width:18px; height:18px; accent-color:var(--accent); }
+  .lensval { min-width:64px; text-align:right; color:var(--accent); font-weight:700;
+             font-variant-numeric:tabular-nums; }
+  .hint { color:var(--mut); font-size:12px; margin:2px 0 0; }
+
+  /* chest display link status */
+  .linkstat { display:flex; align-items:center; gap:8px; color:var(--mut); font-size:12.5px; }
+  .dot { width:8px; height:8px; border-radius:50%; background:var(--mut); flex:none; }
+  .dot.on { background:var(--ok); box-shadow:0 0 7px var(--ok); }
+  .dot.off { background:#f87171; }
+
+  /* live iris preview */
+  .eyes { display:flex; gap:10px; }
+  .eyes svg { width:74px; height:54px; border:1px solid var(--border); border-radius:8px;
+              background:#0a0a0b; }
+
+  .actions { display:flex; gap:10px; align-items:center; margin-top:6px; }
+  button { font:inherit; font-weight:600; color:var(--fg); background:transparent;
+           border:1px solid var(--border); border-radius:9px; padding:10px 18px; cursor:pointer; }
+  button:hover { background:rgba(255,255,255,.04); }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  .actions .spacer { flex:1; }
+
+  .dropzone { border:1.5px dashed var(--border); border-radius:12px; padding:22px 18px;
+              text-align:center; color:var(--mut); font-size:13.5px; cursor:pointer;
+              transition:border-color .15s, background .15s; }
+  .dropzone.drag { border-color:var(--accent); background:rgba(45,127,249,.08); color:var(--fg); }
+  .dropzone .link { color:var(--accent); font-weight:600; text-decoration:underline; }
+  .cliplist { margin-top:14px; display:flex; flex-direction:column; gap:8px; }
+  .clip { display:flex; align-items:center; gap:10px; background:#0e0e11;
+          border:1px solid var(--border); border-radius:9px; padding:8px 12px; }
+  .clip .name { flex:1; font-variant-numeric:tabular-nums; word-break:break-all; }
+  .clip button { padding:6px 12px; font-size:13px; }
+  .clip .del:hover { border-color:#a33; color:#f87171; background:rgba(160,40,40,.12); }
+  .clipnote { color:var(--mut); font-size:12px; }
+
+  #toast { position:fixed; left:50%; bottom:24px; transform:translateX(-50%);
+           background:#04310f; color:var(--ok); border:1px solid #0a5; padding:10px 18px;
+           border-radius:10px; opacity:0; transition:opacity .25s; pointer-events:none; font-weight:600; }
+  #toast.show { opacity:1; }
+  #toast.err { background:#3a0d0d; color:#f87171; border-color:#a33; }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="topbar">
+    <h1>FRED · Admin</h1>
+    <span class="sub">App &amp; camera defaults</span>
+    <a class="back" href="/">← Control panel</a>
+  </div>
+
+  <section class="panel">
+    <p class="phead">MyRobotLab handoff</p>
+    <div class="row" style="margin-bottom:12px">
+      <div class="label"><b>Release hardware to MyRobotLab</b>
+        <span>hand off servos, audio &amp; camera</span></div>
+      <div class="grow"></div>
+      <label class="switch"><span id="handoffLabel" style="color:var(--mut)">Owned by FRED</span>
+        <input type="checkbox" id="handoff" onchange="onHandoff(this.checked)"></label>
+    </div>
+    <p class="hint">When ON, this app drops the I2C servo bus (PCA9685), the USB audio card, and
+       the Pi camera so <a href="#" onclick="openMrl(event)" style="color:var(--accent)">MyRobotLab</a>
+       (port 8888) can drive them instead — only one stack may own the hardware at a time. FRED's
+       own servo, voice, and camera controls are disabled until you turn this back off. This is a
+       live switch (applies immediately, no Save needed) and the choice persists across reboots.</p>
+  </section>
+
+  <section class="panel">
+    <p class="phead">Appearance</p>
+    <div class="row">
+      <div class="label"><b>Iris colour</b><span>eye colour in the head animation</span></div>
+      <input type="color" id="irisColor" oninput="onColor(this.value)">
+      <input type="text" id="irisHex" spellcheck="false" oninput="onHex(this.value)">
+      <div class="grow"></div>
+      <div class="eyes" id="eyePreview">
+        <svg viewBox="0 0 74 54"><ellipse cx="37" cy="27" rx="30" ry="22" fill="#d6d9de"/>
+          <circle class="iris" cx="37" cy="27" r="13" fill="#143a97"/>
+          <circle cx="37" cy="27" r="6.5" fill="#050505"/></svg>
+        <svg viewBox="0 0 74 54"><ellipse cx="37" cy="27" rx="30" ry="22" fill="#d6d9de"/>
+          <circle class="iris" cx="37" cy="27" r="13" fill="#143a97"/>
+          <circle cx="37" cy="27" r="6.5" fill="#050505"/></svg>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <p class="phead">Camera defaults (applied on load)</p>
+    <div class="row">
+      <div class="label"><b>Flip 180°</b><span>if the camera is mounted inverted</span></div>
+      <label class="switch"><input type="checkbox" id="flip"> Flip the image on start</label>
+    </div>
+    <div class="row">
+      <div class="label"><b>Default focus</b><span>focus mode on start</span></div>
+      <select id="afMode" onchange="onAfMode()">
+        <option value="0">Manual</option>
+        <option value="2">Continuous AF</option>
+      </select>
+    </div>
+    <div class="row" id="lensRow">
+      <div class="label"><b>Manual lens</b><span>near ↔ far focus distance</span></div>
+      <input type="range" id="lensPos" min="0" max="15" step="0.1" oninput="onLens(this.value)">
+      <span class="lensval" id="lensVal">2.0 dpt</span>
+    </div>
+    <p class="hint">Changes are pushed to the live camera immediately and used as the
+       defaults every time FRED boots.</p>
+  </section>
+
+  <section class="panel">
+    <p class="phead">Status LED</p>
+    <div class="row">
+      <div class="label"><b>Camera indicator</b><span>red LED on the head</span></div>
+      <label class="switch"><input type="checkbox" id="ledCam"> Light the LED while the camera is streaming</label>
+    </div>
+    <p class="hint">When off, the camera never touches the LED — control it manually
+       with the 🔴 LED toggle on the control panel.</p>
+  </section>
+
+  <section class="panel">
+    <p class="phead">Chest display</p>
+    <div class="row">
+      <div class="label"><b>Display Pi</b><span>IP address &amp; control port</span></div>
+      <input type="text" id="dispHost" class="wide" spellcheck="false" placeholder="192.168.68.81">
+      <input type="text" id="dispPort" class="narrow" spellcheck="false" placeholder="8081">
+      <div class="grow"></div>
+      <span class="linkstat"><span class="dot" id="dispDot"></span>
+        <span id="dispStat">checking…</span></span>
+    </div>
+    <div class="row">
+      <div class="label"><b>Token</b><span>shared secret (optional)</span></div>
+      <input type="password" id="dispToken" class="wide" spellcheck="false" placeholder="(none)">
+      <div class="grow"></div>
+    </div>
+    <div class="row">
+      <div class="label"><b>Animation</b><span>what the chest screen shows</span></div>
+      <select id="dispAnim" onchange="onAnim(this.value)"><option value="">—</option></select>
+      <div class="grow"></div>
+      <button onclick="refreshDisplay()">↻ Refresh</button>
+    </div>
+    <p class="hint">The second Pi driving the 7" chest panel, running
+       <code>inmoov-display</code>. The dropdown is read from that Pi, so it always lists what
+       it can actually render; picking one switches it <b>immediately</b> (no Save needed) and
+       sticks across reboots. Address, port and token are saved with the button below.
+       <b>LAN-only — plain HTTP; don't forward this port.</b></p>
+  </section>
+
+  <section class="panel">
+    <p class="phead">Voice &amp; AI</p>
+    <div class="row">
+      <div class="label"><b>Wake word at boot</b><span>“Hey FRED” listener</span></div>
+      <label class="switch"><input type="checkbox" id="voiceEnabled"> Start listening automatically when FRED boots</label>
+    </div>
+    <div class="row">
+      <div class="label"><b>Mic sensitivity</b><span>software boost before Vosk</span></div>
+      <input type="range" id="micGain" min="1" max="8" step="0.5" oninput="onGain(this.value)">
+      <span class="lensval" id="gainVal">1.0×</span>
+    </div>
+    <div class="row">
+      <div class="label"><b>Audio lead-in</b><span>silence before each clip</span></div>
+      <input type="range" id="leadIn" min="0" max="1.5" step="0.05" oninput="onLead(this.value)">
+      <span class="lensval" id="leadVal">0.00 s</span>
+    </div>
+    <div class="row">
+      <div class="label"><b>Lip-sync trim</b><span>jaw vs. voice</span></div>
+      <input type="range" id="syncOffset" min="-0.5" max="0.5" step="0.01" oninput="onSync(this.value)">
+      <span class="lensval" id="syncVal">0.00 s</span>
+    </div>
+    <p class="hint">Needs the Vosk model + a microphone. Open-ended questions also need an
+       Anthropic API key in <code>config/secrets.env</code> — built-in commands work without one.
+       Raise the lead-in (≈0.4–0.6 s) if the speaker clips the first word or two while it
+       wakes up; leave it at 0 for a device that starts instantly.</p>
+    <p class="hint"><b>Lip-sync trim</b> nudges the jaw against the voice. The lead-in is already
+       compensated exactly, so this only corrects what's left — ALSA buffering and the servo's own
+       travel time. Positive if the mouth moves <em>before</em> you hear him, negative if it lags.
+       ±0.2 s is usually plenty; applied live, so tweak it while he's talking.</p>
+    <p class="hint">The mic's analog gain is already maxed, so <b>Mic sensitivity</b> boosts the
+       signal in software. 1× is off; try ≈2× for quiet or distant speech. Past ≈3× it mostly
+       amplifies room noise and clips loud words, which <em>hurts</em> recognition — applied live,
+       no reboot needed.</p>
+  </section>
+
+  <section class="panel">
+    <p class="phead">Terminator clips</p>
+    <p class="hint" style="margin:-8px 0 16px">When terminator mode is engaged (red LED),
+       FRED plays one of these at random instead of a synthesized catchphrase. Short clips
+       (one line each) work best. Any common audio format is converted to WAV automatically.</p>
+    <div id="dropzone" class="dropzone">
+      🎬 Drop audio files here, or <label class="link">browse<input type="file"
+         id="clipFile" accept="audio/*" multiple hidden></label>
+    </div>
+    <div class="cliplist" id="clipList"></div>
+  </section>
+
+  <section class="panel">
+    <p class="phead">Developer</p>
+    <div class="row">
+      <div class="label"><b>Claude terminal</b><span>browser shell on the robot</span></div>
+      <button class="primary" onclick="openTerminal()">🖥 Open Claude terminal</button>
+    </div>
+    <p class="hint">Opens a full terminal (ttyd + tmux) in a new tab — run <code>claude</code>,
+       git, tests, etc. to work on FRED without SSH. Log in as <code>inmoov</code> with the
+       password from setup; type <code>claude</code> to start. Your session persists in
+       tmux if you close the tab. <b>LAN-only — do not forward port 7681 to the internet.</b></p>
+  </section>
+
+  <div class="actions">
+    <button class="primary" onclick="save()">💾 Save settings</button>
+    <button onclick="resetDefaults()">↺ Reset to defaults</button>
+    <span class="spacer"></span>
+  </div>
+</div>
+<div id="toast"></div>
+
+<script>
+const DEFAULTS = { iris_color:'#143a97', camera:{ flip:false, af_mode:0, lens_position:2.0 },
+                   led:{ camera_indicator:true }, voice:{ enabled:false, gain:1.0 },
+                   sound:{ lead_in:0.0, sync_offset:0.0 },
+                   display:{ host:'', port:8081, token:'' } };
+
+async function api(path, body) {
+  const opt = { method: body ? 'POST' : 'GET' };
+  if (body) { opt.headers = {'Content-Type':'application/json'}; opt.body = JSON.stringify(body); }
+  const r = await fetch(path, opt);
+  return r.json();
+}
+function toast(msg, err) {
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.className = 'show' + (err ? ' err' : '');
+  clearTimeout(t._t); t._t = setTimeout(() => t.className = '', 1800);
+}
+
+function isHex(v) { return /^#[0-9a-fA-F]{6}$/.test(v); }
+function applyColor(v) {
+  document.querySelectorAll('#eyePreview .iris').forEach(c => c.setAttribute('fill', v));
+}
+function onColor(v) { document.getElementById('irisHex').value = v; applyColor(v); }
+function onHex(v) {
+  v = v.trim();
+  if (isHex(v)) { document.getElementById('irisColor').value = v; applyColor(v); }
+}
+function onAfMode() {
+  document.getElementById('lensRow').style.display =
+    (+document.getElementById('afMode').value === 0) ? '' : 'none';   // lens only in Manual
+}
+function onLens(v) { document.getElementById('lensVal').textContent = (+v).toFixed(1) + ' dpt'; }
+function onLead(v) { document.getElementById('leadVal').textContent = (+v).toFixed(2) + ' s'; }
+function onSync(v) { document.getElementById('syncVal').textContent = (v > 0 ? '+' : '') + (+v).toFixed(2) + ' s'; }
+function onGain(v) { document.getElementById('gainVal').textContent = (+v).toFixed(1) + '×'; }
+
+function fill(s) {
+  const color = s.iris_color || DEFAULTS.iris_color;
+  document.getElementById('irisColor').value = color;
+  document.getElementById('irisHex').value = color;
+  applyColor(color);
+  const cam = s.camera || DEFAULTS.camera;
+  document.getElementById('flip').checked = !!cam.flip;
+  document.getElementById('afMode').value = String(cam.af_mode === 0 ? 0 : 2);
+  document.getElementById('lensPos').value = cam.lens_position ?? 2.0;
+  onLens(cam.lens_position ?? 2.0);
+  onAfMode();
+  const led = s.led || DEFAULTS.led;
+  document.getElementById('ledCam').checked = led.camera_indicator !== false;
+  const voice = s.voice || DEFAULTS.voice;
+  document.getElementById('voiceEnabled').checked = !!voice.enabled;
+  document.getElementById('micGain').value = voice.gain ?? 1.0;
+  onGain(voice.gain ?? 1.0);
+  const disp = s.display || DEFAULTS.display;
+  document.getElementById('dispHost').value = disp.host || '';
+  document.getElementById('dispPort').value = disp.port ?? 8081;
+  document.getElementById('dispToken').value = disp.token || '';
+  const sound = s.sound || DEFAULTS.sound;
+  document.getElementById('leadIn').value = sound.lead_in ?? 0.0;
+  onLead(sound.lead_in ?? 0.0);
+  document.getElementById('syncOffset').value = sound.sync_offset ?? 0.0;
+  onSync(sound.sync_offset ?? 0.0);
+}
+
+async function load() { fill(await api('/api/settings')); }
+
+async function save() {
+  const hex = document.getElementById('irisHex').value.trim();
+  if (!isHex(hex)) { toast('Iris colour must be a #rrggbb hex', true); return; }
+  const payload = {
+    iris_color: hex,
+    camera: {
+      flip: document.getElementById('flip').checked,
+      af_mode: +document.getElementById('afMode').value,
+      lens_position: +document.getElementById('lensPos').value,
+    },
+    led: { camera_indicator: document.getElementById('ledCam').checked },
+    voice: { enabled: document.getElementById('voiceEnabled').checked,
+             gain: +document.getElementById('micGain').value },
+    sound: { lead_in: +document.getElementById('leadIn').value,
+             sync_offset: +document.getElementById('syncOffset').value },
+    display: { host: document.getElementById('dispHost').value.trim(),
+               port: +document.getElementById('dispPort').value || 8081,
+               token: document.getElementById('dispToken').value },
+  };
+  const res = await api('/api/settings', payload);
+  if (res.error) { toast('⚠ ' + res.error, true); return; }
+  fill(res);
+  toast('Settings saved');
+  refreshDisplay();     // a new address/token may have just come online
+}
+
+function resetDefaults() { fill(DEFAULTS); toast('Defaults loaded — press Save to keep'); }
+
+// ---- Chest display -----------------------------------------------------
+// The preset list comes from the display Pi itself, so this file never holds a
+// copy to keep in sync — add an animation there and it shows up here.
+async function loadAnimations(selected) {
+  const sel = document.getElementById('dispAnim');
+  const list = (await api('/api/display/animations')).animations || [];
+  if (!list.length) { sel.innerHTML = '<option value="">(unavailable)</option>'; return; }
+  sel.innerHTML = '';
+  for (const a of list) {
+    const o = document.createElement('option');
+    o.value = a.id; o.textContent = a.label;
+    sel.appendChild(o);
+  }
+  if (selected) sel.value = selected;
+}
+
+async function refreshDisplay() {
+  const dot = document.getElementById('dispDot'), st = document.getElementById('dispStat');
+  const s = await api('/api/display');
+  if (!s.configured) {
+    dot.className = 'dot'; st.textContent = 'not configured';
+    document.getElementById('dispAnim').innerHTML = '<option value="">—</option>';
+    return;
+  }
+  if (s.online) {
+    dot.className = 'dot on';
+    st.textContent = s.running ? 'online · ' + s.label
+                               : (s.error ? 'online · failed' : 'online · stopped');
+    await loadAnimations(s.animation);
+  } else {
+    dot.className = 'dot off';
+    st.textContent = 'offline';
+    document.getElementById('dispAnim').innerHTML = '<option value="">(offline)</option>';
+  }
+}
+
+async function onAnim(v) {
+  if (!v) return;
+  const r = await api('/api/display', { animation: v });
+  if (r.error) { toast('⚠ ' + r.error, true); return; }
+  toast('Chest display → ' + r.label);
+  refreshDisplay();
+}
+
+// ---- MyRobotLab handoff ------------------------------------------------
+function reflectHandoff(released) {
+  document.getElementById('handoff').checked = released;
+  const lbl = document.getElementById('handoffLabel');
+  lbl.textContent = released ? 'Released to MRL' : 'Owned by FRED';
+  lbl.style.color = released ? '#f0a020' : 'var(--mut)';
+}
+async function loadHandoff() { reflectHandoff(!!(await api('/api/handoff')).released); }
+async function onHandoff(checked) {
+  const s = await api('/api/handoff', { release: checked });
+  reflectHandoff(!!s.released);
+  toast(s.released ? 'Hardware released to MyRobotLab' : 'Hardware taken back by FRED');
+}
+function openMrl(e) { e.preventDefault();
+  window.open(`http://${location.hostname}:8888`, '_blank', 'noopener'); }
+
+// Open the browser terminal (ttyd on :7681) on whatever host served this page.
+function openTerminal() {
+  window.open(`http://${location.hostname}:7681`, '_blank', 'noopener');
+}
+
+// ---- Terminator clips --------------------------------------------------
+function esc(s) { return s.replace(/[&<>"']/g, c =>
+  ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+async function loadClips() {
+  const box = document.getElementById('clipList');
+  const r = await api('/api/sounds/terminator');
+  const clips = r.clips || [];
+  if (!clips.length) {
+    box.innerHTML = '<p class="clipnote">No clips yet — terminator mode falls back to a spoken one-liner.</p>';
+    return;
+  }
+  box.innerHTML = clips.map(n => {
+    const e = esc(n), j = JSON.stringify(n);
+    return `<div class="clip"><span class="name">${e}</span>
+      <button onclick='playClip(${j})'>▶ Play</button>
+      <button class="del" onclick='delClip(${j})'>🗑 Delete</button></div>`;
+  }).join('');
+}
+
+async function uploadFiles(files) {
+  files = [...files];
+  if (!files.length) return;
+  for (const file of files) {
+    toast('Uploading ' + file.name + '…');
+    const fd = new FormData(); fd.append('file', file);
+    let r;
+    try { r = await fetch('/api/sounds/terminator/upload', {method:'POST', body:fd}).then(x=>x.json()); }
+    catch (e) { toast('⚠ upload failed', true); continue; }
+    if (r.error) { toast('⚠ ' + r.error, true); continue; }
+    toast('Added ' + r.saved);
+  }
+  loadClips();
+}
+async function playClip(n) { await api('/api/sounds/terminator/play', {name:n}); toast('▶ ' + n); }
+async function delClip(n) {
+  if (!confirm('Delete ' + n + '?')) return;
+  const r = await api('/api/sounds/terminator/delete', {name:n});
+  if (r.error) { toast('⚠ ' + r.error, true); return; }
+  toast('Deleted ' + n); loadClips();
+}
+
+function initDropzone() {
+  const dz = document.getElementById('dropzone');
+  const inp = document.getElementById('clipFile');
+  dz.addEventListener('click', e => { if (e.target.tagName !== 'INPUT') inp.click(); });
+  inp.addEventListener('change', () => { uploadFiles(inp.files); inp.value = ''; });
+  ['dragenter','dragover'].forEach(ev => dz.addEventListener(ev, e => {
+    e.preventDefault(); dz.classList.add('drag'); }));
+  ['dragleave','drop'].forEach(ev => dz.addEventListener(ev, e => {
+    e.preventDefault(); dz.classList.remove('drag'); }));
+  dz.addEventListener('drop', e => { if (e.dataTransfer?.files) uploadFiles(e.dataTransfer.files); });
+}
+
+initDropzone();
+loadClips();
+loadHandoff();
+load();
+refreshDisplay();
+</script>
+</body>
+</html>

@@ -1,0 +1,339 @@
+#!/usr/bin/env python3
+"""Animation supervisor + HTTP control API for the InMoov chest display.
+
+Runs on the display Pi (the one wired to the 7" DSI panel), not the head. It
+owns the framebuffer animation as a *child process*, so the head's web panel can
+switch looks over the LAN — no editing ExecStart, no systemctl restart, no SSH.
+Switching is just "kill the child, spawn the next one", so it lands in ~100ms.
+
+    GET  /api/animations -> preset list; drives the admin dropdown
+    GET  /api/state      -> selected preset, pid, uptime, last crash
+    POST /api/animation  -> {"animation": "reactor-copper"}; switch now
+    POST /api/voice      -> FRED's live voice state + speech envelope, handed to
+                            the animation through voice_state.py
+
+If a token is configured (--token, or DISPLAY_TOKEN in the environment) every
+request must carry it as ``X-Display-Token`` — the same shape as the head's
+sensor ingest. LAN-only either way: this speaks plain HTTP and drives a screen.
+
+Stdlib only — there's no Flask on this Pi, and a control plane this small doesn't
+justify adding one. Runs as root because /dev/fb0 needs it.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import voice_state                          # noqa: E402 — sibling module
+
+HERE = Path(__file__).resolve().parent
+STATE_PATH = HERE / "state.json"          # remembers the pick across reboots
+
+# The dropdown the head shows is exactly this list, flattened so each entry is
+# one concrete look: variants (--copper, --talk) are presets, not extra widgets.
+PRESETS = [
+    {"id": "reactor",        "label": "Arc Reactor",          "argv": ["reactor.py"]},
+    {"id": "reactor-copper", "label": "Arc Reactor (Copper)", "argv": ["reactor.py", "--copper"]},
+    {"id": "flux",           "label": "Flux Capacitor",       "argv": ["flux.py"]},
+    {"id": "face",           "label": "Face (live voice)",    "argv": ["face.py"]},
+    {"id": "voice-hud",      "label": "Voice HUD",            "argv": ["voice_hud.py"]},
+    {"id": "face-talk",      "label": "Face (demo talk)",     "argv": ["face.py", "--talk"]},
+    {"id": "off",            "label": "Off (blank screen)",   "argv": None},
+]
+PRESET_BY_ID = {p["id"]: p for p in PRESETS}
+DEFAULT_PRESET = "reactor"
+
+# Crash handling. A child that dies faster than _MIN_HEALTHY_RUN didn't really
+# run — but one fast exit isn't proof it's broken (someone may have just killed
+# it), so only give up after _MAX_FAST_FAILS in a row. That still can't hot-loop,
+# and a genuinely broken script (bad import, no fb0) latches within a few seconds
+# with its error visible to the head.
+_MIN_HEALTHY_RUN = 3.0
+_MAX_FAST_FAILS = 3
+_RESPAWN_DELAY = 2.0
+
+# The child's stderr goes to a file, not a PIPE: a PIPE nobody drains fills its
+# ~64KB buffer and blocks the animation forever. A file can't wedge the child.
+# It lives here beside state.json, deliberately not in /tmp — this runs as root,
+# and a fixed path in a world-writable dir is a symlink attack waiting to happen.
+CHILD_LOG = HERE / "child-stderr.log"
+
+
+def _blank_screen() -> None:
+    """Black the panel. Only safe once the child has exited (it mmaps fb0 too)."""
+    try:
+        sys.path.insert(0, str(HERE))
+        from fb import Framebuffer          # noqa: PLC0415 — optional, needs numpy
+        with Framebuffer() as fb:
+            fb.clear()
+    except Exception:
+        pass                                # no panel / no numpy: nothing to blank
+
+
+class Supervisor:
+    """Owns the running animation child and the watchdog that respawns it."""
+
+    def __init__(self, workdir: Path, python: str = sys.executable):
+        self._dir = workdir
+        self._py = python
+        self._lock = threading.RLock()
+        self._proc: subprocess.Popen | None = None
+        self._preset = DEFAULT_PRESET
+        self._started_at = 0.0
+        self._error = ""                    # last crash, surfaced in /api/state
+        self._fails = 0                     # consecutive too-fast exits
+        self._stop = threading.Event()
+        self._watch = threading.Thread(target=self._watchdog, daemon=True)
+
+    # -- lifecycle ---------------------------------------------------------
+    def start(self) -> None:
+        self.select(self._load_choice(), persist=False)
+        self._watch.start()
+
+    def shutdown(self) -> None:
+        self._stop.set()
+        with self._lock:
+            self._kill_child()
+
+    # -- child process -----------------------------------------------------
+    def _kill_child(self) -> None:
+        proc, self._proc = self._proc, None
+        if proc is None or proc.poll() is not None:
+            return
+        proc.terminate()
+        try:
+            proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            proc.kill()                     # a wedged animation still frees the fb
+            proc.wait(timeout=2)
+
+    def _spawn(self, preset: dict) -> None:
+        argv = [self._py] + list(preset["argv"])
+        try:
+            err = open(CHILD_LOG, "wb")     # truncate: only the latest run matters
+        except OSError:
+            err = subprocess.DEVNULL
+        try:
+            self._proc = subprocess.Popen(
+                argv, cwd=str(self._dir),
+                stdout=subprocess.DEVNULL,
+                stderr=err,                 # a file, never a PIPE — see CHILD_LOG
+            )
+        finally:
+            if err is not subprocess.DEVNULL:
+                err.close()                 # the child keeps its own dup'd fd
+        self._started_at = time.monotonic()
+
+    @staticmethod
+    def _last_error(returncode: int) -> str:
+        """Best guess at why the child died, for the head to display."""
+        try:
+            tail = CHILD_LOG.read_text(errors="replace").strip().splitlines()
+        except OSError:
+            tail = []
+        if tail:
+            return tail[-1][:200]
+        if returncode is not None and returncode < 0:
+            return f"killed by signal {-returncode}"
+        return f"exited with code {returncode}"
+
+    def select(self, preset_id: str, persist: bool = True) -> dict:
+        """Switch to ``preset_id`` now. Raises KeyError if it isn't a preset."""
+        preset = PRESET_BY_ID[preset_id]
+        with self._lock:
+            self._kill_child()
+            self._preset = preset_id
+            self._error = ""
+            self._fails = 0                 # an explicit pick clears a latched crash
+            if preset["argv"] is None:
+                self._started_at = 0.0
+                _blank_screen()
+            else:
+                self._spawn(preset)
+            if persist:
+                self._save_choice(preset_id)
+            return self._state_locked()
+
+    def _watchdog(self) -> None:
+        """Respawn a child that dies on its own; give up only if it keeps failing."""
+        while not self._stop.wait(1.0):
+            with self._lock:
+                preset = PRESET_BY_ID[self._preset]
+                if preset["argv"] is None or self._proc is None:
+                    continue                # nothing to supervise ("off", or latched)
+                if self._proc.poll() is None:
+                    continue                # still running
+
+                ran = time.monotonic() - self._started_at
+                self._fails = self._fails + 1 if ran < _MIN_HEALTHY_RUN else 0
+                if self._fails >= _MAX_FAST_FAILS:
+                    # Repeatedly dying on startup: stop and report, don't hot-loop.
+                    self._error = self._last_error(self._proc.returncode)
+                    self._proc = None
+                    continue
+                self._proc = None
+
+            # Outside the lock: a select() during the pause must not block.
+            if self._stop.wait(_RESPAWN_DELAY):
+                return
+            with self._lock:
+                if self._proc is None and not self._error \
+                        and PRESET_BY_ID[self._preset]["argv"] is not None:
+                    self._spawn(PRESET_BY_ID[self._preset])
+
+    # -- persistence -------------------------------------------------------
+    def _load_choice(self) -> str:
+        try:
+            pid = json.loads(STATE_PATH.read_text()).get("animation")
+        except (OSError, ValueError, AttributeError):
+            return DEFAULT_PRESET
+        return pid if pid in PRESET_BY_ID else DEFAULT_PRESET
+
+    def _save_choice(self, preset_id: str) -> None:
+        try:
+            STATE_PATH.write_text(json.dumps({"animation": preset_id}, indent=2) + "\n")
+        except OSError:
+            pass                            # read-only fs: live switch still works
+
+    # -- state -------------------------------------------------------------
+    def _state_locked(self) -> dict:
+        running = self._proc is not None and self._proc.poll() is None
+        return {
+            "animation": self._preset,
+            "label": PRESET_BY_ID[self._preset]["label"],
+            "running": running,
+            "pid": self._proc.pid if running else None,
+            "uptime": round(time.monotonic() - self._started_at, 1) if running else 0.0,
+            "error": self._error,
+        }
+
+    def state(self) -> dict:
+        with self._lock:
+            return self._state_locked()
+
+
+class Handler(BaseHTTPRequestHandler):
+    server_version = "InMoovDisplay/1.0"
+    supervisor: Supervisor
+    token: str = ""
+
+    def log_message(self, *a):              # keep the journal to real events
+        pass
+
+    def _send(self, code: int, payload: dict) -> None:
+        body = json.dumps(payload).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Display-Token")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _authed(self) -> bool:
+        if not self.token or self.headers.get("X-Display-Token") == self.token:
+            return True
+        self._send(403, {"error": "bad or missing display token"})
+        return False
+
+    def do_OPTIONS(self):                   # browsers preflight the token header
+        self._send(204, {})
+
+    def do_GET(self):
+        if not self._authed():
+            return
+        if self.path.startswith("/api/animations"):
+            self._send(200, {"animations": [{"id": p["id"], "label": p["label"]}
+                                            for p in PRESETS]})
+        elif self.path.startswith("/api/state"):
+            self._send(200, self.supervisor.state())
+        else:
+            self._send(404, {"error": "not found"})
+
+    def do_POST(self):
+        if not self._authed():
+            return
+        if not (self.path.startswith("/api/animation")
+                or self.path.startswith("/api/voice")):
+            self._send(404, {"error": "not found"})
+            return
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+            data = json.loads(self.rfile.read(n) or b"{}")
+        except (ValueError, OSError):
+            self._send(400, {"error": "body must be JSON"})
+            return
+
+        if self.path.startswith("/api/voice"):
+            self._send(200, self._voice(data))
+            return
+        try:
+            self._send(200, self.supervisor.select(str(data.get("animation", ""))))
+        except KeyError:
+            self._send(400, {"error": f"unknown animation {data.get('animation')!r}"})
+
+    def _voice(self, data: dict) -> dict:
+        """Hand FRED's voice state to the animation via /dev/shm.
+
+        The head sends ``starts_in`` (seconds from now until frame 0 is audible);
+        it becomes an absolute ``play_at`` on *this* Pi's monotonic clock right
+        here, so the animation never inherits the network latency.
+        """
+        state = str(data.get("state", "idle"))
+        out = {"state": state if state in voice_state.STATES else "idle",
+               "seq": data.get("seq", 0)}
+        levels = data.get("levels")
+        if levels:
+            try:
+                out["levels"] = [float(v) for v in levels]
+                out["frame_dt"] = float(data.get("frame_dt") or 0.05)
+                out["play_at"] = time.monotonic() + float(data.get("starts_in") or 0.0)
+            except (TypeError, ValueError):
+                return {"error": "bad envelope"}
+        else:
+            # A state-only update (idle/listening/thinking): keep whatever
+            # envelope is current so a late "speaking" tick can't wipe the wave.
+            prev = voice_state.VoiceFeed().poll()
+            for k in ("levels", "frame_dt", "play_at"):
+                if k in prev:
+                    out[k] = prev[k]
+        voice_state.publish(out)
+        return {"ok": True, "state": out["state"], "seq": out["seq"]}
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--host", default="0.0.0.0")
+    ap.add_argument("--port", type=int, default=8081)
+    ap.add_argument("--dir", default=str(HERE), help="where the animation scripts live")
+    ap.add_argument("--token", default=os.environ.get("DISPLAY_TOKEN", ""),
+                    help="shared secret; clients send it as X-Display-Token")
+    args = ap.parse_args()
+
+    sup = Supervisor(Path(args.dir))
+    sup.start()
+    Handler.supervisor = sup
+    Handler.token = args.token
+
+    srv = ThreadingHTTPServer((args.host, args.port), Handler)
+    print(f"display control on {args.host}:{args.port} "
+          f"({'token required' if args.token else 'no token'})", flush=True)
+    try:
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        sup.shutdown()
+        srv.server_close()
+
+
+if __name__ == "__main__":
+    main()

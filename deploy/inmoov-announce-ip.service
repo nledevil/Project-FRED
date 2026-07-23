@@ -1,0 +1,17 @@
+[Unit]
+Description=InMoov: speak the LAN/wifi IP address over the speaker at boot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=dietpi
+Group=dietpi
+Environment=PYTHONUNBUFFERED=1
+WorkingDirectory=/home/dietpi/inmoov
+ExecStart=/home/dietpi/inmoov/venv/bin/python /home/dietpi/inmoov/deploy/announce_ip.py
+# Don't let a transient audio/network hiccup wedge boot.
+TimeoutStartSec=90
+
+[Install]
+WantedBy=multi-user.target

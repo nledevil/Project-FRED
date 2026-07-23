@@ -1,0 +1,21 @@
+[Unit]
+Description=InMoov chest display animation (framebuffer + control API)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# The animation is no longer chosen here — this supervises it and serves the
+# control API on :8081, so the head's admin panel picks the look at runtime.
+# The choice persists in /home/dietpi/display/state.json across reboots.
+# Set a shared secret to match the head's admin panel (leave unset for none):
+#   Environment=DISPLAY_TOKEN=some-long-random-string
+ExecStart=/usr/bin/python3 /home/dietpi/display/display_control.py --port 8081
+WorkingDirectory=/home/dietpi/display
+# Needs the framebuffer device; root is simplest. (dietpi is also in 'video'.)
+User=root
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

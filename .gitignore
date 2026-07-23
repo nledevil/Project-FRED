@@ -3,3 +3,12 @@ __pycache__/
 *.pyc
 *.log
 captures/
+config/secrets.env
+models/
+# Terminator movie clips are copyrighted — keep them local, out of the repo.
+sounds/terminator/*.wav
+
+# Machine-local runtime state: persisted bench tuning (face-tracking gains),
+# device paths, and API tokens. Defaults live in inmoov/settings.py, so a fresh
+# checkout still runs without this file.
+config/settings.json
