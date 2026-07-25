@@ -1,129 +1,340 @@
-# FRED — InMoov on Raspberry Pi 4 (DietPi)
+# Project-FRED
 
-Meet **FRED** — **F**acial **R**ecognition & **E**xpression **D**roid: an InMoov
-robot head. Servo + camera control on a Raspberry Pi 4. Phase 1 controls the
-**eyes (2 servos), jaw, and neck** via a PCA9685 16-channel PWM driver on I2C.
+A control stack for an **InMoov**-style humanoid running on a pair of Raspberry
+Pis: servo control, an offline wake-word listener with a Claude-backed
+conversational brain, camera face-tracking, a mobile-friendly web panel, an
+animated chest display, and a microcontroller sensor node.
 
-- Board: Raspberry Pi 4B, DietPi (Debian 13 "trixie"), Python 3.13
-- Servo driver: **PCA9685** @ I2C address `0x40`
-- Camera: Raspberry Pi Camera Module 3 (autofocus) via `picamera2` / `rpicam`
+The robot this was built for is called FRED. **Nothing in the code depends on
+that** — the name lives in a couple of config strings and the spoken wake word,
+so call yours whatever you like.
 
-## Hardware wiring (PCA9685)
+> This is one person's working robot, not a product. It is published in the hope
+> that the wiring notes, the failure modes documented in `SERVICE.md`, and the
+> two-Pi architecture save someone else a few evenings. Expect to adapt it.
+
+---
+
+## What it does
+
+| | |
+|---|---|
+| **Servos** | 6 channels via a PCA9685 — eyes (X/Y), jaw, neck rotate, head tilt (L/R and F/B). Soft limits, calibration mode, graceful relax. |
+| **Voice in** | Always-on wake word ("Hey FRED") using **Vosk** — fully offline, on-device. No cloud listening. |
+| **Brain** | Local regex commands answer instantly and for free; anything else falls through to **Claude**, which gets the same actions as tool definitions so it can actually *drive the robot*, not just talk. |
+| **Voice out** | ALSA `aplay`, with a speech envelope published to the chest display so the animation's mouth matches the audio. |
+| **Vision** | Camera Module 3 via `picamera2`, MJPEG stream to the panel, plus an OpenCV Haar-cascade face tracker on a PD loop that moves the eyes, neck and head tilt to hold a face centred. |
+| **Web panel** | Flask on `:8080` — live servo sliders, camera view, conversation transcript, calibration mode, and an admin screen. |
+| **Chest display** | A second Pi drives a 7" DSI panel with framebuffer animations (arc reactor, flux capacitor, animated face, voice HUD), switchable at runtime from the panel. |
+| **Sensors** | A Raspberry Pi Pico reads two HC-SR04 ultrasonics and a PIR, does its own echo timing and event detection, and streams JSON to the robot. |
+| **Networking** | Falls back to being its own WiFi access point when no known network is around, plus an always-on Bluetooth PAN between the two Pis. |
+
+---
+
+## Architecture
+
+Two Pis, deliberately. The head runs everything that needs the camera, the
+servos and the microphone; the chest Pi does nothing but drive its panel and
+relay the sensor node. They are joined by a Bluetooth PAN with fixed addresses,
+so the link survives any venue's DHCP — or the total absence of a network.
+
+```
+                    ┌──────────────────────────────────────────┐
+                    │  HEAD PI  (Pi 4B, DietPi)                │
+   servos ──I2C─────┤  PCA9685 · camera · mic · speaker        │
+   camera ──CSI─────┤                                          │
+                    │  web/app.py — Flask control panel :8080  │
+                    │  inmoov/    — the robot's own package    │
+                    └───────┬──────────────────────┬───────────┘
+                            │                      │
+              WiFi / own AP │                      │ Bluetooth PAN
+              192.168.x.x   │                      │ 10.0.0.1 ⇄ 10.0.0.2
+                            │                      │
+                    ┌───────┴──────────┐   ┌───────┴───────────────────┐
+                    │  phone / laptop  │   │  CHEST PI                 │
+                    │  control panel   │   │  display_control.py :8081 │
+                    └──────────────────┘   │  7" DSI panel animations  │
+                                           │  sensor relay ────────────┼── USB
+                                           └───────────────────────────┘      │
+                                                                      ┌───────┴────────┐
+                                                                      │  Pico sensor   │
+                                                                      │  node: 2×      │
+                                                                      │  HC-SR04 + PIR │
+                                                                      └────────────────┘
+```
+
+The sensor node plugs into the **chest** Pi (that's where the sensors physically
+are, and the head is on pan/tilt servos so a USB run into it would fatigue). The
+chest Pi relays each reading to the head over the PAN, where the head is always
+`10.0.0.1` — no address to chase.
+
+---
+
+## Hardware
+
+| Part | Notes |
+|---|---|
+| Raspberry Pi 4B ×2 | Head and chest. DietPi (Debian 13 "trixie"), Python 3.13. |
+| PCA9685 | 16-channel PWM servo driver, I²C address `0x40`, 50 Hz. |
+| Servos ×6 | See the channel map below. |
+| **5–6 V PSU** | Sized for servo stall current — several amps. **Not** the Pi's 5 V rail. |
+| Camera Module 3 | Autofocus, on the head. |
+| USB microphone | Any ALSA-visible mic; used by the Vosk listener. |
+| USB speaker / DAC | Played through `aplay`. |
+| 7" DSI touchscreen | On the chest Pi, 800×480, RGB565 framebuffer. |
+| Raspberry Pi Pico | Sensor node. A plain Pico is fine — the firmware needs no WiFi. |
+| 2× HC-SR04, 1× HC-SR501 | Ultrasonic distance and PIR motion. |
+
+### Servo wiring (PCA9685)
 
 | PCA9685 pin | Pi pin (physical) | Notes |
-|-------------|-------------------|-------|
-| VCC         | 3.3V (pin 1)      | logic power (from the Pi) |
-| GND         | GND (pin 6)       | **must share ground with the servo supply** |
-| SDA         | GPIO2 / SDA (pin 3) | I2C data |
-| SCL         | GPIO3 / SCL (pin 5) | I2C clock |
-| V+          | **external 5–6V PSU** | servo power — do NOT power servos from the Pi |
+|---|---|---|
+| VCC | 3.3 V (pin 1) | logic power, from the Pi |
+| GND | GND (pin 6) | **must share ground with the servo supply** |
+| SDA | GPIO2 / SDA (pin 3) | I²C data |
+| SCL | GPIO3 / SCL (pin 5) | I²C clock |
+| V+ | **external 5–6 V PSU** | servo power — never from the Pi |
 
-**Power:** Servos draw amps under load. Feed the PCA9685 **V+** screw terminal
-from a dedicated 5–6V supply sized for stall current (a few A for these servos).
-Tie that supply's GND to the Pi GND. Powering servos from the Pi's 5V rail will
-brown-out the Pi.
+> **Power warning.** Servos draw amps under load. Feed the PCA9685's `V+` screw
+> terminal from a dedicated supply and tie its ground to the Pi's. Running servos
+> off the Pi's 5 V rail will brown it out mid-move.
 
-Default channel map (edit in `config/servos.json`):
+Default channel map — edit in `config/servos.json`:
 
-| Channel | Servo  | Motion |
-|---------|--------|--------|
-| 0 | `eye_x` | eyes left/right |
-| 1 | `eye_y` | eyes up/down |
-| 2 | `jaw`   | open/close |
-| 3 | `neck`  | rotate left/right |
+| Channel | Servo | Motion |
+|---|---|---|
+| 0 | `eye_x` | eyes left / right |
+| 1 | `eye_y` | eyes up / down |
+| 2 | `jaw` | open / close |
+| 3 | `neck` | rotate left / right |
+| 4 | `head_tilt_lr` | tilt side to side |
+| 5 | `head_tilt_fb` | nod forward / back |
 
-## First boot with hardware
+### Sensor node wiring
 
-I2C is already enabled in `/boot/firmware/config.txt` (`dtparam=i2c_arm=on`) and
-`i2c-dev` is in `/etc/modules`, but **it only goes live after a reboot** and the
-`dietpi` user was just added to the `i2c`/`gpio`/`spi`/`video` groups.
+Full pinout, voltage-divider details and the HC-SR501's jumper/pot gotchas are
+in [`firmware/pico_sensor_node/README.md`](firmware/pico_sensor_node/README.md).
+
+The short version: an HC-SR04's ECHO pin swings to 5 V and the Pico's GPIO is
+**not** 5 V tolerant, so each ECHO needs a 1 kΩ/2 kΩ divider. If you buy the
+3.3 V **HC-SR04P** instead, power it from the Pico's 3V3 rail and the dividers
+disappear entirely — which is the easier build.
+
+---
+
+## Getting started
+
+### 1. System packages
+
+The camera stack, OpenCV and numpy come from apt rather than pip, so the venv is
+created with `--system-site-packages` to see them.
+
+```bash
+sudo apt install -y python3-picamera2 python3-opencv python3-numpy \
+                    i2c-tools alsa-utils
+```
+
+Enable I²C — `dtparam=i2c_arm=on` in `/boot/firmware/config.txt`, `i2c-dev` in
+`/etc/modules`, and your user in the `i2c`, `gpio`, `spi` and `video` groups.
+**Both need a reboot to take effect.**
 
 ```bash
 sudo reboot
-# after reboot, confirm the bus and find the PCA9685 (expect 0x40):
-i2cdetect -y 1
+i2cdetect -y 1          # after reboot: expect the PCA9685 at 0x40
 ```
 
-## Software
-
-Everything Python lives in a venv at `venv/` (system-site-packages, so the
-apt-installed `picamera2`/`libcamera`/OpenCV are visible alongside the
-pip-installed Adafruit libraries).
+### 2. Python environment
 
 ```bash
-cd ~/inmoov
-
-# WEB CONTROL PANEL — open http://<pi-ip>:8080 from a phone/laptop on the LAN.
-# It runs automatically at boot as a systemd service (see SERVICE.md):
-sudo systemctl restart inmoov      # restart after code/config changes
-sudo systemctl stop inmoov         # stop (frees port 8080 for manual runs)
-# ...or run it by hand for debugging:
-./venv/bin/python web/app.py
-
-# no hardware needed — auto-runs in MOCK mode, printing intended moves:
-./venv/bin/python demo.py
-
-# calibrate limits once hardware is wired (see the file's docstring):
-./venv/bin/python calibrate.py
-
-# use in your own scripts:
-./venv/bin/python -c "from inmoov.servo_controller import ServoController; \
-c=ServoController(); c.set_angle('jaw', 45)"
+git clone git@github.com:nledevil/Project-FRED.git
+cd Project-FRED
+python3 -m venv --system-site-packages venv
+./venv/bin/pip install flask requests anthropic vosk pyserial RPi.GPIO \
+                       adafruit-circuitpython-servokit adafruit-circuitpython-pca9685 \
+                       CairoSVG
 ```
 
-### Web control panel
+Vosk needs a model. Download a small English one from
+[alphacephei.com/vosk/models](https://alphacephei.com/vosk/models) and unpack it
+into `models/` (which is gitignored — the models are large).
 
-`./venv/bin/python web/app.py` serves a mobile-friendly panel on port 8080:
+### 3. Secrets and configuration
 
-- A live slider per servo (Rest all / Relax all buttons).
-- **Calibration mode** toggle: unlocks the full 0–`actuation_range` travel
-  (bypassing the *safe* soft limits), adds Set min / Set rest / Set max buttons
-  to record the current angle, and a Save config button that writes the new
-  limits back to `config/servos.json`. This is the fastest way to dial in a
-  fresh mechanism from the bench.
+```bash
+echo 'ANTHROPIC_API_KEY=sk-ant-...' > config/secrets.env
+chmod 600 config/secrets.env
+```
 
-Flask's built-in server is fine for a single operator on a trusted LAN. It has
-no authentication — don't expose port 8080 to the internet.
+Both `config/secrets.env` and `config/settings.json` are **gitignored** —
+settings are machine-local (device paths, tuned face-tracking gains, tokens), and
+sane defaults live in `inmoov/settings.py`, so a fresh clone runs without them.
 
-### Admin screen (`/admin`)
+### 4. Run it
 
-The ⚙ link in the top bar opens **`/admin`** — operator preferences, kept in
-`config/settings.json` (separate from hardware calibration in `servos.json`):
+```bash
+./venv/bin/python web/app.py            # panel on http://<pi-ip>:8080
+```
 
-- **Iris colour** of the head animation (drives `--iris-color` in the SVG face).
-- **Camera defaults applied on load** — 180° flip on/off, focus mode
-  (Manual / Continuous AF), and the manual lens position.
+With no hardware attached it starts in **mock mode** and prints intended moves
+instead of touching I²C — so you can develop the whole control path on a laptop.
 
-Saving pushes the camera settings to the live camera immediately *and* records
-them as the boot defaults. Like the rest of the panel, it has no auth (LAN-only).
+### 5. Install as services
 
-### Mock mode
+`deploy/` holds the systemd units. Full walkthrough in
+[`SERVICE.md`](SERVICE.md).
 
-`ServoController` auto-detects the absence of `/dev/i2c-1` and runs in **mock
-mode**, printing every intended move instead of touching hardware. Force it
-with `ServoController(mock=True)`. This lets all control logic be developed and
-tested before (and independently of) the physical robot.
+```bash
+sudo cp deploy/inmoov.service /etc/systemd/system/
+sudo systemctl enable --now inmoov
+```
 
-## `config/servos.json` schema
+---
 
-Per servo:
+## Configuration
 
-- `channel` — PCA9685 output (0–15)
-- `min_angle` / `max_angle` — **safe** software limits; all moves are clamped here
-- `rest_angle` — startup / idle position
-- `actuation_range` — servo's full travel in degrees (usually 180)
-- `pulse_min_us` / `pulse_max_us` — pulse width at 0° / full travel (typ. 500 / 2500)
-- `invert` — `true` if the servo is mounted so angles run backwards
-- `description` — human note
+| File | Purpose | In git? |
+|---|---|---|
+| `config/servos.json` | Channel map, soft limits, rest angles, pulse widths | yes |
+| `config/settings.json` | Operator preferences, device paths, tuned gains, tokens | **no** |
+| `config/secrets.env` | `ANTHROPIC_API_KEY` | **no** |
 
-The `i2c.address` is stored as a decimal (`64` = `0x40`) because JSON has no hex.
+`servos.json` per-servo keys: `channel`, `min_angle` / `max_angle` (safe limits,
+every command is clamped to them), `rest_angle`, `actuation_range`,
+`pulse_min_us` / `pulse_max_us`, `invert`, `description`.
 
-> The shipped limits are **deliberately conservative starting points**. Run
-> `calibrate.py` and tighten them to your actual mechanism before running at speed.
+> The shipped limits are **deliberately conservative placeholders**. Run
+> `calibrate.py` against your own mechanism and tighten them before running at
+> speed — a servo driving into a printed part will strip it.
 
-## Safety notes
+---
 
-- Always `calibrate.py` a fresh mechanism before trusting angles.
-- The controller clamps every commanded angle to `[min_angle, max_angle]`.
-- `ServoController` used as a context manager relaxes (de-energises) all servos
-  on exit; call `.relax()` yourself to stop holding torque / cool motors.
+## The subsystems
+
+### Web control panel — `:8080`
+
+Live slider per servo, camera view, conversation transcript, and sensor state.
+**Calibration mode** unlocks full travel past the soft limits and adds
+Set min / Set rest / Set max buttons plus Save, which writes back to
+`servos.json`. It's the fastest way to dial in a fresh mechanism.
+
+The **`/admin`** screen holds operator preferences: iris colour, camera defaults
+(flip, focus mode, lens position), voice settings, the chest display's address
+and animation, and the sensor-overlay toggle.
+
+> No authentication, by design — it is a LAN tool for a single operator.
+> **Don't forward port 8080.**
+
+### Voice
+
+`inmoov/listener.py` runs `arecord` into a Vosk recogniser and watches for the
+wake word. `inmoov/brain.py` then tries `commands.match_local` first — plain
+regex, instant and offline — and only calls Claude when that misses. The same
+action registry is exposed to Claude as tools, so an open-ended request can
+still move the robot rather than just producing text.
+
+Without an API key the local commands still work; the AI half simply reports as
+unavailable.
+
+### Face tracking
+
+A background thread pulls low-resolution grayscale frames from the camera's
+`lores` stream (so MJPEG viewers are undisturbed), runs a Haar cascade, and
+drives a PD controller on the eyes, neck and head tilt. Because the camera rides
+the moving head it is a genuine feedback loop — gains are tunable live from the
+panel and persist in `settings.json`.
+
+### Chest display — `:8081`
+
+`deploy/display/display_control.py` supervises the animation as a **child
+process** and serves a small stdlib HTTP API, so switching looks is
+"kill the child, spawn the next" (~100 ms) rather than editing a unit file.
+Presets: arc reactor (cyan/copper), flux capacitor, animated face, voice HUD.
+
+It also carries the **sensor relay** and can overlay a live sensor readout on
+top of whichever animation is playing — toggled from the admin page.
+
+### Sensor node
+
+The Pico does all the timing-critical work: echo measurement, median filtering,
+approach/depart hysteresis with edge confirmation, and PIR debouncing with a
+warm-up mute. It emits one JSON object per line over USB serial. Neither Pi ever
+times a pulse — Linux scheduling jitter would wreck an HC-SR04 reading.
+
+`firmware/pico_sensor_node/push.py` copies firmware to the board over
+MicroPython's raw REPL, standing in for `mpremote` (the chest Pi has no pip).
+
+### Networking
+
+- **Hotspot fallback** — when no known WiFi is in range the head becomes its own
+  access point so you can still reach the panel at a venue. See
+  [`HOTSPOT.md`](HOTSPOT.md).
+- **Bluetooth PAN** — a permanent link between the two Pis at `10.0.0.1` and
+  `10.0.0.2`, independent of any WiFi. The installer takes the peer's Bluetooth
+  address as an argument, so it works on your pair of adapters:
+
+  ```bash
+  sudo deploy/pan/install.sh head  <chest-bdaddr>
+  sudo deploy/pan/install.sh chest <head-bdaddr>
+  ```
+
+---
+
+## Development
+
+Every hardware wrapper mocks itself out when its device is missing —
+`ServoController` without `/dev/i2c-1`, `Camera` without libcamera, `Sound`
+without ALSA, `Led` without GPIO. So the whole control path runs on an ordinary
+machine:
+
+```bash
+./venv/bin/python demo.py               # scripted moves, no hardware needed
+./venv/bin/python calibrate.py          # interactive limit-finding
+./venv/bin/python -c "from inmoov.servo_controller import ServoController; \
+                      c=ServoController(); c.set_angle('jaw', 45)"
+```
+
+Force it explicitly with `ServoController(mock=True)`.
+
+## Repository layout
+
+```
+inmoov/                  the robot's Python package (servos, camera, voice, sensors)
+web/                     Flask control panel — app.py, templates, static
+config/                  servos.json (tracked); settings.json + secrets.env (not)
+deploy/                  systemd units and installers
+  display/               everything that runs on the chest Pi
+  hotspot/               WiFi access-point fallback
+  pan/                   Bluetooth PAN between the two Pis
+firmware/pico_sensor_node/   MicroPython sensor node + its push tool
+sounds/                  startup chime and effects
+calibrate.py demo.py     bench tools
+```
+
+## Documentation
+
+| File | What's in it |
+|---|---|
+| [`SERVICE.md`](SERVICE.md) | Running as systemd services, and a long list of real failure modes with their fixes — the most useful file here if something is broken. |
+| [`HOTSPOT.md`](HOTSPOT.md) | WiFi access-point fallback and the Bluetooth PAN. |
+| [`firmware/pico_sensor_node/README.md`](firmware/pico_sensor_node/README.md) | Sensor node wiring, flashing, tuning and gotchas. |
+| [`TODO.md`](TODO.md) | What's next. |
+
+---
+
+## Licence and credits
+
+Licensed under the **[PolyForm Noncommercial License 1.0.0](LICENSE)** — free for
+personal projects, hobby builds, research, education and non-profits;
+commercial use is not granted.
+
+Note that "noncommercial" means this is *source-available* rather than
+open-source in the OSI sense, which specifically forbids restricting fields of
+use. That is a deliberate choice, matching the spirit of the upstream project.
+
+This builds on **[InMoov](https://inmoov.fr/)** by Gaël Langevin — the printable
+humanoid this software drives. The physical designs are his and carry their own
+licence (CC BY-NC), separate from this repository. If you are printing a robot,
+start there.
+
+Vosk, Adafruit's CircuitPython libraries, picamera2 and OpenCV each carry their
+own licences.
