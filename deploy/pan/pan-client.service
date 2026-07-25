@@ -1,4 +1,6 @@
 [Unit]
+# @PEER_BDADDR@ is substituted with the head's Bluetooth address by
+# install.sh — this file is a template, not the installed unit.
 Description=Bluetooth PAN client (chest -> head, 10.0.0.2)
 Documentation=file:///home/dietpi/inmoov/HOTSPOT.md
 After=bluetooth.service bthelper@hci0.service
@@ -16,8 +18,8 @@ Type=simple
 # takes the adapter down under it -- one guaranteed crash per boot. Wait that
 # out, then require a powered adapter and a known bonded head before starting.
 ExecStartPre=/bin/sleep 10
-ExecStartPre=/bin/sh -c "for i in $(seq 1 30); do bluetoothctl show 2>/dev/null | grep -q 'Powered: yes' && bluetoothctl info E4:5F:01:49:60:BB >/dev/null 2>&1 && exit 0; sleep 2; done; exit 0"
-ExecStart=/usr/bin/bt-network -c E4:5F:01:49:60:BB nap
+ExecStartPre=/bin/sh -c "for i in $(seq 1 30); do bluetoothctl show 2>/dev/null | grep -q 'Powered: yes' && bluetoothctl info @PEER_BDADDR@ >/dev/null 2>&1 && exit 0; sleep 2; done; exit 0"
+ExecStart=/usr/bin/bt-network -c @PEER_BDADDR@ nap
 # bnep0 appears a moment after the link is up, and carries no DHCP -- the address
 # is static on both ends.
 ExecStartPost=/bin/sh -c 'for i in $(seq 1 15); do ip link show bnep0 >/dev/null 2>&1 && break; sleep 1; done; ip addr add 10.0.0.2/24 dev bnep0 2>/dev/null || true; ip link set bnep0 up'

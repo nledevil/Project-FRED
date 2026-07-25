@@ -93,16 +93,24 @@ The chest display Pi is a permanent client of that PAN, so the head can reach it
 at a **fixed** address no matter what the venue's DHCP does. This is the link
 `config/settings.json` → `display.host` points at.
 
-| | address | MAC | unit |
-|---|---|---|---|
-| **Head** | `10.0.0.1` (`pan0`) | `E4:5F:01:49:60:BB` | `pan-server.service` |
-| **Chest** | `10.0.0.2` (`bnep0`) | `DC:A6:32:C8:F6:17` | `pan-client.service` |
+| | address | unit |
+|---|---|---|
+| **Head** | `10.0.0.1` (`pan0`) | `pan-server.service` |
+| **Chest** | `10.0.0.2` (`bnep0`) | `pan-client.service` |
+
+The IPs are fixed; the **Bluetooth addresses are not in this repo** — they belong
+to your two adapters, so the installer takes the peer's as an argument and bakes
+it into the unit. Each Pi reports its own with:
+
+```bash
+bluetoothctl show | grep Controller
+```
 
 Source of truth is `deploy/pan/` in this repo. Install/reinstall:
 
 ```bash
-sudo deploy/pan/install.sh head      # on the head
-sudo deploy/pan/install.sh chest     # on the chest (reboot after first install)
+sudo deploy/pan/install.sh head  <chest-bdaddr>   # on the head
+sudo deploy/pan/install.sh chest <head-bdaddr>    # on the chest (reboot after first install)
 ```
 
 The installer prints the one-time pairing recipe, which is not automated.
@@ -135,7 +143,22 @@ ping 10.0.0.2                            # from the head: is the link alive?
   is required because the patch only loads during HCI device setup.
 - **`bthelper` needs the extra udev rule** in `deploy/pan/`. Upstream's rule is
   gated on `/dev/serial1`, which DietPi never creates.
+- **Pairing is not enough — the head must _trust_ the chest.** BlueZ asks for
+  service-level authorisation on every incoming BNEP connection and only
+  auto-approves a trusted peer. A chest that is `Paired: yes, Bonded: yes,
+  Trusted: no` gets rejected on every single retry, indefinitely. Both ends look
+  healthy while this happens: `pan-server` is `active (running)`, `pan0` holds
+  `10.0.0.1`, and the chest's `pan-check` dutifully rebuilds a link that is
+  refused again ~36s later. The only direct evidence is on the head:
+  ```bash
+  bluetoothctl info <chest-bdaddr> | grep Trusted   # want: Trusted: yes
+  sudo journalctl -u bluetooth | grep -i "without agent"
+  ```
+  Fix with `bluetoothctl trust <chest-bdaddr>`; it takes effect on the next
+  retry, no restart needed. `ls /sys/class/net/pan0/brif/` listing `bnep0` is the
+  clearest "the link is actually up" check.
 - **Re-pair after any adapter MAC change.** Changing the BD address gives BlueZ a
-  fresh identity and silently invalidates both link keys.
+  fresh identity and silently invalidates both link keys. This also drops the
+  trust flag above, so re-trust as well as re-pair.
 - **Scan on the BR/EDR transport when pairing.** A default `bluetoothctl scan on`
   is LE-only and will not find the other Pi, even though `hcitool scan` does.
