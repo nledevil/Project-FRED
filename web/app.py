@@ -348,14 +348,19 @@ def api_sensors_ingest():
     Body is the node's JSON: ``{node, uptime_ms, readings{}, events[]}``. If
     ``sensors.token`` is set in settings, the node must send it as the
     ``X-Sensor-Token`` header (or ``token`` in the body) — LAN-only either way.
-    The identical payload also arrives over USB serial when the node has no WiFi."""
+
+    A node may name its own ``transport`` so the panel shows the real path: the
+    stomach node reaches us as ``serial-relay`` (USB into the chest Pi, forwarded
+    over the Bluetooth PAN by display_control.py), which is worth telling apart
+    from a node posting directly over WiFi."""
     token = str(_sensor_cfg.get("token", "") or "")
     data = request.get_json(force=True, silent=True) or {}
     if token:
         sent = request.headers.get("X-Sensor-Token") or data.get("token") or ""
         if sent != token:
             return jsonify({"error": "bad or missing sensor token"}), 403
-    if not _sensors.ingest(data, transport="wifi"):
+    transport = str(data.get("transport") or "wifi")[:32]
+    if not _sensors.ingest(data, transport=transport):
         return jsonify({"error": "unusable payload"}), 400
     return jsonify({"ok": True})
 
@@ -407,6 +412,23 @@ def api_display_select():
     save_settings(_settings)
     return jsonify({"configured": True, "online": True,
                     "host": _display.host, "port": _display.port, **state})
+
+
+@app.post("/api/display/metrics")
+def api_display_metrics():
+    """Show/hide the sensor readout on the chest panel. Body: ``{"enabled": true}``.
+
+    Overlaid on whichever animation is playing, so this is orthogonal to the
+    preset pick and doesn't restart it. The chest Pi remembers the flag across
+    reboots, and mirrors it back in ``/api/state``, so it isn't duplicated here."""
+    data = request.get_json(force=True) or {}
+    try:
+        state = _display.set_metrics(bool(data.get("enabled")))
+    except DisplayError as e:
+        return jsonify({"error": str(e)}), 502
+    if state.get("error"):
+        return jsonify(state), 400
+    return jsonify({"configured": True, "online": True, **state})
 
 
 @app.post("/api/led")

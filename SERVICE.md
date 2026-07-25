@@ -457,6 +457,18 @@ admin page picks the look at runtime.
   up after 3 too-fast exits in a row and reports the child's last stderr line to
   the head (shown as "online · failed") instead of hot-looping. Re-picking from
   the dropdown clears the latch.
+- **Sensor overlay:** a live readout of the stomach node's distances and motion,
+  drawn on top of *whichever* animation is playing. Toggle it from the admin
+  page (Chest display → Sensor readout), or `POST /api/metrics {"enabled":true}`.
+  The flag lives in `state.json` beside the animation pick, so it survives both
+  a preset switch and a reboot.
+  - It has to be drawn by the **animation child**, not the daemon: the child
+    mmaps `/dev/fb0` and owns it exclusively. So `metrics_hud.py` is split the
+    same way as `voice_state.py` — the daemon publishes to `/dev/shm`, and each
+    animation calls `hud.draw(frame)` just before its blit. Adding the overlay
+    to a new animation is three lines: import, construct, draw.
+  - The relay feeds it via an `on_payload` hook, *before* the payload is queued
+    for the head — so the panel keeps updating even when the head is unreachable.
 - **Deploy an update:** `scp deploy/display/display_control.py
   dietpi@192.168.68.81:/home/dietpi/display/ && ssh dietpi@192.168.68.81
   'sudo systemctl restart inmoov-display'`.
@@ -475,3 +487,58 @@ admin page picks the look at runtime.
   **not** `/tmp`: this runs as root, and a fixed path in a world-writable dir is
   a symlink attack. It's also never a `PIPE` — an undrained pipe fills its ~64KB
   buffer and blocks the animation forever.
+
+# Stomach sensor node + serial relay (2026-07-24)
+
+Two HC-SR04 ultrasonics and an HC-SR501 PIR, read by a Pico that plugs into the
+**chest** Pi. Full wiring, flashing and tuning notes live in
+`firmware/pico_sensor_node/README.md`; this is the service-shaped summary.
+
+```
+  Pico ──USB serial──> chest Pi ──HTTP over Bluetooth PAN──> head Pi
+                    (sensor_relay in          (10.0.0.1:8080
+                     display_control.py)       /api/sensors/ingest)
+```
+
+- **Why not WiFi on the node.** The head is *always* `10.0.0.1` on `pan0`. Both
+  Pis are on DHCP and the head becomes `192.168.50.1` in hotspot mode, so any
+  WiFi path means chasing an address that moves. The PAN doesn't move, and it
+  works at a venue with no network at all.
+- **Why not plugged into the head.** The sensors are in the stomach, and the
+  head is on pan/tilt servos — a USB run into a rotating head would fatigue.
+- **Why it's inside `display_control.py`.** That's already the supervised,
+  always-on process on the chest Pi: one thing to install, one thing to restart.
+  It shares nothing with the animation, so a missing Pico or an unreachable head
+  can't disturb the screen.
+- **Health:** `curl -s http://10.0.0.2:8081/api/sensors` — the *relay's* state,
+  not the sensor data. This is what tells "the Pico is unplugged" apart from
+  "the head is unreachable": `connected`, `last_line_ago`, `posted`/`failed`/
+  `dropped`, `last_error`, and the `last_payload` that went out.
+- **Config:** `Environment=SENSOR_PORT|SENSOR_URL|SENSOR_TOKEN` in
+  `inmoov-display.service`; `--no-sensor-relay` disables it. The defaults (find
+  the Pico automatically, POST to `10.0.0.1`) are right for FRED.
+- **Port naming:** `SENSOR_PORT=auto` prefers `/dev/serial/by-id/*MicroPython*`
+  over a bare `ttyACM`. That name comes from the RP2040's flash ID, so it's
+  stable across reboots and unambiguous if another USB-serial device appears.
+
+## Notes / gotchas
+
+- **The head's `sensors.serial_enabled` stays `false`.** `SerialSensorReader`
+  opens a *local* device path — it cannot see the chest Pi's tty. That setting
+  is only for a node plugged directly into the head.
+- **Two threads on purpose.** The reader must never block on HTTP: if the head
+  is down, POSTs sit in their timeout, and a reader waiting on that would let
+  the kernel's tty buffer fill and lose the stream. The reader parks payloads in
+  a bounded queue and a sender drains it, dropping the oldest when the head is
+  unreachable — the right loss, since the node re-sends full state every
+  heartbeat and recovery only needs the newest.
+- **The relay opens the tty read-only**, which is a safety property rather than
+  an accident: the MicroPython REPL shares that CDC with the sensor stream, so a
+  stray byte written there would drop the node to the REPL and stop the sensors.
+  An fd that can't be written to can't do that.
+- **Updating firmware needs the relay stopped** (`systemctl stop inmoov-display`)
+  — it holds the port. Use `push.py`, which is deployed alongside the app;
+  there's no `mpremote` on that Pi and no pip to install one.
+- **A node may name its own `transport`.** `/api/sensors/ingest` used to hardcode
+  `"wifi"`, which would have mislabelled everything coming through here; the
+  relay stamps `"serial-relay"` so the panel shows the real path.

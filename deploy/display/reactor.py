@@ -16,6 +16,7 @@ import signal
 import argparse
 import numpy as np
 from fb import Framebuffer, hide_cursor
+from metrics_hud import MetricsHud
 
 
 def band(dist, r, width):
@@ -90,6 +91,7 @@ def main():
     fb = Framebuffer()
     hide_cursor()
     A, B = build_geometry(fb.w, fb.h, copper=args.copper)
+    hud = MetricsHud()          # no-op unless the sensor overlay is switched on
 
     running = [True]
     signal.signal(signal.SIGINT, lambda *a: running.__setitem__(0, False))
@@ -111,6 +113,7 @@ def main():
 
             frame = A + glow * B
             np.clip(frame, 0, 255, out=frame)
+            hud.draw(frame)
             fb.show(frame.astype(np.uint8))
 
             n += 1

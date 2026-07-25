@@ -180,6 +180,12 @@
       <div class="grow"></div>
       <button onclick="refreshDisplay()">↻ Refresh</button>
     </div>
+    <div class="row">
+      <div class="label"><b>Sensor readout</b><span>live distances &amp; motion, over the animation</span></div>
+      <label class="switch"><input type="checkbox" id="dispMetrics" onchange="onMetrics(this.checked)">
+        Overlay sensor metrics on the chest panel</label>
+      <div class="grow"></div>
+    </div>
     <p class="hint">The second Pi driving the 7" chest panel, running
        <code>inmoov-display</code>. The dropdown is read from that Pi, so it always lists what
        it can actually render; picking one switches it <b>immediately</b> (no Save needed) and
@@ -377,11 +383,24 @@ async function refreshDisplay() {
     st.textContent = s.running ? 'online · ' + s.label
                                : (s.error ? 'online · failed' : 'online · stopped');
     await loadAnimations(s.animation);
+    // The chest Pi owns this flag (it survives reboots there), so reflect it
+    // rather than keeping a second copy on this side.
+    document.getElementById('dispMetrics').checked = !!s.metrics;
   } else {
     dot.className = 'dot off';
     st.textContent = 'offline';
     document.getElementById('dispAnim').innerHTML = '<option value="">(offline)</option>';
   }
+}
+
+async function onMetrics(on) {
+  const r = await api('/api/display/metrics', { enabled: on });
+  if (r.error) {
+    toast('⚠ ' + r.error, true);
+    document.getElementById('dispMetrics').checked = !on;   // put it back
+    return;
+  }
+  toast('Sensor readout ' + (r.metrics ? 'on' : 'off'));
 }
 
 async function onAnim(v) {

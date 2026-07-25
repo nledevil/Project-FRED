@@ -25,6 +25,7 @@ import signal
 import argparse
 import numpy as np
 from fb import Framebuffer, hide_cursor
+from metrics_hud import MetricsHud
 from voice_state import VoiceFeed
 from font5x7 import draw_text, text_width, CHAR_H
 
@@ -67,6 +68,7 @@ def main():
     hide_cursor()
     W, H = fb.w, fb.h
     feed = VoiceFeed()
+    hud = MetricsHud()          # no-op unless the sensor overlay is switched on
 
     # Trace window: the star of the screen, so give it the middle two thirds.
     wx0, wx1 = int(W * 0.06), int(W * 0.94)
@@ -159,6 +161,7 @@ def main():
                 frame[my0:my0 + mh, mx0:mx0 + fill] += colour * 0.9
 
             np.clip(frame, 0, 255, out=frame)
+            hud.draw(frame)
             fb.show(frame.astype(np.uint8))
 
             n += 1

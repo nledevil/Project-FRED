@@ -1,6 +1,6 @@
 [Unit]
-Description=InMoov chest display animation (framebuffer + control API)
-After=network-online.target
+Description=InMoov chest display animation (framebuffer + control API + sensor relay)
+After=network-online.target pan-client.service
 Wants=network-online.target
 
 [Service]
@@ -10,6 +10,15 @@ Type=simple
 # The choice persists in /home/dietpi/display/state.json across reboots.
 # Set a shared secret to match the head's admin panel (leave unset for none):
 #   Environment=DISPLAY_TOKEN=some-long-random-string
+#
+# This also relays the stomach sensor node (a Pico on USB) to the head over the
+# Bluetooth PAN. The defaults are right for FRED: find the Pico automatically and
+# POST to the head at 10.0.0.1. Override only if you move things:
+#   Environment=SENSOR_PORT=/dev/serial/by-id/usb-MicroPython_Board_in_FS_mode_*
+#   Environment=SENSOR_URL=http://10.0.0.1:8080/api/sensors/ingest
+# Must match the head's config/settings.json -> sensors.token, if that is set:
+#   Environment=SENSOR_TOKEN=some-long-random-string
+# Pass --no-sensor-relay below to turn the relay off entirely.
 ExecStart=/usr/bin/python3 /home/dietpi/display/display_control.py --port 8081
 WorkingDirectory=/home/dietpi/display
 # Needs the framebuffer device; root is simplest. (dietpi is also in 'video'.)

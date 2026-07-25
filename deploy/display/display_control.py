@@ -8,9 +8,19 @@ Switching is just "kill the child, spawn the next one", so it lands in ~100ms.
 
     GET  /api/animations -> preset list; drives the admin dropdown
     GET  /api/state      -> selected preset, pid, uptime, last crash
+    GET  /api/sensors    -> the sensor relay's health (see below)
     POST /api/animation  -> {"animation": "reactor-copper"}; switch now
+    POST /api/metrics    -> {"enabled": true}; overlay the live sensor readout
+                            on top of whatever animation is running
     POST /api/voice      -> FRED's live voice state + speech envelope, handed to
                             the animation through voice_state.py
+
+It also carries the **sensor relay**: the Pico in FRED's stomach plugs into this
+Pi, and sensor_relay.py reads its USB-serial stream and forwards it to the head
+over the Bluetooth PAN. That lives here rather than in its own unit because this
+is already the supervised, always-on process on this Pi — one thing to install,
+one thing to restart. It is strictly best-effort and shares nothing with the
+animation, so a missing Pico or an unreachable head can't disturb the screen.
 
 If a token is configured (--token, or DISPLAY_TOKEN in the environment) every
 request must carry it as ``X-Display-Token`` — the same shape as the head's
@@ -32,10 +42,36 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import metrics_hud                          # noqa: E402 — sibling module
+import sensor_relay                         # noqa: E402 — sibling module
 import voice_state                          # noqa: E402 — sibling module
 
 HERE = Path(__file__).resolve().parent
 STATE_PATH = HERE / "state.json"          # remembers the pick across reboots
+
+
+def read_state() -> dict:
+    """Everything remembered across reboots: the animation pick, the HUD flag."""
+    try:
+        d = json.loads(STATE_PATH.read_text())
+    except (OSError, ValueError):
+        return {}
+    return d if isinstance(d, dict) else {}
+
+
+def write_state(**changes) -> None:
+    """Merge keys into the state file.
+
+    Merging rather than overwriting because there are now two independent
+    writers — the animation picker and the metrics toggle — and a blind write
+    from either would silently drop the other's setting.
+    """
+    d = read_state()
+    d.update(changes)
+    try:
+        STATE_PATH.write_text(json.dumps(d, indent=2) + "\n")
+    except OSError:
+        pass                              # read-only fs: the live change still works
 
 # The dropdown the head shows is exactly this list, flattened so each entry is
 # one concrete look: variants (--copper, --talk) are presets, not extra widgets.
@@ -191,17 +227,11 @@ class Supervisor:
 
     # -- persistence -------------------------------------------------------
     def _load_choice(self) -> str:
-        try:
-            pid = json.loads(STATE_PATH.read_text()).get("animation")
-        except (OSError, ValueError, AttributeError):
-            return DEFAULT_PRESET
+        pid = read_state().get("animation")
         return pid if pid in PRESET_BY_ID else DEFAULT_PRESET
 
     def _save_choice(self, preset_id: str) -> None:
-        try:
-            STATE_PATH.write_text(json.dumps({"animation": preset_id}, indent=2) + "\n")
-        except OSError:
-            pass                            # read-only fs: live switch still works
+        write_state(animation=preset_id)
 
     # -- state -------------------------------------------------------------
     def _state_locked(self) -> dict:
@@ -223,6 +253,8 @@ class Supervisor:
 class Handler(BaseHTTPRequestHandler):
     server_version = "InMoovDisplay/1.0"
     supervisor: Supervisor
+    relay: "sensor_relay.SensorRelay | None" = None
+    metrics: "metrics_hud.MetricsPublisher | None" = None
     token: str = ""
 
     def log_message(self, *a):              # keep the journal to real events
@@ -254,7 +286,16 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, {"animations": [{"id": p["id"], "label": p["label"]}
                                             for p in PRESETS]})
         elif self.path.startswith("/api/state"):
-            self._send(200, self.supervisor.state())
+            # metrics rides along so the head's admin panel can reflect the
+            # toggle from the same poll it already does for the animation.
+            self._send(200, {**self.supervisor.state(),
+                             "metrics": bool(self.metrics and self.metrics.enabled)})
+        elif self.path.startswith("/api/sensors"):
+            # Not the sensor data itself — that goes straight to the head. This
+            # is the relay's own health, so you can tell "the Pico is unplugged"
+            # from "the head is unreachable" without SSHing in.
+            self._send(200, self.relay.state() if self.relay
+                       else {"enabled": False})
         else:
             self._send(404, {"error": "not found"})
 
@@ -262,7 +303,8 @@ class Handler(BaseHTTPRequestHandler):
         if not self._authed():
             return
         if not (self.path.startswith("/api/animation")
-                or self.path.startswith("/api/voice")):
+                or self.path.startswith("/api/voice")
+                or self.path.startswith("/api/metrics")):
             self._send(404, {"error": "not found"})
             return
         try:
@@ -275,10 +317,25 @@ class Handler(BaseHTTPRequestHandler):
         if self.path.startswith("/api/voice"):
             self._send(200, self._voice(data))
             return
+        if self.path.startswith("/api/metrics"):
+            self._send(200, self._metrics(data))
+            return
         try:
             self._send(200, self.supervisor.select(str(data.get("animation", ""))))
         except KeyError:
             self._send(400, {"error": f"unknown animation {data.get('animation')!r}"})
+
+    def _metrics(self, data: dict) -> dict:
+        """Turn the sensor overlay on or off, and remember it across reboots.
+
+        The animation child picks the change up from /dev/shm on its next frame,
+        so this lands in ~30ms with no restart and no effect on what's playing.
+        """
+        if self.metrics is None:
+            return {"error": "sensor relay disabled; no metrics to show"}
+        enabled = self.metrics.set_enabled(bool(data.get("enabled")))
+        write_state(metrics=enabled)
+        return {"ok": True, "metrics": enabled}
 
     def _voice(self, data: dict) -> dict:
         """Hand FRED's voice state to the animation via /dev/shm.
@@ -316,12 +373,35 @@ def main() -> None:
     ap.add_argument("--dir", default=str(HERE), help="where the animation scripts live")
     ap.add_argument("--token", default=os.environ.get("DISPLAY_TOKEN", ""),
                     help="shared secret; clients send it as X-Display-Token")
+    ap.add_argument("--sensor-port", default=os.environ.get("SENSOR_PORT", "auto"),
+                    help="sensor node tty: a path, a glob, or 'auto'")
+    ap.add_argument("--sensor-url", default=os.environ.get("SENSOR_URL",
+                                                           sensor_relay.DEFAULT_URL),
+                    help="the head's ingest endpoint")
+    ap.add_argument("--sensor-token", default=os.environ.get("SENSOR_TOKEN", ""),
+                    help="matches the head's settings.json sensors.token")
+    ap.add_argument("--no-sensor-relay", action="store_true",
+                    help="don't read the stomach sensor node at all")
     args = ap.parse_args()
 
     sup = Supervisor(Path(args.dir))
     sup.start()
     Handler.supervisor = sup
     Handler.token = args.token
+
+    relay = metrics = None
+    if not args.no_sensor_relay:
+        # The overlay flag is restored here, not in the animation: the child is
+        # replaced on every preset switch and must not own persistent state.
+        metrics = metrics_hud.MetricsPublisher(
+            enabled=bool(read_state().get("metrics")))
+        relay = sensor_relay.SensorRelay(
+            port=args.sensor_port, url=args.sensor_url, token=args.sensor_token,
+            log=lambda m: print(m, flush=True), on_payload=metrics.set_payload)
+        relay.start()
+        print(f"sensor overlay: {'on' if metrics.enabled else 'off'}", flush=True)
+    Handler.relay = relay
+    Handler.metrics = metrics
 
     srv = ThreadingHTTPServer((args.host, args.port), Handler)
     print(f"display control on {args.host}:{args.port} "
@@ -331,6 +411,8 @@ def main() -> None:
     except KeyboardInterrupt:
         pass
     finally:
+        if relay:
+            relay.shutdown()
         sup.shutdown()
         srv.server_close()
 

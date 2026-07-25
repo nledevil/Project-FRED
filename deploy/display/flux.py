@@ -19,6 +19,7 @@ import signal
 import argparse
 import numpy as np
 from fb import Framebuffer, hide_cursor
+from metrics_hud import MetricsHud
 
 
 def build(w, h):
@@ -80,6 +81,7 @@ def main():
 
     fb = Framebuffer()
     hide_cursor()
+    hud = MetricsHud()          # no-op unless the sensor overlay is switched on
     base, arms, hub_flash = build(fb.w, fb.h)
     spark_col = np.array([210, 240, 255], dtype=np.float32)
     flash_col = np.array([255, 255, 255], dtype=np.float32)
@@ -112,7 +114,11 @@ def main():
 
             frame += (flash * hub_flat)[:, None] * flash_col
             np.clip(frame, 0, 255, out=frame)
-            fb.show(frame.reshape(fb.h, fb.w, 3).astype(np.uint8))
+            # This animation works on a flat (N, 3) buffer; reshape is a view,
+            # so the overlay lands in the same memory.
+            view = frame.reshape(fb.h, fb.w, 3)
+            hud.draw(view)
+            fb.show(view.astype(np.uint8))
 
             n += 1
             sleep = period - ((time.monotonic() - start) - n * period)

@@ -81,6 +81,14 @@ class DisplayClient:
         """Switch the chest animation now."""
         return self._request("POST", "/api/animation", {"animation": animation})
 
+    def set_metrics(self, enabled: bool) -> dict:
+        """Show or hide the live sensor readout over whatever is playing.
+
+        Independent of the animation pick — the chest Pi overlays it on all of
+        them, so this doesn't restart or disturb the current one.
+        """
+        return self._request("POST", "/api/metrics", {"enabled": bool(enabled)})
+
     def push_voice(self, payload: dict) -> dict:
         """Send FRED's voice state (and, on a new clip, the whole envelope)."""
         return self._request("POST", "/api/voice", payload)
