@@ -23,6 +23,19 @@ kicks in when the face was near a frame edge (``seek_edge``) and has been gone
 for a few frames (``seek_start_misses``), so ordinary detection dropouts during
 following don't nudge the head past a subject who's still there.
 
+When there is no face to go on at all — nobody has been in frame, or one
+vanished from the middle of it — the chest ultrasonics provide a coarse
+left/right bearing instead (``bearing_cb``): whichever side reads nearer is the
+side to turn toward. It sees a much wider arc than the lens, so it covers the
+case the camera cannot, someone walking up from the side.
+
+That assist is **open-loop and one-shot on purpose**. The ultrasonics are in the
+chest and do not move with the head, so turning does not reduce the differential
+the way it reduces a camera error; run as a proportional loop it would drive the
+neck into its stop and hold it there. It therefore re-aims only when the reading
+itself changes (``bearing_change``), and a face — when there is one — always
+wins, because the camera is far more accurate than two range-finders.
+
 Degrades gracefully: ``available()`` is False (and ``start()`` a no-op) when
 OpenCV, the cascade, or the camera aren't present, so the rest of the app runs.
 
@@ -52,7 +65,8 @@ CASCADE_PATH = "/usr/share/opencv4/haarcascades/haarcascade_frontalface_default.
 # it loads back through it, so a stale key in the file can't break construction.
 TUNABLE = ("gain_x", "gain_y", "damp_x", "damp_y", "invert_x", "invert_y",
            "invert_neck", "invert_tilt", "deadzone", "neck_gain", "tilt_gain",
-           "sat_margin", "eye_recenter", "fps", "seek_gain", "seek_edge")
+           "sat_margin", "eye_recenter", "fps", "seek_gain", "seek_edge",
+           "bearing_gain", "invert_bearing", "bearing_change")
 
 
 class FaceTracker:
@@ -70,7 +84,9 @@ class FaceTracker:
                  sat_margin: float = 5.0, eye_recenter: float = 0.15,
                  seek_gain: float = 0.7, seek_edge: float = 0.35,
                  seek_start_misses: int = 3, lost_hold_frames: int = 25,
-                 event_cb=None):
+                 bearing_gain: float = 0.6, invert_bearing: bool = False,
+                 bearing_change: float = 0.15,
+                 event_cb=None, bearing_cb=None):
         self._cam = camera
         self._ctrl = controller
         self._event_cb = event_cb                # called with a string on notable events
@@ -111,6 +127,14 @@ class FaceTracker:
         # vs. a centred detection that merely flickered out (hold, don't chase).
         self._last_ex = 0.0
         self._seek_active = False
+        # Chest-sensor bearing: a coarse "someone is over there" for when the
+        # camera has nothing at all. bearing_cb() -> float in -1..+1 (+ = image
+        # right) or None for "no opinion".
+        self._bearing_cb = bearing_cb
+        self.bearing_gain = float(bearing_gain)      # 0 disables the assist entirely
+        self.invert_bearing = bool(invert_bearing)   # if the head turns the wrong way
+        self.bearing_change = float(bearing_change)  # re-aim only on a change this big
+        self._bearing_applied = None                 # last hint we actually acted on
         # Previous per-axis error + smoothed error-rate, for the derivative term.
         # ``None`` = no valid history yet (just acquired / after a gap), so the
         # first frame contributes no damping kick from a stale reference.
@@ -227,6 +251,7 @@ class FaceTracker:
                     if not had_face:                      # just acquired a face
                         had_face = True
                         self._emit("👁 Detected a face")
+                    self._bearing_applied = None           # re-aim afresh if lost again
                     if self._seek_active:                 # re-acquired mid-seek
                         self._seek_active = False
                         self._reset_derivative()          # position jumped; drop stale rate
@@ -241,6 +266,11 @@ class FaceTracker:
                     if (had_face and self.seek_start_misses <= misses < self.lost_hold_frames
                             and abs(self._last_ex) >= self.seek_edge):
                         self._seek_lost(misses)
+                    elif misses >= self.seek_start_misses:
+                        # No usable last-seen direction: either no face has ever
+                        # been in frame, or it vanished from the middle of it.
+                        # The chest sensors are then the only bearing available.
+                        self._seek_bearing()
                     if misses >= self.lost_hold_frames:    # give up: hold, note "lost"
                         if had_face:
                             had_face = False
@@ -367,6 +397,46 @@ class FaceTracker:
         from a clean slate (no phantom velocity across a detection gap)."""
         self._prev_ex = self._prev_ey = None
         self._dex = self._dey = 0.0
+
+    def _seek_bearing(self) -> None:
+        """Aim the neck at whichever side the chest sensors say someone is on.
+
+        This is the only bearing that exists when no face has been seen at all —
+        someone walking up from the side, never yet in frame — which is exactly
+        the case the camera cannot help with.
+
+        Deliberately **open-loop and one-shot**. The ultrasonics are mounted in
+        the chest and do not move with the head, so turning does *not* reduce the
+        differential the way turning reduces a camera error. Run as a
+        proportional loop this would drive the neck into its end stop and hold it
+        there, since the "error" never goes away. So it re-aims only when the
+        reading itself changes by ``bearing_change``, and otherwise does nothing.
+        """
+        if self.bearing_gain <= 0.0 or self._bearing_cb is None:
+            return
+        try:
+            hint = self._bearing_cb()
+        except Exception:                       # a sensor hiccup must not stop tracking
+            return
+        if hint is None:                        # "no opinion" — not "straight ahead"
+            return
+        prev = self._bearing_applied
+        if prev is not None and abs(hint - prev) < self.bearing_change:
+            return                              # nobody has moved enough to re-aim
+        self._bearing_applied = hint
+        ctrl = self._ctrl
+        nn = self._names["neck"]
+        sn = ctrl.servos.get(nn)
+        if not sn:
+            return
+        step = hint * (-1.0 if self.invert_bearing else 1.0)
+        dir_n = -1.0 if self.invert_neck else 1.0
+        cur = ctrl.get_angle(nn)
+        if cur is None:
+            cur = sn["rest_angle"]
+        ctrl.set_angle(nn, cur + dir_n * self.neck_gain * self.bearing_gain * step)
+        if prev is None:                        # first aim of this search only
+            self._emit("📡 Turning toward the chest sensors")
 
     def _seek_lost(self, misses: int) -> None:
         """The face just left the frame — keep rotating the neck toward where it

@@ -78,17 +78,22 @@ _log = ConversationLog()                     # live transcript: dialogue + detec
 _track_cfg = {k: v for k, v in (_settings.get("track") or {}).items()
               if k in TUNABLE}             # drop stale/unknown keys: a hand-edited
                                            # settings.json must not break startup
-_tracker = FaceTracker(_camera, _ctrl,       # face-follow: eyes + neck + head tilt
-                       event_cb=_log.event,  # logs face-detected / lost / tracking on-off
-                       **_track_cfg)         # bench tuning persisted from /api/track
 # Remote smart-sensor nodes (a Pico in the stomach) push readings/events here,
-# relayed by the chest Pi over the Bluetooth PAN. Events land in the transcript;
-# the on_event hook is where behaviours (auto-greet on approach) will attach.
-# Built before the assistant because the assistant hands the hub to Claude as a
-# tool, so FRED can answer "is anyone there?" from real sensor data.
+# relayed by the chest Pi over the Bluetooth PAN. Events land in the transcript.
+# Built first because two things downstream consume it: the tracker takes a
+# left/right bearing off the ultrasonics, and the assistant hands the whole hub
+# to Claude as a tool so FRED can answer "is anyone there?" from real hardware.
 _sensor_cfg = _settings.get("sensors", {})
 _sensors = SensorHub(on_event=None, log=_log,
                      offline_after=float(_sensor_cfg.get("offline_after", 10.0)))
+_tracker = FaceTracker(_camera, _ctrl,       # face-follow: eyes + neck + head tilt
+                       event_cb=_log.event,  # logs face-detected / lost / tracking on-off
+                       # Coarse "someone is over there" for when the camera has
+                       # nothing — the ultrasonics see a wider arc than the lens.
+                       bearing_cb=lambda: _sensors.bearing(
+                           left=_sensor_cfg.get("bearing_left", "dist_left"),
+                           right=_sensor_cfg.get("bearing_right", "dist_right")),
+                       **_track_cfg)         # bench tuning persisted from /api/track
 _assistant = Assistant(_ctrl, _status_led, _tracker, _sound,  # voice: wake word + Claude + lip-sync
                        device=_snd_cfg.get("device", "plughw:0,0"), log=_log,
                        mic_gain=float(_voice_cfg.get("gain", 1.0)),

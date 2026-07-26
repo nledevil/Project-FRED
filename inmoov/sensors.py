@@ -141,6 +141,46 @@ class SensorHub:
             hits = [(t, n, e) for (t, n, e) in self._recent if t >= cutoff]
         return [dict(e, node=n, ago=round(now - t, 1)) for (t, n, e) in hits]
 
+    def bearing(self, left: str = "dist_left", right: str = "dist_right",
+                min_diff: float = 5.0, max_cm: float = 399.0):
+        """Coarse left/right bearing from a pair of distance sensors, or None.
+
+        Returns roughly -1..+1, negative when ``left`` is the nearer side. It is
+        a *hint*, not a measurement: two ultrasonics a few centimetres apart give
+        a direction, not an angle.
+
+        None means "no opinion", and callers must treat it as such rather than as
+        "straight ahead". That covers a node that has gone offline, either sensor
+        with nothing in range (you cannot compare against infinity), and any
+        difference inside ``min_diff``, which is the sensors' own noise floor —
+        a 2cm difference between two ultrasonics is not a bearing.
+
+        Normalised by the nearer reading, so the same lateral offset reads
+        stronger up close, which is how the geometry actually behaves.
+        """
+        with self._lock:
+            nodes = list(self._nodes.items())
+        now = time.time()
+        for _name, n in nodes:
+            if now - n.get("last_seen", 0.0) > self._offline_after:
+                continue
+            readings = n.get("readings") or {}
+            lr, rr = readings.get(left), readings.get(right)
+            if not isinstance(lr, dict) or not isinstance(rr, dict):
+                continue
+            lc, rc = lr.get("cm"), rr.get("cm")
+            if lc is None or rc is None:
+                continue
+            lc, rc = float(lc), float(rc)
+            if lc >= max_cm or rc >= max_cm:
+                return None            # one side sees nothing: no pair to compare
+            diff = lc - rc             # +ve: left is further, so the target is right
+            if abs(diff) < float(min_diff):
+                return None
+            scale = max(min(lc, rc), 1.0)
+            return max(-1.0, min(1.0, diff / scale))
+        return None
+
     # ---- introspection ----------------------------------------------------
     def state(self) -> dict:
         """Snapshot for /api/sensors and /api/state, with computed online flags."""
