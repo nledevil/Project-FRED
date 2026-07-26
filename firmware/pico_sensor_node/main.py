@@ -13,12 +13,16 @@
 # credentials on the node, and it keeps working at a venue with no network at
 # all. With no WiFi here, this runs unmodified on a plain Pico or a Pico W.
 #
-# WIRING (Pico GPIO is 3.3V and NOT 5V-tolerant!):
-#   HC-SR04 x2   VCC -> VBUS (pin 40, 5V)     GND -> GND
-#                TRIG -> GP3 / GP7 (3.3V drive is fine)
-#                ECHO -> divider -> GP2 / GP6   [ECHO]--1k--(GP)--2k--[GND]
-#                        (5V * 2k/(1k+2k) = 3.3V — never wire ECHO straight in)
-#   PIR HC-SR501 VCC -> VBUS (5V)   GND -> GND   OUT -> GP4 (3.3V out, safe)
+# WIRING — use the 3.3V ultrasonics (HC-SR04P / RCWL-1601, one chip on the back):
+#   HC-SR04P x2  VCC -> 3V3 OUT (pin 36, NOT VBUS)   GND -> GND
+#                TRIG -> GP3 / GP7
+#                ECHO -> GP2 / GP6      (direct — no divider needed at 3.3V)
+#   PIR HC-SR501 VCC -> VBUS (pin 40, 5V)   GND -> GND   OUT -> GP4
+#                (the PIR needs 4.5V+, but its output is 3.3V logic either way)
+#
+#   With classic 5V HC-SR04s instead: power them from VBUS and put a 1k/2k
+#   divider on each ECHO — the Pico's GPIO is NOT 5V tolerant. See the README;
+#   those dividers were by far the least reliable part of this build.
 #
 #   Set the PIR's jumper to H (repeat trigger) and its time-delay pot to minimum,
 #   or "motion_stop" arrives minutes late. Its output is meaningless for the
@@ -67,9 +71,10 @@ class Ultrasonic:
         # and time_pulse_us waiting for a rising edge will happily latch onto
         # coupled noise — an unplugged or fallen-off ECHO lead then invents
         # distances and fires phantom approach events. Held low, a missing
-        # sensor times out into MAX_CM, which is the honest answer. The internal
-        # pull (~60k) is far weaker than the divider's 2k leg, so it shifts a
-        # real reading by hundredths of a volt.
+        # sensor times out into MAX_CM, which is the honest answer. It costs
+        # nothing when a sensor *is* attached: the module drives ECHO actively,
+        # and even behind a 5V divider the internal pull (~60k) is far weaker
+        # than the 2k lower leg.
         self._echo = machine.Pin(echo_pin, machine.Pin.IN, machine.Pin.PULL_DOWN)
         self._window = []
         self._agree = 0

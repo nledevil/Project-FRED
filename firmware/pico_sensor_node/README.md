@@ -35,34 +35,61 @@ Two things follow from this that are easy to forget:
 
 ## Wiring
 
-**⚠ The Pico's GPIO is 3.3 V and NOT 5 V-tolerant.** The HC-SR04 runs at 5 V and
-its ECHO pin outputs 5 V — that **must** go through a divider, one per sensor.
-TRIG is an input to the sensor and drives fine from 3.3 V; the HC-SR501's output
-is 3.3 V logic even on a 5 V supply, so it goes straight in.
+**Buy the 3.3 V ultrasonics.** The **HC-SR04P** (also sold as RCWL-1601) runs
+from 3–5.5 V and its ECHO output follows VCC, so powered from the Pico's own
+3V3 rail it wires straight to a GPIO with no level shifting at all. The classic
+5 V HC-SR04 needs a resistor divider on every ECHO line, and on this build those
+dividers were the single worst source of trouble — see
+[Why not the 5 V parts](#why-not-the-5-v-parts) below.
+
+Telling them apart: an **HC-SR04P has one chip on the back**. A classic HC-SR04
+has a cluster of discrete parts, a crystal and two or three small ICs.
 
 | Signal | GP | Physical pin |
 |---|---|---|
 | Ultrasonic **A** TRIG | GP3 | 5 |
-| Ultrasonic **A** ECHO | GP2 | 4 (via divider) |
+| Ultrasonic **A** ECHO | GP2 | 4 |
 | Ultrasonic **B** TRIG | GP7 | 10 |
-| Ultrasonic **B** ECHO | GP6 | 9 (via divider) |
+| Ultrasonic **B** ECHO | GP6 | 9 |
 | PIR OUT | GP4 | 6 |
-| 5 V for all three sensors | VBUS | 40 |
-| Ground | GND | 3 / 8 / 38 |
+| **3.3 V** for both ultrasonics | 3V3 OUT | **36** |
+| **5 V** for the PIR only | VBUS | 40 |
+| Ground | GND | 3 / 8 / 23 / 28 / 38 |
 
 ```
-HC-SR04 (x2)                     Pico
-  VCC  ───────────────────────── VBUS (pin 40, 5V)
+HC-SR04P (x2)                    Pico
+  VCC  ───────────────────────── 3V3 OUT (pin 36)   <- NOT VBUS
   GND  ───────────────────────── GND
   TRIG ───────────────────────── GP3  / GP7
-  ECHO ──┬──[ 1kΩ ]──┬────────── GP2  / GP6
-         │           │            (divider: 5V·2k/(1k+2k) = 3.33V)
-      (to ECHO)   [ 2kΩ ]
-                     │
-                    GND
+  ECHO ───────────────────────── GP2  / GP6         <- direct, no divider
 
 PIR HC-SR501
-  VCC ─── VBUS (5V)   GND ─── GND   OUT ─── GP4
+  VCC ─── VBUS (pin 40, 5V)   GND ─── GND   OUT ─── GP4
+```
+
+**The PIR stays on 5 V.** An HC-SR501 needs 4.5 V minimum for its onboard
+regulator and won't run from 3.3 V, but its output is 3.3 V logic regardless, so
+it goes straight to the GPIO. So you end up with a 3V3 pigtail feeding the two
+ultrasonics and the PIR alone on VBUS.
+
+Current draw is a few tens of mA against the 3V3 rail's ~300 mA budget. Expect
+slightly less range than the 5 V parts — a weaker transmit burst puts the
+practical maximum nearer 3 m than 4 m, which is irrelevant when `NEAR_CM` is 120.
+
+Pins are set in `ULTRASONICS` / `PIR_PIN` at the top of `main.py`. A single Pico
+can read more of both; add entries and the payload grows to match.
+
+### If you already have 5 V HC-SR04s
+
+The Pico's GPIO is **not** 5 V tolerant, so each ECHO needs a divider. Power the
+sensors from VBUS (pin 40) and put a divider on each ECHO line:
+
+```
+  ECHO ──┬──[ 1kΩ ]──┬────────── GP2  / GP6
+         │           │            (5V · 2k/(1k+2k) = 3.33V)
+      (to ECHO)   [ 2kΩ ]
+                     │
+                    GND (pin 3 for A, pin 8 for B — adjacent to each ECHO pin)
 ```
 
 If 2 kΩ isn't in your kit, 1.8k/3.3k gives 3.23 V, or use two 1 kΩ in series for
@@ -72,8 +99,23 @@ carries the already-divided signal, and ohm them out before connecting anything:
 tap-to-ground should read ~2 kΩ. A swapped pair reads 1.67 V, which the Pico
 sees as ambiguous — garbage distances rather than an obvious failure.
 
-Pins are set in `ULTRASONICS` / `PIR_PIN` at the top of `main.py`. A single Pico
-can read more of both; add entries and the payload grows to match.
+### Why not the 5 V parts
+
+Measured on this build, same Pico, same firmware, same pins:
+
+| | dropouts | stdev when reading |
+|---|---|---|
+| 5 V HC-SR04 + divider | 60–100%, drifting between runs | 1.5–30 cm |
+| HC-SR04P on 3V3, direct | **0 / 120 samples** | **0.22 cm** |
+
+The divider build failed intermittently for a day. Three different sensor
+modules all behaved identically, so it was never the sensor — it was the
+harness. Each divider adds two resistors and a **three-way solder junction**
+carrying a signal, sitting right at the header where it gets flexed every time
+the robot is assembled. That joint is the thing that kept opening.
+
+The 3.3 V parts delete it. Fewer components on the one path that has to survive
+being routed into a moving robot.
 
 ### HC-SR501 gotchas
 
@@ -188,9 +230,10 @@ wake/turn toward `motion_start`.
   hand near the board is enough. An ECHO lead that was never wired (or that
   falls off in service) would then invent distances and fire phantom approach
   events. `PULL_DOWN` makes a missing sensor time out into `MAX_CM`, and a
-  missing PIR read "no motion", which is the honest answer in both cases. The
-  internal pull (~60kΩ) is far weaker than the divider's 2kΩ leg, so it moves a
-  real reading by hundredths of a volt.
+  missing PIR read "no motion", which is the honest answer in both cases. It
+  costs nothing when a sensor *is* attached — the module drives ECHO actively,
+  and even behind a 5 V divider the internal pull (~60 kΩ) is far weaker than
+  the 2 kΩ lower leg.
 - **Events fired while the relay is down are lost.** The stream is
   fire-and-forget: `readings` are re-sent every heartbeat so the head's *state*
   recovers on its own, but a discrete `approach`/`motion_start` that happened

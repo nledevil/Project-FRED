@@ -112,13 +112,18 @@ Default channel map — edit in `config/servos.json`:
 
 ### Sensor node wiring
 
-Full pinout, voltage-divider details and the HC-SR501's jumper/pot gotchas are
-in [`firmware/pico_sensor_node/README.md`](firmware/pico_sensor_node/README.md).
+Full pinout, flashing and the HC-SR501's jumper/pot gotchas are in
+[`firmware/pico_sensor_node/README.md`](firmware/pico_sensor_node/README.md).
 
-The short version: an HC-SR04's ECHO pin swings to 5 V and the Pico's GPIO is
-**not** 5 V tolerant, so each ECHO needs a 1 kΩ/2 kΩ divider. If you buy the
-3.3 V **HC-SR04P** instead, power it from the Pico's 3V3 rail and the dividers
-disappear entirely — which is the easier build.
+The short version: **buy the 3.3 V HC-SR04P** (one chip on the back), power it
+from the Pico's 3V3 rail at pin 36, and ECHO goes straight to the GPIO. The
+classic 5 V HC-SR04 needs a 1 kΩ/2 kΩ divider on every ECHO line, because the
+Pico's GPIO is not 5 V tolerant — and on this build those dividers were the
+worst source of trouble by a wide margin. Measured back to back: the divider
+version ran 60–100% dropouts, the 3.3 V parts 0 out of 120 samples.
+
+The PIR is the exception and stays on 5 V (VBUS), since it needs 4.5 V minimum
+but outputs 3.3 V logic regardless.
 
 ---
 
