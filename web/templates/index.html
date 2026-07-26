@@ -543,11 +543,28 @@ function stopCam() {
 let TRACK_ON = false;
 let _trackPoll = null;
 async function toggleTrack() {
-  const want = !TRACK_ON;
+  // Ask the server what it is actually doing rather than trusting TRACK_ON.
+  // Tracking can be started by something that isn't this button — a voice
+  // command, or Claude deciding on its own to look at something — and a stale
+  // local flag would then send {on:true} again, so the button reads as dead
+  // exactly when you most want it to stop.
+  let cur = null;
+  try { cur = await api('/api/track'); } catch (e) { /* fall back to the flag */ }
+  const want = !(cur && cur.tracking !== undefined ? cur.tracking : TRACK_ON);
   const res = await api('/api/track', {on: want});
   if (res.error) { toast('⚠ ' + res.error); return; }
   if (want && !CAM_ON && !document.getElementById('camBtn').disabled) startCam();
   applyTrack(res);
+}
+
+// Catch tracking that started without us. While it is on, startTrackPoll owns
+// the sync at 200ms; this only covers the off->on edge the panel never sees.
+async function syncTrack() {
+  if (TRACK_ON) return;
+  try {
+    const st = await api('/api/track');
+    if (st && st.tracking) applyTrack(st);
+  } catch (e) { /* transient — try again next tick */ }
 }
 function applyTrack(st) {
   TRACK_ON = !!st.tracking;
@@ -963,7 +980,8 @@ load();
 mountFace();
 initDrag();
 pollHealth();
-setInterval(pollHealth, 5000);
+syncTrack();
+setInterval(() => { pollHealth(); syncTrack(); }, 5000);
 </script>
 </body>
 </html>
