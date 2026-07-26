@@ -62,6 +62,15 @@ class SensorHub:
         self._recent: deque = deque(maxlen=64)      # (t, node, event dict)
         self._lock = threading.Lock()
 
+    def set_on_event(self, cb) -> None:
+        """Attach (or replace) the behaviour hook after construction.
+
+        Needed because the wiring is circular: the greeter needs the assistant,
+        and the assistant needs this hub as a Claude tool. One of the two has to
+        be connected afterwards, and this is the cheaper end.
+        """
+        self._on_event = cb
+
     def ingest(self, payload: dict, transport: str = "wifi") -> bool:
         """Accept one payload from a node. Returns True if it was usable."""
         if not isinstance(payload, dict):

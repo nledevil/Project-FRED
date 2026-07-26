@@ -60,6 +60,12 @@ DEFAULT_SETTINGS = {
                                       # Haiku answers in ~0.7s vs Opus's ~1.7s; for one- or
                                       # two-sentence spoken replies that trade is worth it.
     },
+    "greet": {
+        "enabled": True,              # say hello when someone walks up (approach event)
+        "cooldown": 90.0,             # seconds before the same arrival can greet again;
+                                      # stops a person lingering at the edge of the cone
+                                      # from being greeted over and over
+    },
     "track": {
         # Face-tracking tunables (gains, invert flags, deadzone...). Deliberately
         # empty: the defaults live in FaceTracker's signature, so there is one

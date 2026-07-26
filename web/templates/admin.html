@@ -200,6 +200,13 @@
       <label class="switch"><input type="checkbox" id="voiceEnabled"> Start listening automatically when FRED boots</label>
     </div>
     <div class="row">
+      <div class="label"><b>Greet on approach</b><span>says hello when someone walks up</span></div>
+      <label class="switch"><input type="checkbox" id="greetEnabled"> Speak unprompted when the chest sensors see someone arrive</label>
+      <div class="grow"></div>
+      <input type="number" id="greetCooldown" class="narrow" min="0" max="3600" step="5" title="Seconds before he'll greet again">
+      <span class="lensval">s</span>
+    </div>
+    <div class="row">
       <div class="label"><b>Mic sensitivity</b><span>software boost before Vosk</span></div>
       <input type="range" id="micGain" min="1" max="8" step="0.5" oninput="onGain(this.value)">
       <span class="lensval" id="gainVal">1.0×</span>
@@ -313,6 +320,9 @@ function fill(s) {
   document.getElementById('voiceEnabled').checked = !!voice.enabled;
   document.getElementById('micGain').value = voice.gain ?? 1.0;
   onGain(voice.gain ?? 1.0);
+  const greet = s.greet || DEFAULTS.greet || {};
+  document.getElementById('greetEnabled').checked = greet.enabled !== false;
+  document.getElementById('greetCooldown').value = greet.cooldown ?? 90;
   const disp = s.display || DEFAULTS.display;
   document.getElementById('dispHost').value = disp.host || '';
   document.getElementById('dispPort').value = disp.port ?? 8081;
@@ -339,6 +349,8 @@ async function save() {
     led: { camera_indicator: document.getElementById('ledCam').checked },
     voice: { enabled: document.getElementById('voiceEnabled').checked,
              gain: +document.getElementById('micGain').value },
+    greet: { enabled: document.getElementById('greetEnabled').checked,
+             cooldown: +document.getElementById('greetCooldown').value || 0 },
     sound: { lead_in: +document.getElementById('leadIn').value,
              sync_offset: +document.getElementById('syncOffset').value },
     display: { host: document.getElementById('dispHost').value.trim(),

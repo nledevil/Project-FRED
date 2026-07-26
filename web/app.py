@@ -38,6 +38,7 @@ from inmoov.led import Led  # noqa: E402
 from inmoov.sound import Sound  # noqa: E402
 from inmoov.sensors import SensorHub, SerialSensorReader  # noqa: E402
 from inmoov.display import DisplayClient, DisplayError, VoicePusher  # noqa: E402
+from inmoov.greeter import Greeter  # noqa: E402
 from inmoov.settings import load_settings, save_settings  # noqa: E402
 
 app = Flask(__name__)
@@ -93,6 +94,15 @@ _assistant = Assistant(_ctrl, _status_led, _tracker, _sound,  # voice: wake word
                        mic_gain=float(_voice_cfg.get("gain", 1.0)),
                        model=_voice_cfg.get("model") or None,
                        sensors=_sensors)
+# Auto-greet: the first thing FRED does unprompted. Wired after the assistant
+# because it needs one, and attached to the hub afterwards because the hub was
+# needed to build the assistant — the dependency is genuinely circular.
+_greet_cfg = _settings.get("greet", {})
+_greeter = Greeter(_assistant, log=_log,
+                   enabled=bool(_greet_cfg.get("enabled", True)),
+                   cooldown=float(_greet_cfg.get("cooldown", 90.0)),
+                   blocked=lambda: _handoff_released)
+_sensors.set_on_event(_greeter.on_event)
 _serial_sensors = SerialSensorReader(
     _sensors, port=_sensor_cfg.get("serial_port", "/dev/ttyACM0"),
     baud=int(_sensor_cfg.get("serial_baud", 115200)), log=_log)
@@ -170,7 +180,8 @@ def _state() -> dict:
     return {"mock": _ctrl.mock, "channels": channels, "camera": camera,
             "sound": sound, "led": _status_led.status(), "track": _tracker.status(),
             "voice": _assistant.status(), "servos": servos, "settings": _settings,
-            "handoff": _handoff_state(), "sensors": _sensors.state()}
+            "handoff": _handoff_state(), "sensors": _sensors.state(),
+            "greet": _greeter.state()}
 
 
 @app.get("/")
@@ -285,6 +296,22 @@ def api_set_settings():
         # Apply live so a Save is enough to reach a newly-configured chest Pi.
         _display.configure(host=cur.get("host"), port=cur.get("port"),
                            token=cur.get("token"))
+
+    greet = data.get("greet")
+    if isinstance(greet, dict):
+        cur = _settings.setdefault("greet", {})
+        if "enabled" in greet:
+            cur["enabled"] = bool(greet["enabled"])
+        if "cooldown" in greet:
+            try:
+                cd = round(float(greet["cooldown"]), 1)
+            except (TypeError, ValueError):
+                return jsonify({"error": "greet cooldown must be numeric"}), 400
+            if not 0.0 <= cd <= 3600.0:
+                return jsonify({"error": "greet cooldown must be 0-3600 seconds"}), 400
+            cur["cooldown"] = cd
+        # Live, so Save is enough — no restart to stop him greeting people.
+        _greeter.configure(enabled=cur.get("enabled"), cooldown=cur.get("cooldown"))
 
     cam = data.get("camera")
     if isinstance(cam, dict):
