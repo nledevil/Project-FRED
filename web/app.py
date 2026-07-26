@@ -80,16 +80,19 @@ _track_cfg = {k: v for k, v in (_settings.get("track") or {}).items()
 _tracker = FaceTracker(_camera, _ctrl,       # face-follow: eyes + neck + head tilt
                        event_cb=_log.event,  # logs face-detected / lost / tracking on-off
                        **_track_cfg)         # bench tuning persisted from /api/track
-_assistant = Assistant(_ctrl, _status_led, _tracker, _sound,  # voice: wake word + Claude + lip-sync
-                       device=_snd_cfg.get("device", "plughw:0,0"), log=_log,
-                       mic_gain=float(_voice_cfg.get("gain", 1.0)),
-                       model=_voice_cfg.get("model") or None)
-# Remote smart-sensor nodes (a Pico W in the stomach) push readings/events here,
-# over WiFi or, with no network, over USB serial. Events land in the transcript;
+# Remote smart-sensor nodes (a Pico in the stomach) push readings/events here,
+# relayed by the chest Pi over the Bluetooth PAN. Events land in the transcript;
 # the on_event hook is where behaviours (auto-greet on approach) will attach.
+# Built before the assistant because the assistant hands the hub to Claude as a
+# tool, so FRED can answer "is anyone there?" from real sensor data.
 _sensor_cfg = _settings.get("sensors", {})
 _sensors = SensorHub(on_event=None, log=_log,
                      offline_after=float(_sensor_cfg.get("offline_after", 10.0)))
+_assistant = Assistant(_ctrl, _status_led, _tracker, _sound,  # voice: wake word + Claude + lip-sync
+                       device=_snd_cfg.get("device", "plughw:0,0"), log=_log,
+                       mic_gain=float(_voice_cfg.get("gain", 1.0)),
+                       model=_voice_cfg.get("model") or None,
+                       sensors=_sensors)
 _serial_sensors = SerialSensorReader(
     _sensors, port=_sensor_cfg.get("serial_port", "/dev/ttyACM0"),
     baud=int(_sensor_cfg.get("serial_baud", 115200)), log=_log)

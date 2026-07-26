@@ -26,7 +26,7 @@ so call yours whatever you like.
 | **Vision** | Camera Module 3 via `picamera2`, MJPEG stream to the panel, plus an OpenCV Haar-cascade face tracker on a PD loop that moves the eyes, neck and head tilt to hold a face centred. |
 | **Web panel** | Flask on `:8080` — live servo sliders, camera view, conversation transcript, calibration mode, and an admin screen. |
 | **Chest display** | A second Pi drives a 7" DSI panel with framebuffer animations (arc reactor, flux capacitor, animated face, voice HUD), switchable at runtime from the panel. |
-| **Sensors** | A Raspberry Pi Pico reads two HC-SR04 ultrasonics and a PIR, does its own echo timing and event detection, and streams JSON to the robot. |
+| **Sensors** | A Raspberry Pi Pico reads two HC-SR04 ultrasonics and a PIR, does its own echo timing and event detection, and streams JSON to the robot. Claude can read them, so "is anyone there?" and "did someone walk by?" are answered from actual hardware. |
 | **Networking** | Falls back to being its own WiFi access point when no known network is around, plus an always-on Bluetooth PAN between the two Pis. |
 
 ---

@@ -37,6 +37,7 @@ from __future__ import annotations
 import json
 import threading
 import time
+from collections import deque
 
 try:
     import serial  # pyserial — only needed for the USB-serial fallback
@@ -55,6 +56,10 @@ class SensorHub:
         self._log = log                       # ConversationLog (optional)
         self._offline_after = float(offline_after)
         self._nodes: dict[str, dict] = {}
+        # A short rolling history, so "did anyone come by?" is answerable at all.
+        # ``_nodes`` only ever holds the *latest* value of each reading, which
+        # says nothing about a person who walked past thirty seconds ago.
+        self._recent: deque = deque(maxlen=64)      # (t, node, event dict)
         self._lock = threading.Lock()
 
     def ingest(self, payload: dict, transport: str = "wifi") -> bool:
@@ -85,6 +90,8 @@ class SensorHub:
 
     # ---- events -----------------------------------------------------------
     def _handle_event(self, node: str, ev: dict) -> None:
+        with self._lock:
+            self._recent.append((time.time(), node, dict(ev)))
         msg = self._describe(node, ev)
         if self._log is not None and msg:
             self._log.event(msg)
@@ -111,6 +118,19 @@ class SensorHub:
             return ""            # too chatty to log the end of every motion burst
         # Unknown/other event types: log generically so nothing is silently lost.
         return f"Sensor event: {node}/{sensor} {kind}".strip()
+
+    def recent_events(self, within: float = 300.0) -> list[dict]:
+        """Edge events from the last ``within`` seconds, oldest first.
+
+        Each entry is the node's event dict plus ``node`` and ``ago`` (seconds).
+        This is what makes "did someone walk past?" answerable — the readings
+        alone only describe this instant.
+        """
+        cutoff = time.time() - float(within)
+        now = time.time()
+        with self._lock:
+            hits = [(t, n, e) for (t, n, e) in self._recent if t >= cutoff]
+        return [dict(e, node=n, ago=round(now - t, 1)) for (t, n, e) in hits]
 
     # ---- introspection ----------------------------------------------------
     def state(self) -> dict:

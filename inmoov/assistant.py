@@ -30,9 +30,12 @@ from .listener import Listener
 class Assistant:
     def __init__(self, controller, led, tracker, sound, *, api_key: str | None = None,
                  device: str = "plughw:0,0", log=None, mic_gain: float = 1.0,
-                 model: str | None = None):
+                 model: str | None = None, sensors=None):
+        # sensors is the SensorHub, or None on a build with no sensor node — the
+        # read_sensors action degrades to saying so rather than failing.
         self._ctx = types.SimpleNamespace(controller=controller, led=led,
-                                          tracker=tracker, sound=sound)
+                                          tracker=tracker, sound=sound,
+                                          sensors=sensors)
         self._sound = sound
         self._controller = controller
         self._log = log                           # ConversationLog (optional)

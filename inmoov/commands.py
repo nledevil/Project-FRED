@@ -79,6 +79,88 @@ def _turn_head(ctx, direction: str) -> str:
     return "I can turn my head left, right, or center."
 
 
+def _speak_distance(cm: float) -> str:
+    """A distance the way a person would say it out loud."""
+    if cm >= 399:
+        return "clear"                       # no echo came back: nothing in range
+    if cm >= 100:
+        m = cm / 100.0
+        return "1 metre" if round(m, 1) == 1.0 else f"{m:.1f} metres"
+    return f"{round(cm)} centimetres"
+
+
+def _speak_ago(sec: float) -> str:
+    if sec < 5:
+        return "just now"
+    return f"{round(sec)} seconds ago" if sec < 90 else f"{round(sec / 60)} minutes ago"
+
+
+def _sensor_label(name: str) -> str:
+    """``dist_left`` -> ``left``. Names come from the node's own config, so strip
+    the type prefix rather than assuming a fixed set."""
+    for prefix in ("dist_", "pir_", "sensor_"):
+        if name.startswith(prefix):
+            return name[len(prefix):].replace("_", " ")
+    return name.replace("_", " ")
+
+
+def _sensor_report(ctx, which: str = "all") -> str:
+    """What the proximity sensors see, phrased to be spoken aloud.
+
+    Deliberately answers "is anyone there?" rather than dumping numbers: the
+    readings alone are an instant, so movement is reported from the hub's recent
+    event history, which is the only thing that can say someone *walked past*.
+    """
+    hub = getattr(ctx, "sensors", None)
+    if hub is None:
+        return "I don't have any proximity sensors wired up."
+    nodes = (hub.state() or {}).get("nodes") or {}
+    online = {k: v for k, v in nodes.items() if v.get("online")}
+    if not nodes:
+        return "My proximity sensors haven't reported in yet."
+    if not online:
+        return "My proximity sensors have gone quiet — I'm not hearing from them."
+
+    dists, motions = [], []
+    for n in online.values():
+        for name, r in (n.get("readings") or {}).items():
+            if not isinstance(r, dict):
+                continue
+            if r.get("type") == "distance" and r.get("cm") is not None:
+                dists.append((_sensor_label(name), float(r["cm"])))
+            elif r.get("type") == "motion":
+                motions.append((bool(r.get("active")), bool(r.get("warming"))))
+
+    parts = []
+    if which in ("all", "distance") and dists:
+        dists.sort()
+        if all(cm >= 399 for _, cm in dists):
+            parts.append("nothing is within range of my distance sensors")
+        else:
+            parts.append(", ".join(
+                f"{lbl} is clear" if cm >= 399 else f"{lbl} reads {_speak_distance(cm)}"
+                for lbl, cm in dists))
+
+    if which in ("all", "motion"):
+        if any(w for _, w in motions):
+            parts.append("my motion sensor is still warming up")
+        elif any(a for a, _ in motions):
+            parts.append("there's movement right now")
+        elif motions:
+            seen = [e for e in hub.recent_events(300.0)
+                    if e.get("event") in ("motion_start", "approach")]
+            if seen:
+                parts.append(f"no movement right now, but something went past "
+                             f"{_speak_ago(seen[-1].get('ago', 0.0))}")
+            else:
+                parts.append("nothing has moved in the last few minutes")
+
+    if not parts:
+        return "My sensors aren't telling me anything useful right now."
+    # Capitalise each clause, not just the first — they are separate sentences.
+    return ". ".join(p[0].upper() + p[1:] for p in parts) + "."
+
+
 def execute_action(ctx, name: str, **args) -> str:
     """Run one action and return FRED's spoken confirmation."""
     if name == "open_mouth":
@@ -118,6 +200,9 @@ def execute_action(ctx, name: str, **args) -> str:
 
     if name == "turn_head":
         return _turn_head(ctx, str(args.get("direction", "center")))
+
+    if name == "read_sensors":
+        return _sensor_report(ctx, str(args.get("which", "all")))
 
     if name == "say_time":
         return sysinfo.spoken_time()
@@ -182,6 +267,17 @@ _PATTERNS = [
     (re.compile(r"\bface (forward|front|straight ahead)\b", re.I), "turn_head", {"direction": "center"}),
     (re.compile(r"\bturn (to (the )?)?(?P<direction>left|right)\b", re.I), "turn_head", "group"),
     (re.compile(r"\bface (to (the )?)?(?P<direction>left|right)\b", re.I), "turn_head", "group"),
+    # Proximity sensors. Ahead of the system-facts block below because "what do
+    # you see" style phrasings are more specific than the catch-all fact rules.
+    # "did anyone walk by" first: the generic presence rule below would also
+    # match it (on "someone ... by") and answer with distances nobody asked for.
+    (re.compile(r"\b(walk(ed)?|go(ne)?|came?|pass(ed)?|went)\b.*\b(by|past|through|in front)\b", re.I), "read_sensors", {"which": "motion"}),
+    (re.compile(r"\b(did|has|have)\b.*\b(any\s?(one|body)|some\s?(one|body))\b.*\b(walk|walked|go|gone|come|came|pass|passed|move|moved)\b", re.I), "read_sensors", {"which": "motion"}),
+    (re.compile(r"\b(any\s?(one|body)|some\s?(one|body)|people)\b.*\b(there|here|around|near(by)?|close|in front)\b", re.I), "read_sensors", {}),
+    (re.compile(r"\bmotion (sensor|detect)", re.I), "read_sensors", {"which": "motion"}),
+    (re.compile(r"\bhow far\b", re.I), "read_sensors", {"which": "distance"}),
+    (re.compile(r"\b(distance|proximity|ultrasonic)\b.*\b(sensor|reading|say|read)", re.I), "read_sensors", {"which": "distance"}),
+    (re.compile(r"\bwhat\b.*\byour sensors?\b", re.I), "read_sensors", {}),
     # System facts — instant, offline answers (Claude also gets these via its
     # injected context block for other phrasings).
     (re.compile(r"\b(what('?s| is)?\s+(the\s+)?(current\s+)?time|time is it|what time)\b", re.I), "say_time", {}),
@@ -231,6 +327,15 @@ CLAUDE_TOOLS = [
      "input_schema": {"type": "object", "properties": {
          "direction": {"type": "string", "enum": ["left", "right", "center"]}},
          "required": ["direction"]}},
+    {"name": "read_sensors", "description":
+        "Read FRED's proximity sensors: ultrasonic distance sensors and a motion "
+        "detector in his chest. Use this for 'is anyone there?', 'how far away am "
+        "I?', 'did someone walk by?', 'can you see anyone?'. Reports current "
+        "distances plus whether anything has moved in the last few minutes, so it "
+        "answers questions about the recent past as well as right now.",
+     "input_schema": {"type": "object", "properties": {
+         "which": {"type": "string", "enum": ["all", "distance", "motion"],
+                   "description": "Limit the reading to one kind of sensor. Defaults to all."}}}},
     {"name": "reset_pose", "description": "Return all servos to their neutral resting position.",
      "input_schema": {"type": "object", "properties": {}}},
     {"name": "relax", "description": "Release the servos so they stop holding torque.",
@@ -251,6 +356,8 @@ def run_tool(ctx, tool_name: str, tool_input: dict) -> str:
         return execute_action(ctx, "look", direction=ti.get("direction", "center"))
     if tool_name == "turn_head":
         return execute_action(ctx, "turn_head", direction=ti.get("direction", "center"))
+    if tool_name == "read_sensors":
+        return execute_action(ctx, "read_sensors", which=ti.get("which", "all"))
     if tool_name == "reset_pose":
         return execute_action(ctx, "reset")
     if tool_name == "relax":
