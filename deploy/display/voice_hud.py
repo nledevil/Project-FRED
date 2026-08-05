@@ -37,6 +37,10 @@ WHITE = np.array([225, 245, 255], dtype=np.float32)
 STATE_COLOUR = {"idle": CYAN * 0.75, "listening": GREEN,
                 "thinking": AMBER, "speaking": CYAN}
 
+# How far the trace is knocked back ahead of the playhead. float32 rather than a
+# bare literal so the multiply rounds exactly as the old per-pixel shade did.
+AHEAD = np.float32(0.28)
+
 
 def build_chrome(w, h, wx0, wx1, wy0, wy1):
     """Static HUD furniture: corner brackets + a centre baseline. Drawn once."""
@@ -81,6 +85,21 @@ def main():
     dy = (np.arange(wy0, wy1, dtype=np.float32) - wcy)[:, None]
     col_i = np.arange(cols)
 
+    # The state dot's falloff never changes — build it once, not thirty times a
+    # second. Same for the meter's backing colour.
+    r = 9
+    yy, xx = np.mgrid[0:2 * r, 0:2 * r].astype(np.float32)
+    DOT = np.exp(-((((xx - r) / (r * 0.55)) ** 2
+                    + ((yy - r) / (r * 0.55)) ** 2)))[..., None]
+    METER_BG = np.array([22, 52, 70], dtype=np.float32)
+
+    # Everything outside the trace window — label, state dot, level meter — sits in
+    # one band across the top. Its geometry is fixed, so work it out once.
+    ty = int(H * 0.12)
+    ddy0 = ty + (CHAR_H * 4) // 2 - r
+    mw, mh = int(W * 0.20), 8
+    mx0, my0 = wx1 - mw, int(H * 0.145)
+
     running = [True]
     signal.signal(signal.SIGINT, lambda *a: running.__setitem__(0, False))
     signal.signal(signal.SIGTERM, lambda *a: running.__setitem__(0, False))
@@ -99,6 +118,7 @@ def main():
             state = feed.state()
             colour = STATE_COLOUR.get(state, CYAN)
             frame = chrome.copy()
+            win = frame[wy0:wy1, wx0:wx1]
 
             levels = d.get("levels")
             play_at, frame_dt = d.get("play_at"), d.get("frame_dt")
@@ -115,10 +135,17 @@ def main():
                 band = (np.abs(dy) <= amp[None, :])
 
                 head = frac * cols
-                played = (col_i[None, :] < head)
-                # Ahead of the playhead sits what he hasn't said yet — dimmer.
-                shade = np.where(played[..., None], 1.0, 0.28).astype(np.float32)
-                frame[wy0:wy1, wx0:wx1] += band[..., None] * colour * shade
+                # Ahead of the playhead sits what he hasn't said yet — dimmer. The
+                # shade is a step at the playhead, so it's two column ranges, not a
+                # per-pixel weight: write each with a masked add and touch only the
+                # ~2% of the window the envelope actually covers.
+                # ceil, not int: a column counts as played while head is anywhere
+                # past its left edge, which is what `col_i < head` used to say.
+                hcol = int(min(max(math.ceil(head), 0), cols))
+                if hcol:
+                    win[:, :hcol][band[:, :hcol]] += colour
+                if hcol < cols:
+                    win[:, hcol:][band[:, hcol:]] += colour * AHEAD
 
                 if 0 <= head < cols:                             # the playhead itself
                     hx = wx0 + int(head)
@@ -131,35 +158,35 @@ def main():
                     amp = 2.0
                 else:
                     amp = 1.5 + 1.0 * (0.5 + 0.5 * math.sin(t * 1.4))
-                band = (np.abs(dy) <= amp)
-                frame[wy0:wy1, wx0:wx1] += band[..., None] * colour * 0.8
+                # A flat baseline is the same every column, so it's a contiguous run
+                # of rows — a slice, not a mask over the whole window.
+                rows = np.nonzero(np.abs(dy[:, 0]) <= amp)[0]
+                if rows.size:
+                    br0, br1 = rows[0], rows[-1] + 1
+                    win[br0:br1] += colour * 0.8
 
-                if state == "thinking":
-                    # A scanner sweeping the trace: he's working on it.
-                    sx = (0.5 + 0.5 * math.sin(t * 2.4)) * (cols - 1)
-                    glow = np.exp(-(((col_i - sx) / 26.0) ** 2)).astype(np.float32)
-                    frame[wy0:wy1, wx0:wx1] += (band[..., None]
-                                                * glow[None, :, None] * AMBER * 1.6)
+                    if state == "thinking":
+                        # A scanner sweeping the trace: he's working on it.
+                        sx = (0.5 + 0.5 * math.sin(t * 2.4)) * (cols - 1)
+                        glow = np.exp(-(((col_i - sx) / 26.0) ** 2)).astype(np.float32)
+                        win[br0:br1] += glow[None, :, None] * AMBER * 1.6
 
             # --- state readout ---
             label = state.upper()
             pulse = 0.75 + 0.25 * (0.5 + 0.5 * math.sin(t * 3.2))
-            draw_text(frame, label, wx0 + 28, int(H * 0.12), colour * pulse, scale=4)
-            r = 9                                                 # state dot
-            yy, xx = np.mgrid[0:2 * r, 0:2 * r].astype(np.float32)
-            dot = np.exp(-((((xx - r) / (r * 0.55)) ** 2 + ((yy - r) / (r * 0.55)) ** 2)))
-            dy0 = int(H * 0.12) + (CHAR_H * 4) // 2 - r
-            frame[dy0:dy0 + 2 * r, wx0:wx0 + 2 * r] += dot[..., None] * colour * pulse
+            draw_text(frame, label, wx0 + 28, ty, colour * pulse, scale=4)
+            frame[ddy0:ddy0 + 2 * r, wx0:wx0 + 2 * r] += DOT * colour * pulse
 
             # --- live level meter, bottom right ---
             lvl = feed.level(now)
-            mw, mh = int(W * 0.20), 8
-            mx0, my0 = wx1 - mw, int(H * 0.145)
-            frame[my0:my0 + mh, mx0:mx0 + mw] += np.array([22, 52, 70], dtype=np.float32)
+            frame[my0:my0 + mh, mx0:mx0 + mw] += METER_BG
             fill = int(mw * min(lvl, 1.0))
             if fill > 0:
                 frame[my0:my0 + mh, mx0:mx0 + fill] += colour * 0.9
 
+            # Clip the whole frame, not just the rects we drew into: `frame` is
+            # contiguous and the sub-views are not, and one pass over contiguous
+            # memory measured twice as fast as two passes over strided slices.
             np.clip(frame, 0, 255, out=frame)
             hud.draw(frame)
             fb.show(frame.astype(np.uint8))
