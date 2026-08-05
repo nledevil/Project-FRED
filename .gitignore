@@ -12,3 +12,7 @@ sounds/terminator/*.wav
 # device paths, and API tokens. Defaults live in inmoov/settings.py, so a fresh
 # checkout still runs without this file.
 config/settings.json
+
+# Compiled chest-panel animations: built per-machine from deploy/display/*.c
+deploy/display/voice_hud
+verify-*.raw
