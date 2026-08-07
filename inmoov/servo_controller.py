@@ -62,7 +62,17 @@ class ServoController:
             print("[ServoController] MOCK mode — no hardware I/O "
                   "(no /dev/i2c-1 or mock forced).")
         else:
-            self._build_kit()
+            # /dev/i2c-1 existing does not mean a PCA9685 is reachable: on x86 it
+            # is an unrelated platform bus (SMBus/i915), and Blinka has no board
+            # pins there at all. Fall back to mock rather than failing to boot —
+            # the docstring promises this class runs on any machine.
+            try:
+                self._build_kit()
+            except Exception as e:
+                self.mock = True
+                self._kit = None
+                print(f"[ServoController] MOCK mode — /dev/i2c-1 present but the "
+                      f"PCA9685 is unreachable ({type(e).__name__}: {e}).")
 
         if move_to_rest:
             self.rest()
