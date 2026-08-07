@@ -1,0 +1,34 @@
+[Unit]
+Description=FRED web control panel (Flask, port 8080) — NUC brain
+After=network-online.target
+Wants=network-online.target
+# The NUC variant of inmoov.service. That unit is Pi-shaped (User=dietpi,
+# /home/dietpi/inmoov); this one runs the same app as the brain, with the
+# hardware reached over the robot LAN instead of local buses:
+#   camera  -> head Pi's camera_stream.py  (settings: camera.backend=mjpeg)
+#   servos  -> head Pi's servo_server.py   (settings: servo.remote_host)
+#   sensors -> chest Pi POSTs here, to 10.0.0.1:8080
+#
+# NOT ordered after an IP announcement, unlike the Pi's unit. There is no
+# inmoov-announce-ip.service on the NUC — the brain sits at a fixed 10.0.0.1 on
+# the robot LAN, so there is no DHCP-assigned address to read out at boot. If
+# you ever want it back, install deploy/announce_ip.py as its own service and
+# restore the ordering so the two don't collide on the single-open USB audio
+# device:
+#After=network-online.target inmoov-announce-ip.service
+
+[Service]
+Type=simple
+User=nledevil
+Group=nledevil
+Environment=PYTHONUNBUFFERED=1
+# Optional (the leading '-'): holds ANTHROPIC_API_KEY for FRED's replies. The
+# app runs without it — brain.py degrades to local commands only.
+EnvironmentFile=-/home/nledevil/fred/Project-FRED/config/secrets.env
+WorkingDirectory=/home/nledevil/fred/Project-FRED
+ExecStart=/home/nledevil/fred/Project-FRED/venv/bin/python /home/nledevil/fred/Project-FRED/web/app.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

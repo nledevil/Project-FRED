@@ -1,0 +1,41 @@
+[Unit]
+Description=InMoov servo device server (PCA9685 over I2C -> HTTP/:8082)
+After=network-online.target
+Wants=network-online.target
+# The head Pi keeps the I2C bus because that is where the wiring is; the NUC
+# decides what to move and talks to this over ethernet. Owns ONLY the servos —
+# no camera, no audio — so it runs alongside camera-stream.service on the same
+# Pi. See deploy/servo_server.py and inmoov/remote_servo.py (the client).
+
+[Service]
+Type=simple
+User=dietpi
+Group=dietpi
+Environment=PYTHONUNBUFFERED=1
+Environment=SERVO_PORT=8082
+
+# SAFETY: do NOT sweep to rest on startup. ServoController's own default drives
+# every servo the instant it is built; for a service systemd may start at boot
+# with nobody watching, that is the wrong default. Set to 1 to opt back in.
+Environment=SERVO_MOVE_TO_REST=0
+
+# SAFETY: servos this server refuses to move, for anyone, answering 423.
+# Enforced here — on the machine that actually holds the I2C bus — rather than
+# trusted to every client, so no caller can drive them by accident.
+#
+# eye_x/eye_y are locked because the ethernet cable in the head Pi's LAN port
+# fouls the eye mechanism's travel. CLEAR THIS once the low-profile cable is
+# fitted, otherwise face tracking will have nothing to point.
+Environment=SERVO_LOCKED=eye_x,eye_y
+
+# Shared secret. Empty = no auth, which is fine on the robot LAN (10.0.0.0/24 is
+# a private segment behind the NUC), but set it if this ever sees a wider network.
+#Environment=SERVO_TOKEN=
+
+WorkingDirectory=/home/dietpi/inmoov
+ExecStart=/home/dietpi/inmoov/venv/bin/python /home/dietpi/inmoov/deploy/servo_server.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

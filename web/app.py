@@ -29,6 +29,7 @@ sys.path.insert(0, str(ROOT))
 from flask import Flask, Response, jsonify, render_template, request  # noqa: E402
 
 from inmoov.servo_controller import ServoController, CONFIG_PATH, load_config  # noqa: E402
+from inmoov.remote_servo import RemoteServoController  # noqa: E402
 from inmoov.camera import Camera  # noqa: E402
 from inmoov.face_tracker import FaceTracker, TUNABLE  # noqa: E402
 from inmoov.assistant import Assistant  # noqa: E402
@@ -55,8 +56,20 @@ _settings = load_settings()                  # admin-editable UI/camera preferen
 # I2C/audio/camera. If we boot into that state, don't grab the servos (skip the
 # rest sweep); the objects are suspended just after construction, below.
 _boot_released = bool(_settings.get("hardware", {}).get("released", False))
-_ctrl = ServoController(config=_config,      # auto mock when /dev/i2c-1 absent
-                        move_to_rest=not _boot_released)
+_servo_cfg = _settings.get("servo", {})
+_servo_host = str(_servo_cfg.get("remote_host", "") or "").strip()
+if _servo_host:
+    # Servos live on another machine (the head Pi holds the I2C bus; the brain
+    # runs here). Same interface, so nothing downstream knows the difference.
+    _ctrl = RemoteServoController(_servo_host,
+                                  port=int(_servo_cfg.get("remote_port", 8082)),
+                                  token=str(_servo_cfg.get("remote_token", "") or ""),
+                                  config=_config)
+    if not _boot_released:
+        _ctrl.rest()                 # the local controller does this in its ctor
+else:
+    _ctrl = ServoController(config=_config,  # auto mock when /dev/i2c-1 absent
+                            move_to_rest=not _boot_released)
 _led_cfg = _settings.get("led", {})
 _status_led = Led(pin=16,                     # BCM16 status LED (no-op if no GPIO)
                   camera_indicator=bool(_led_cfg.get("camera_indicator", True)))
@@ -64,7 +77,9 @@ _cam_cfg = _settings.get("camera", {})
 _camera = Camera(indicator=_status_led,      # lazily starts on first stream viewer; lights the LED
                  rotate_180=bool(_cam_cfg.get("flip", False)),
                  af_mode=int(_cam_cfg.get("af_mode", 0)),
-                 lens_position=float(_cam_cfg.get("lens_position", 2.0)))
+                 lens_position=float(_cam_cfg.get("lens_position", 2.0)),
+                 backend=str(_cam_cfg.get("backend", "auto") or "auto"),
+                 source=_cam_cfg.get("source") or None)
 _snd_cfg = _settings.get("sound", {})
 _voice_cfg = _settings.get("voice", {})
 _sound = Sound(device=_snd_cfg.get("device", "default"),  # aplay-based, no-op if no audio

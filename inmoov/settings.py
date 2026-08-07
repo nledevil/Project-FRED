@@ -18,6 +18,25 @@ DEFAULT_SETTINGS = {
         "flip": False,                # apply the 180 flip on page/app load
         "af_mode": 0,                 # 0 = manual, 2 = continuous AF (matches libcamera AfMode)
         "lens_position": 2.0,         # dioptres, used when af_mode is manual (~0.5 m)
+        # Where frames come from. "auto" picks a local Pi camera if there is one,
+        # else a stream URL if `source` is one, else a local USB camera. Set it
+        # explicitly when a machine has more than one option — the NUC has both a
+        # USB camera of its own and the head Pi's stream to choose between.
+        #   "picamera2" - Pi CSI camera (source ignored)
+        #   "mjpeg"     - another machine's MJPEG stream; source = its URL
+        #   "v4l2"      - local USB/UVC camera; source = index or /dev/videoN
+        "backend": "auto",
+        "source": "",                 # e.g. "http://10.0.0.10:8081/stream.mjpg" or 0
+    },
+    "servo": {
+        # Where the servos are. Empty host = drive the local PCA9685 over I2C,
+        # which is what runs on the head Pi itself. Set a host and the servos are
+        # driven over the network instead, via deploy/servo_server.py on the Pi
+        # that actually owns the I2C bus — that is how the NUC moves FRED now
+        # that the brain and the wiring live on different machines.
+        "remote_host": "",            # e.g. "10.0.0.10" (the head Pi)
+        "remote_port": 8082,
+        "remote_token": "",           # must match SERVO_TOKEN on the server ("" = no auth)
     },
     "led": {
         "camera_indicator": True,     # light the BCM16 red LED while the camera streams
