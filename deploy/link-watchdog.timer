@@ -1,0 +1,16 @@
+[Unit]
+Description=Check every 30s for a wired link that came back without an address
+
+[Timer]
+# Start soon after boot rather than waiting a full interval: the common failure
+# is booting with the cable out, or with the NUC's bridge port not yet
+# forwarding, so the first minute is exactly when this is most likely to matter.
+OnBootSec=30s
+OnUnitActiveSec=30s
+# The check is a couple of file reads when nothing is wrong; letting systemd
+# coalesce it with other timers avoids waking the CPU on its own account.
+AccuracySec=10s
+Unit=link-watchdog.service
+
+[Install]
+WantedBy=timers.target
