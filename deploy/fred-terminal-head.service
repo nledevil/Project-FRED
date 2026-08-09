@@ -22,10 +22,20 @@ Environment=TERM=xterm-256color
 Environment=LANG=C.UTF-8
 Environment=PATH=/usr/local/bin:/home/nledevil/.local/bin:/usr/bin:/bin
 # ssh reads ~/.ssh/config, so "head" carries the right user, key and
-# ServerAliveInterval. If the link drops, ssh exits, the tmux session ends, and
-# the next browser connection starts a clean one — which is the behaviour you
-# want on a robot whose cables get unplugged.
-ExecStart=/usr/local/bin/ttyd -W -p 7682 -c fred:CHANGE_ME -m 3 --check-origin -t fontSize=15 /usr/bin/tmux new-session -A -s head ssh head
+# ServerAliveInterval.
+#
+# The tmux runs on the HEAD, not here — note it is after the ssh, not before it.
+# Wrapping ssh in a NUC-side tmux instead would put the session that holds your
+# work on the wrong side of the cable: the process runs on the head as a child of
+# the ssh, so an ethernet drop kills it. Running tmux on the far end means the
+# session survives the link going down, and you reattach to the same work when it
+# comes back — which on this robot is a matter of when, not if.
+#
+# Session name "claude" deliberately matches the head's own inmoov-terminal, so
+# both doors into the head land in ONE session rather than two that cannot see
+# each other. -A attaches if it exists and creates it if not.
+# -t forces a pty, which tmux needs and ssh will not allocate for a command.
+ExecStart=/usr/local/bin/ttyd -W -p 7682 -c fred:CHANGE_ME -m 3 --check-origin -t fontSize=15 /usr/bin/ssh -t head tmux new-session -A -s claude
 Restart=on-failure
 RestartSec=3
 
