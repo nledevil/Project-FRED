@@ -80,10 +80,10 @@ class FaceTracker:
                  invert_x: bool = False, invert_y: bool = False,
                  invert_neck: bool = False, invert_tilt: bool = False,
                  deadzone: float = 0.06,
-                 fps: float = 12.0, neck_gain: float = 2.5, tilt_gain: float = 1.8,
+                 fps: float = 15.0, neck_gain: float = 2.5, tilt_gain: float = 1.8,
                  sat_margin: float = 5.0, eye_recenter: float = 0.15,
                  seek_gain: float = 0.7, seek_edge: float = 0.35,
-                 seek_start_misses: int = 3, lost_hold_frames: int = 25,
+                 seek_start_misses: int = 3, lost_hold_frames: int = 31,
                  bearing_gain: float = 0.6, invert_bearing: bool = False,
                  bearing_change: float = 0.15,
                  event_cb=None, bearing_cb=None):
@@ -119,7 +119,20 @@ class FaceTracker:
         self.seek_gain = float(seek_gain)        # blind-follow speed after a face is lost
         self.seek_edge = float(seek_edge)        # only chase if the face was this far off-centre (0..1) when lost
         self.seek_start_misses = int(seek_start_misses)  # consecutive misses before seeking (ignore brief dropouts)
+        # Paced to the frame *source*, not to the CPU. 12.0 was the head Pi 4B's
+        # detection budget; on an x86 brain a JPEG decode plus a full-frame Haar
+        # pass costs ~12 ms (~80/s), so the frames themselves are the ceiling
+        # now. Asking for more than the camera delivers only re-runs the detector
+        # on a frame capture_gray() already handed us — the backends publish the
+        # newest frame and never block — and a repeat measures de/dt = 0, which
+        # quietly drops the damping term for that tick. Match the source instead:
+        # the head's camera_stream.py serves CAM_STREAM_FPS (15), a local
+        # picamera2 lores stream runs at 30.
         self._fps = max(1.0, float(fps))
+        # Counted in frames, so this window shortens as fps rises: 31 @ 15 fps is
+        # the ~2.1 s hold it was tuned to at 12. Giving up on someone who walked
+        # out of shot is a human-scale timeout — move it with fps. seek_start_misses
+        # is genuinely frame-shaped (ignore a few dropped detections), so it isn't.
         self.lost_hold_frames = int(lost_hold_frames)
         # Last horizontal error while a face was visible (+ = face to the right).
         # Its sign says which way to keep turning if the face then leaves frame;
