@@ -40,6 +40,23 @@ DEFAULT_SETTINGS = {
     },
     "led": {
         "camera_indicator": True,     # light the BCM16 red LED while the camera streams
+        # Where the LED is. Empty host = drive this machine's own BCM16, which is
+        # what runs on the head Pi itself. Set a host and it is driven over the
+        # network via deploy/led_server.py — x86 has no GPIO, so this is how the
+        # NUC lights an LED that is soldered to a Raspberry Pi header.
+        "remote_host": "",            # e.g. "10.0.0.10" (the head Pi)
+        "remote_port": 8083,
+        "remote_token": "",           # must match LED_TOKEN on the server ("" = no auth)
+    },
+    "spotter": {
+        # The wide-angle face spotter (Jabra PanaCast on the chest touchscreen).
+        # Gives the face tracker a real bearing across ~180 degrees for people
+        # the head camera cannot see; falls back to the chest ultrasonics when
+        # off or blind. See inmoov/wide_spotter.py.
+        "enabled": True,
+        "device": 0,                  # V4L2 index; the PanaCast's second node does not stream
+        "detect_hz": 4.0,             # decode+detect rate — acquisition is a human-scale event
+        "detect_width": 1920,         # downscale before detection (~10 ms/frame)
     },
     "hardware": {
         # When True, the app boots with the shared hardware RELEASED to another

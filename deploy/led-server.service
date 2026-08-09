@@ -1,0 +1,28 @@
+[Unit]
+Description=InMoov LED device server (BCM16 status LED -> HTTP/:8083)
+After=network-online.target
+Wants=network-online.target
+# The head Pi keeps the LED because it is wired to this header; the NUC decides
+# when it should be lit and talks to this over ethernet. Owns ONLY the LED, so
+# it runs alongside servo-server.service and camera-stream.service on the same
+# Pi. See deploy/led_server.py and inmoov/remote_led.py (the client).
+
+[Service]
+Type=simple
+User=dietpi
+Group=dietpi
+Environment=PYTHONUNBUFFERED=1
+Environment=LED_PORT=8083
+Environment=LED_PIN=16
+
+# Shared secret. Empty = no auth, which is fine on the robot LAN (10.0.0.0/24 is
+# a private segment behind the NUC), but set it if this ever sees a wider network.
+#Environment=LED_TOKEN=
+
+WorkingDirectory=/home/dietpi/inmoov
+ExecStart=/home/dietpi/inmoov/venv/bin/python /home/dietpi/inmoov/deploy/led_server.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

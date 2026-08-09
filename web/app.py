@@ -32,10 +32,12 @@ from inmoov.servo_controller import ServoController, CONFIG_PATH, load_config  #
 from inmoov.remote_servo import RemoteServoController  # noqa: E402
 from inmoov.camera import Camera  # noqa: E402
 from inmoov.face_tracker import FaceTracker, TUNABLE  # noqa: E402
+from inmoov.wide_spotter import WideSpotter  # noqa: E402
 from inmoov.assistant import Assistant  # noqa: E402
 from inmoov import sysinfo  # noqa: E402
 from inmoov.convlog import ConversationLog  # noqa: E402
 from inmoov.led import Led  # noqa: E402
+from inmoov.remote_led import RemoteLed  # noqa: E402
 from inmoov.sound import Sound  # noqa: E402
 from inmoov.sensors import SensorHub, SerialSensorReader  # noqa: E402
 from inmoov.display import DisplayClient, DisplayError, VoicePusher  # noqa: E402
@@ -71,8 +73,19 @@ else:
     _ctrl = ServoController(config=_config,  # auto mock when /dev/i2c-1 absent
                             move_to_rest=not _boot_released)
 _led_cfg = _settings.get("led", {})
-_status_led = Led(pin=16,                     # BCM16 status LED (no-op if no GPIO)
-                  camera_indicator=bool(_led_cfg.get("camera_indicator", True)))
+_led_indicator = bool(_led_cfg.get("camera_indicator", True))
+_led_host = str(_led_cfg.get("remote_host", "") or "").strip()
+if _led_host:
+    # Same reasoning as the servos above: the LED is soldered to a Pi header and
+    # x86 has no GPIO, so the pin is driven over the network. Same interface, so
+    # nothing downstream (camera.py's notify_camera, /api/led) knows.
+    _status_led = RemoteLed(_led_host,
+                            port=int(_led_cfg.get("remote_port", 8083)),
+                            token=str(_led_cfg.get("remote_token", "") or ""),
+                            camera_indicator=_led_indicator)
+else:
+    _status_led = Led(pin=16,                 # BCM16 status LED (no-op if no GPIO)
+                      camera_indicator=_led_indicator)
 _cam_cfg = _settings.get("camera", {})
 _camera = Camera(indicator=_status_led,      # lazily starts on first stream viewer; lights the LED
                  rotate_180=bool(_cam_cfg.get("flip", False)),
@@ -101,13 +114,36 @@ _track_cfg = {k: v for k, v in (_settings.get("track") or {}).items()
 _sensor_cfg = _settings.get("sensors", {})
 _sensors = SensorHub(on_event=None, log=_log,
                      offline_after=float(_sensor_cfg.get("offline_after", 10.0)))
+
+# Wide-angle spotter: the PanaCast on the chest touchscreen, looking out at
+# ~180 degrees. Built before the tracker because the tracker consumes it.
+_spot_cfg = _settings.get("spotter", {})
+_spotter = WideSpotter(device=int(_spot_cfg.get("device", 0)),
+                       detect_hz=float(_spot_cfg.get("detect_hz", 4.0)),
+                       detect_width=int(_spot_cfg.get("detect_width", 1920)))
+
+
+def _bearing_hint():
+    """Where is somebody, when the head camera has nothing?
+
+    The PanaCast answers first: it is an actual face detector across ~180
+    degrees, so it can tell a person from the furniture and give a real bearing.
+    The chest ultrasonics remain the fallback for when it is off, blind or
+    starting up — they see a wide arc too, they just cannot tell you what they
+    are looking at. Both return None for "no opinion", which the tracker
+    distinguishes from "straight ahead".
+    """
+    if _spot_cfg.get("enabled", True):
+        hint = _spotter.bearing()
+        if hint is not None:
+            return hint
+    return _sensors.bearing(left=_sensor_cfg.get("bearing_left", "dist_left"),
+                            right=_sensor_cfg.get("bearing_right", "dist_right"))
+
+
 _tracker = FaceTracker(_camera, _ctrl,       # face-follow: eyes + neck + head tilt
                        event_cb=_log.event,  # logs face-detected / lost / tracking on-off
-                       # Coarse "someone is over there" for when the camera has
-                       # nothing — the ultrasonics see a wider arc than the lens.
-                       bearing_cb=lambda: _sensors.bearing(
-                           left=_sensor_cfg.get("bearing_left", "dist_left"),
-                           right=_sensor_cfg.get("bearing_right", "dist_right")),
+                       bearing_cb=_bearing_hint,
                        **_track_cfg)         # bench tuning persisted from /api/track
 _assistant = Assistant(_ctrl, _status_led, _tracker, _sound,  # voice: wake word + Claude + lip-sync
                        device=_snd_cfg.get("device", "plughw:0,0"), log=_log,
@@ -152,6 +188,7 @@ def _apply_handoff(release: bool) -> None:
     if release:
         _assistant.stop()          # stop the wake-word listener → frees the mic (arecord)
         _tracker.stop()            # stop face tracking → drops its camera hold
+        _spotter.stop()            # release the PanaCast — it is shared hardware too
         _camera.suspend()          # force-stop the sensor, report unavailable
         _sound.suspend()           # stop playback, block new
         _ctrl.suspend()            # relax servos + release the I2C/PCA9685 bus
@@ -160,6 +197,8 @@ def _apply_handoff(release: bool) -> None:
         _ctrl.resume()             # re-open I2C, re-apply ranges, return to rest
         _sound.resume()
         _camera.resume()           # sensor restarts lazily on the next viewer
+        if _spot_cfg.get("enabled", True):
+            _spotter.start()       # retake the PanaCast; no-op if already running
         # The voice listener and face tracker are left OFF — re-arm them from
         # their own toggles, as after any boot.
     _handoff_released = release
@@ -199,6 +238,7 @@ def _state() -> dict:
     sound = _sound.settings() if _sound.available() else None
     return {"mock": _ctrl.mock, "channels": channels, "camera": camera,
             "sound": sound, "led": _status_led.status(), "track": _tracker.status(),
+            "spotter": _spotter.status(),
             "voice": _assistant.status(), "servos": servos, "settings": _settings,
             "handoff": _handoff_state(), "sensors": _sensors.state(),
             "greet": _greeter.state()}
@@ -936,6 +976,14 @@ if __name__ == "__main__":
         _apply_handoff(True)                     # boot straight into the released
         print("Hardware handoff: RELEASED to MyRobotLab (I2C/audio/camera held off).")
     print(f"Serving InMoov control panel — mode: {'MOCK' if _ctrl.mock else 'LIVE'}")
+    if _spot_cfg.get("enabled", True) and not _handoff_released:
+        # Runs whether or not tracking is on: the bearing it produces is what
+        # tells the tracker there is somebody to turn toward in the first place.
+        if _spotter.start():
+            s = _spotter.status()
+            print(f"Wide spotter: PanaCast {s['size']} @ {s['detect_hz']} Hz")
+        else:
+            print(f"Wide spotter: unavailable — {_spotter.last_error}")
     boot = _snd_cfg.get("boot_sound", "")
     if boot and _sound.available() and not _handoff_released:
         _sound.play(boot)                        # non-blocking chime on startup
