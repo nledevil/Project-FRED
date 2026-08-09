@@ -1,0 +1,33 @@
+# Reference copy — see fred-terminal.service for the install recipe (this one is
+# port 7682). Keep the real password out of git.
+[Unit]
+Description=FRED browser terminal — head Pi over ssh (ttyd + tmux, :7682)
+After=network-online.target
+Wants=network-online.target
+# Runs on the NUC and sshes to the head, rather than the head serving its own
+# ttyd. Two reasons: the robot LAN is not routable from the house network, so a
+# ttyd on 10.0.0.10 is unreachable from a laptop; and the NUC already holds key
+# auth to both Pis, so there is no second password to manage.
+#
+# The head's own inmoov-terminal.service (:7681 on the Pi) still exists and is
+# untouched — reachable directly if you are on the robot LAN.
+
+[Service]
+Type=simple
+User=nledevil
+Group=nledevil
+WorkingDirectory=/home/nledevil
+Environment=HOME=/home/nledevil
+Environment=TERM=xterm-256color
+Environment=LANG=C.UTF-8
+Environment=PATH=/usr/local/bin:/home/nledevil/.local/bin:/usr/bin:/bin
+# ssh reads ~/.ssh/config, so "head" carries the right user, key and
+# ServerAliveInterval. If the link drops, ssh exits, the tmux session ends, and
+# the next browser connection starts a clean one — which is the behaviour you
+# want on a robot whose cables get unplugged.
+ExecStart=/usr/local/bin/ttyd -W -p 7682 -c fred:CHANGE_ME -m 3 --check-origin -t fontSize=15 /usr/bin/tmux new-session -A -s head ssh head
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,32 @@
+# Reference copy — see fred-terminal.service for the install recipe (this one is
+# port 7683). Keep the real password out of git.
+[Unit]
+Description=FRED browser terminal — chest Pi over ssh (ttyd + tmux, :7683)
+After=network-online.target
+Wants=network-online.target
+# Runs on the NUC and sshes to the chest, rather than the chest serving its own
+# ttyd. Two reasons: the robot LAN is not routable from the house network, so a
+# ttyd on 10.0.0.10 is unreachable from a laptop; and the NUC already holds key
+# auth to both Pis, so there is no second password to manage.
+#
+# The chest runs no ttyd of its own; this is the only browser shell into it.
+
+[Service]
+Type=simple
+User=nledevil
+Group=nledevil
+WorkingDirectory=/home/nledevil
+Environment=HOME=/home/nledevil
+Environment=TERM=xterm-256color
+Environment=LANG=C.UTF-8
+Environment=PATH=/usr/local/bin:/home/nledevil/.local/bin:/usr/bin:/bin
+# ssh reads ~/.ssh/config, so "chest" carries the right user, key and
+# ServerAliveInterval. If the link drops, ssh exits, the tmux session ends, and
+# the next browser connection starts a clean one — which is the behaviour you
+# want on a robot whose cables get unplugged.
+ExecStart=/usr/local/bin/ttyd -W -p 7683 -c fred:CHANGE_ME -m 3 --check-origin -t fontSize=15 /usr/bin/tmux new-session -A -s chest ssh chest
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
