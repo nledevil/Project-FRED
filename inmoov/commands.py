@@ -16,6 +16,7 @@ hardware singletons and returns a short line for FRED to speak back.
 """
 from __future__ import annotations
 
+import base64
 import random
 import re
 
@@ -161,6 +162,81 @@ def _sensor_report(ctx, which: str = "all") -> str:
     return ". ".join(p[0].upper() + p[1:] for p in parts) + "."
 
 
+# Robot-frame yaws for the spoken/LLM direction words (0 = cart-forward).
+_LOOK_YAWS = {"front": 0.0, "right": 90.0, "back": 180.0, "left": -90.0}
+
+
+def _surround_summary(ctx) -> str:
+    """What the 360 camera sees, falling back to the chest sensors when the
+    surround stack isn't running — one spoken answer either way."""
+    sv = getattr(ctx, "surround", None)
+    if sv is not None and sv.is_running():
+        return sv.spoken_summary()
+    fallback = _sensor_report(ctx)
+    if sv is not None:
+        return "My surround camera isn't watching right now. " + fallback
+    return fallback
+
+
+def look_around_blocks(ctx, direction: str = "all"):
+    """Claude's eyes: dewarped 360-camera views as image content blocks.
+
+    Returns a list of tool_result content blocks (text labels + base64 JPEGs),
+    or a plain string when there's nothing to see — brain.py passes either
+    through to the API unchanged. Views are kept small (512px, q70) because
+    they ride inside a *spoken* conversation: tokens are latency here.
+    """
+    cam = getattr(ctx, "camera360", None)
+    if cam is None or not cam.available():
+        return "My surround camera isn't connected."
+    d = str(direction or "all").lower()
+    wanted = list(_LOOK_YAWS.items()) if d == "all" else [(d, _LOOK_YAWS[d])] \
+        if d in _LOOK_YAWS else None
+    if wanted is None:
+        return "I can look front, left, right, back, or all around."
+    blocks = []
+    for label, yaw in wanted:
+        jpg = cam.jpeg_view(yaw=yaw, pitch=0.0, fov=90.0,
+                            out_size=(512, 384), quality=70)
+        if not jpg:
+            continue
+        blocks.append({"type": "text",
+                       "text": f"View {label} (yaw {yaw:+.0f}°):"})
+        blocks.append({"type": "image",
+                       "source": {"type": "base64", "media_type": "image/jpeg",
+                                  "data": base64.b64encode(jpg).decode("ascii")}})
+    if not blocks:
+        return "I couldn't get a picture just now — my camera may still be starting."
+    return blocks
+
+
+def _drive_cart(ctx, direction: str, duration_s: float) -> str:
+    """LLM cart motion — deliberately coarse (a direction word and a bounded
+    duration, never raw speed numbers) and double-gated: the cart must be
+    enabled AND its ``ai_drive`` flag set. The vision governor and the
+    command TTL still apply underneath, same as any other caller."""
+    cart = getattr(ctx, "cart", None)
+    if cart is None or not cart.enabled:
+        return "My cart isn't connected."
+    if not getattr(cart, "ai_drive", False):
+        return "I'm not allowed to drive myself — my operator has that switched off."
+    d = str(direction or "").lower()
+    dur = max(0.5, min(3.0, float(duration_s or 1.0)))
+    speed = int(cart.max_speed * 0.6)          # gentle: AI moves are never at cap
+    steer = int(cart.max_steer * 0.6)
+    moves = {"forward": (0, speed), "backward": (0, -speed),
+             "left": (-steer, 0), "right": (steer, 0)}
+    if d not in moves:
+        return "I can drive forward, backward, or turn left or right."
+    st = cart.drive(*moves[d], ttl=dur)
+    g = st.get("guard") or {}
+    if st.get("governed_speed") == 0 and moves[d][1] != 0:
+        why = g.get("why") or "someone is too close"
+        return f"I'd better not — {why}."
+    verb = "Rolling" if d in ("forward", "backward") else "Turning"
+    return f"{verb} {d} for {dur:.0f} second{'s' if dur >= 2 else ''}."
+
+
 def execute_action(ctx, name: str, **args) -> str:
     """Run one action and return FRED's spoken confirmation."""
     if name == "open_mouth":
@@ -203,6 +279,16 @@ def execute_action(ctx, name: str, **args) -> str:
 
     if name == "read_sensors":
         return _sensor_report(ctx, str(args.get("which", "all")))
+
+    if name == "scan_surroundings":
+        return _surround_summary(ctx)
+
+    if name == "cart_stop":
+        cart = getattr(ctx, "cart", None)
+        if cart is None or not cart.enabled:
+            return "My cart isn't connected."
+        cart.stop()
+        return "Stopping the cart."
 
     if name == "say_time":
         return sysinfo.spoken_time()
@@ -252,6 +338,9 @@ _TEMP_RX = re.compile(
 
 
 _PATTERNS = [
+    # Cart stop first: a safety phrase must never lose to a fuzzier match.
+    (re.compile(r"\b(stop|halt|freeze)\b.*\b(cart|driving|moving|wheels?|rolling)\b", re.I), "cart_stop", {}),
+    (re.compile(r"\bdon'?t move\b", re.I), "cart_stop", {}),
     (re.compile(r"\b(open|drop)\b.*\b(mouth|jaw)\b", re.I), "open_mouth", {}),
     (re.compile(r"\b(close|shut)\b.*\b(mouth|jaw)\b", re.I), "close_mouth", {}),
     (re.compile(r"\bterminator\b", re.I), "set_led", "toggle"),
@@ -273,7 +362,13 @@ _PATTERNS = [
     # match it (on "someone ... by") and answer with distances nobody asked for.
     (re.compile(r"\b(walk(ed)?|go(ne)?|came?|pass(ed)?|went)\b.*\b(by|past|through|in front)\b", re.I), "read_sensors", {"which": "motion"}),
     (re.compile(r"\b(did|has|have)\b.*\b(any\s?(one|body)|some\s?(one|body))\b.*\b(walk|walked|go|gone|come|came|pass|passed|move|moved)\b", re.I), "read_sensors", {"which": "motion"}),
-    (re.compile(r"\b(any\s?(one|body)|some\s?(one|body)|people)\b.*\b(there|here|around|near(by)?|close|in front)\b", re.I), "read_sensors", {}),
+    # 360-camera surroundings — richer than the ultrasonics for "who's around",
+    # so these phrasings go to the surround summary (which itself falls back to
+    # the chest sensors when the camera isn't watching).
+    (re.compile(r"\b(look|scan|check)\b.*\b(around|surroundings|behind you)\b", re.I), "scan_surroundings", {}),
+    (re.compile(r"\bwho('?s| is| do you see)\b.*\b(around|near(by)?|behind|there)\b", re.I), "scan_surroundings", {}),
+    (re.compile(r"\bwhat\b.*\b(do you )?see\b.*\b(around|behind)?", re.I), "scan_surroundings", {}),
+    (re.compile(r"\b(any\s?(one|body)|some\s?(one|body)|people)\b.*\b(there|here|around|near(by)?|close|in front)\b", re.I), "scan_surroundings", {}),
     (re.compile(r"\bmotion (sensor|detect)", re.I), "read_sensors", {"which": "motion"}),
     (re.compile(r"\bhow far\b", re.I), "read_sensors", {"which": "distance"}),
     (re.compile(r"\b(distance|proximity|ultrasonic)\b.*\b(sensor|reading|say|read)", re.I), "read_sensors", {"which": "distance"}),
@@ -340,12 +435,57 @@ CLAUDE_TOOLS = [
      "input_schema": {"type": "object", "properties": {}}},
     {"name": "relax", "description": "Release the servos so they stop holding torque.",
      "input_schema": {"type": "object", "properties": {}}},
+    {"name": "look_around", "description":
+        "See through FRED's 360-degree surround camera (mounted on a mast above "
+        "his head). Returns actual photos: a dewarped view toward the chosen "
+        "direction, or all four directions at once. Use this when someone asks "
+        "what you can see, what something looks like, what's happening around "
+        "you, or to read/describe anything in the environment. Directions are "
+        "relative to the cart: 'front' is the way the cart faces.",
+     "input_schema": {"type": "object", "properties": {
+         "direction": {"type": "string",
+                       "enum": ["front", "left", "right", "back", "all"],
+                       "description": "Which way to look. Defaults to all."}}}},
+    {"name": "scan_surroundings", "description":
+        "A quick spoken summary of where people are around FRED right now, from "
+        "the 360 camera's person/motion detection (falls back to the chest "
+        "ultrasonics when the camera is off). Use for 'is anyone around?', "
+        "'who's behind you?'. Much faster than look_around; no images.",
+     "input_schema": {"type": "object", "properties": {}}},
+    {"name": "drive_cart", "description":
+        "Drive FRED's wheeled cart base a short, bounded move: forward, "
+        "backward, or turn left/right for up to 3 seconds. A vision safety "
+        "governor will slow or refuse the move if a person is in the way. Only "
+        "works when the operator has enabled AI driving. For any request to "
+        "stop, use stop_cart.",
+     "input_schema": {"type": "object", "properties": {
+         "direction": {"type": "string",
+                       "enum": ["forward", "backward", "left", "right"]},
+         "duration_s": {"type": "number",
+                        "description": "How long to move, 0.5-3 seconds. Default 1."}},
+         "required": ["direction"]}},
+    {"name": "stop_cart", "description":
+        "Immediately stop the cart's wheels. Always allowed, always safe.",
+     "input_schema": {"type": "object", "properties": {}}},
 ]
 
 
-def run_tool(ctx, tool_name: str, tool_input: dict) -> str:
-    """Map a Claude tool call to execute_action and return the spoken result."""
+def run_tool(ctx, tool_name: str, tool_input: dict):
+    """Map a Claude tool call to execute_action and return the result.
+
+    Usually a spoken string; ``look_around`` instead returns a list of content
+    blocks (text + images) that brain.py hands to the API verbatim, so Claude
+    genuinely sees the pictures rather than a description of them.
+    """
     ti = tool_input or {}
+    if tool_name == "look_around":
+        return look_around_blocks(ctx, ti.get("direction", "all"))
+    if tool_name == "scan_surroundings":
+        return execute_action(ctx, "scan_surroundings")
+    if tool_name == "drive_cart":
+        return _drive_cart(ctx, ti.get("direction", ""), ti.get("duration_s", 1.0))
+    if tool_name == "stop_cart":
+        return execute_action(ctx, "cart_stop")
     if tool_name == "set_mouth":
         return execute_action(ctx, "open_mouth" if ti.get("state") == "open" else "close_mouth")
     if tool_name == "set_face_tracking":

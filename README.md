@@ -24,6 +24,8 @@ so call yours whatever you like.
 | **Brain** | Local regex commands answer instantly and for free; anything else falls through to **Claude**, which gets the same actions as tool definitions so it can actually *drive the robot*, not just talk. |
 | **Voice out** | ALSA `aplay`, with a speech envelope published to the chest display so the animation's mouth matches the audio. |
 | **Vision** | Camera Module 3 via `picamera2`, MJPEG stream to the panel, plus an OpenCV Haar-cascade face tracker on a PD loop that moves the eyes, neck and head tilt to hold a face centred. |
+| **360° surround** | An Insta360 X5 on a mast above the head (UVC webcam mode) gives a full-circle view: Claude can *actually look* in any direction (`look_around` returns real photos), person/motion detection feeds the face tracker a bearing to anyone approaching from any angle, and a safety governor slows or stops the cart when someone is in its path. Mocks itself without the camera. See [`INSTA360.md`](INSTA360.md). |
+| **Cart** | Host-side driver for the [FRED-Cart](https://github.com/nledevil/Project-FRED-Cart) hoverboard base: governed drive commands over USB serial with a command TTL, under the Pico's own failsafes. |
 | **Web panel** | Flask on `:8080` — live servo sliders, camera view, conversation transcript, calibration mode, and an admin screen. |
 | **Chest display** | A second Pi drives a 7" DSI panel with framebuffer animations (arc reactor, flux capacitor, animated face, voice HUD), switchable at runtime from the panel. |
 | **Sensors** | A Raspberry Pi Pico reads two HC-SR04 ultrasonics and a PIR, does its own echo timing and event detection, and streams JSON to the robot. Claude can read them, so "is anyone there?" and "did someone walk by?" are answered from actual hardware. |
@@ -82,6 +84,7 @@ chest Pi relays each reading to the head over the PAN, where the head is always
 | USB microphone | Any ALSA-visible mic; used by the Vosk listener. |
 | USB speaker / DAC | Played through `aplay`. |
 | 7" DSI touchscreen | On the chest Pi, 800×480, RGB565 framebuffer. |
+| Insta360 X5 *(optional)* | On a mast above the head, USB-C to the head Pi in webcam mode. Bring-up in [`INSTA360.md`](INSTA360.md). |
 | Raspberry Pi Pico | Sensor node. A plain Pico is fine — the firmware needs no WiFi. |
 | 2× HC-SR04, 1× HC-SR501 | Ultrasonic distance and PIR motion. |
 
@@ -258,6 +261,29 @@ Presets: arc reactor (cyan/copper), flux capacitor, animated face, voice HUD.
 It also carries the **sensor relay** and can overlay a live sensor readout on
 top of whichever animation is playing — toggled from the admin page.
 
+### 360° surround vision
+
+`inmoov/camera360.py` consumes the X5 as a plain UVC webcam delivering
+stitched equirectangular frames, and dewarps any (yaw, pitch, fov) window into
+a normal rectilinear image. `inmoov/surround.py` layers awareness on top —
+cheap motion sectors over the whole circle, targeted Haar person/face
+detection on the busy directions, and a merged track list with rough
+distances. The face tracker takes its "someone is over there" bearing from
+here (falling back to the ultrasonics), Claude gets `look_around` (real
+images) and `scan_surroundings` (a spoken who's-where), and the cart's speed
+is governed by what's in its path. The whole stack runs against a synthetic
+mock scene when no camera is attached — `demo360.py` proves the chain end to
+end with no hardware.
+
+### Cart drive
+
+`inmoov/cart.py` talks to the [FRED-Cart](https://github.com/nledevil/Project-FRED-Cart)
+Pico over USB serial (`"<steer> <speed>"`, `x` = stop). Commands carry a TTL
+and decay to a stop unless renewed; a 10 Hz keepalive sits under the Pico's
+2 s failsafe; and the surround-vision governor rescales every command against
+whoever is standing in the way. Claude may drive only if the admin panel's
+**AI driving** toggle is on (off by default) — his `stop_cart` always works.
+
 ### Sensor node
 
 The Pico does all the timing-critical work: echo measurement, median filtering,
@@ -313,6 +339,7 @@ deploy/                  systemd units and installers
 firmware/pico_sensor_node/   MicroPython sensor node + its push tool
 sounds/                  startup chime and effects
 calibrate.py demo.py     bench tools
+demo360.py               no-hardware bench test of the 360°/cart stack
 ```
 
 ## Documentation
@@ -321,6 +348,7 @@ calibrate.py demo.py     bench tools
 |---|---|
 | [`SERVICE.md`](SERVICE.md) | Running as systemd services, and a long list of real failure modes with their fixes — the most useful file here if something is broken. |
 | [`HOTSPOT.md`](HOTSPOT.md) | WiFi access-point fallback and the Bluetooth PAN. |
+| [`INSTA360.md`](INSTA360.md) | The 360° surround camera: how it's consumed, the bring-up checklist for the X5, and the design limits. |
 | [`firmware/pico_sensor_node/README.md`](firmware/pico_sensor_node/README.md) | Sensor node wiring, flashing, tuning and gotchas. |
 | [`TODO.md`](TODO.md) | What's next. |
 

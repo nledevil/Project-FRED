@@ -30,12 +30,16 @@ from .listener import Listener
 class Assistant:
     def __init__(self, controller, led, tracker, sound, *, api_key: str | None = None,
                  device: str = "plughw:0,0", log=None, mic_gain: float = 1.0,
-                 model: str | None = None, sensors=None):
+                 model: str | None = None, sensors=None, camera360=None,
+                 surround=None, cart=None):
         # sensors is the SensorHub, or None on a build with no sensor node — the
-        # read_sensors action degrades to saying so rather than failing.
+        # read_sensors action degrades to saying so rather than failing. Same
+        # deal for the 360 camera stack (camera360 + surround) and the cart:
+        # each tool answers "isn't connected" when its object is absent.
         self._ctx = types.SimpleNamespace(controller=controller, led=led,
                                           tracker=tracker, sound=sound,
-                                          sensors=sensors)
+                                          sensors=sensors, camera360=camera360,
+                                          surround=surround, cart=cart)
         self._sound = sound
         self._controller = controller
         self._log = log                           # ConversationLog (optional)

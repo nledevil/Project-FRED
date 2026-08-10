@@ -29,10 +29,26 @@
      servo controls down the right side. */
   .wrap { display:grid; gap:16px; align-items:start;
           grid-template-columns:minmax(0,1.55fr) minmax(0,380px);
-          grid-template-areas:"cam controls" "face controls"; }
+          grid-template-areas:"cam controls" "surround controls" "face controls"; }
   .cam { grid-area:cam; } .face { grid-area:face; } .controls { grid-area:controls; }
+  .surround { grid-area:surround; }
   @media (max-width:900px){ .wrap { grid-template-columns:1fr;
-          grid-template-areas:"cam" "face" "controls"; } }
+          grid-template-areas:"cam" "surround" "face" "controls"; } }
+
+  /* 360 surround: the pano strip is 2:1, so keep it short and wide */
+  .surround .pano-view { position:relative; background:#000; border-radius:9px;
+          overflow:hidden; }
+  .surround img { width:100%; display:block; }
+  /* our display rules would otherwise beat the [hidden] attribute */
+  .surround img[hidden], .surround .cartrow[hidden] { display:none; }
+  .surround .pano-msg { position:absolute; inset:0; display:flex; align-items:center;
+          justify-content:center; color:var(--mut); font-size:14px; }
+  .surround .who { color:var(--mut); font-size:13px; margin:10px 2px 0; min-height:1.2em; }
+  .surround .cartrow { display:flex; align-items:center; gap:10px; margin-top:10px;
+          font-size:13px; color:var(--mut); }
+  .surround .cartrow .stop { background:#5a1717; border:1px solid #a33;
+          color:#ffd9d9; font-weight:700; border-radius:9px; padding:6px 14px;
+          cursor:pointer; }
 
   .panel { background:var(--panel); border:1px solid var(--border); border-radius:14px; padding:18px; }
   .phead { display:flex; align-items:center; gap:10px; text-transform:uppercase;
@@ -275,6 +291,26 @@
       </div>
     </section>
 
+    <section class="panel surround" id="surroundPanel">
+      <div class="phead">360&deg; Surround
+        <span id="surState" class="badge">…</span>
+        <span class="cam-hbtns">
+          <button id="watchBtn" onclick="toggleWatch()" disabled
+                  title="Person/motion detection on the 360 camera">◎ Watch</button>
+          <button id="panoBtn" onclick="togglePano()" disabled>▶ Panorama</button>
+        </span>
+      </div>
+      <div class="pano-view">
+        <img id="panoImg" alt="360 panorama" hidden>
+        <div class="pano-msg" id="panoMsg">360&deg; camera off</div>
+      </div>
+      <div class="who" id="surWho"></div>
+      <div class="cartrow" id="cartRow" hidden>
+        <span id="cartState">Cart</span>
+        <button class="stop" onclick="cartStop()">■ STOP CART</button>
+      </div>
+    </section>
+
     <section class="panel face">
       <div id="head" aria-label="InMoov head preview"><div class="loading">Loading face…</div></div>
     </section>
@@ -350,6 +386,7 @@ async function load() {
   initCam();
   initLed();
   initVoice();
+  initSurround();
   render();
   if (!_headPoll) _headPoll = setInterval(pollHead, 120);   // ~8 Hz: face mirrors the real robot
 }
@@ -621,6 +658,80 @@ function updateReticle(st) {
     lbl.textContent = '◎ Searching…';
     ret.classList.remove('locked'); ret.removeAttribute('style');
   }
+}
+
+// ---- 360 surround (Insta360 X5 on the cart mast) -----------------------
+let PANO_ON = false, _surPoll = null;
+function initSurround() {
+  const s360 = STATE && STATE.camera360;
+  const avail = !!(s360 && s360.available);
+  document.getElementById('panoBtn').disabled = !avail;
+  document.getElementById('watchBtn').disabled = !(STATE.surround && STATE.surround.available);
+  document.getElementById('panoMsg').textContent =
+      avail ? '360° camera off' : 'No 360° camera (OpenCV missing)';
+  applySurround(STATE.surround || {});
+  applyCart(STATE.cart || {});
+  if (avail && !_surPoll) _surPoll = setInterval(pollSurround, 1000);
+}
+function applySurround(sv) {
+  const badge = document.getElementById('surState');
+  const cam = (STATE && STATE.camera360) || {};
+  const mode = cam.mode && cam.mode !== 'off' ? ' · ' + cam.mode.toUpperCase() : '';
+  badge.textContent = (sv.running ? 'WATCHING' : 'IDLE') + mode;
+  badge.className = 'badge ' + (sv.running ? 'live' : 'mock');
+  const b = document.getElementById('watchBtn');
+  b.classList.toggle('armed', !!sv.running);
+  b.textContent = sv.running ? '◉ Watching' : '◎ Watch';
+  const who = document.getElementById('surWho');
+  if (!sv.running) { who.textContent = ''; return; }
+  const p = sv.presences || [];
+  who.textContent = p.length
+    ? p.map(x => `${x.kind} at ${x.yaw > 0 ? x.yaw + '°R' : (-x.yaw) + '°L'}`
+                 + (x.dist_m != null ? ` ~${x.dist_m}m` : '')).join(' · ')
+    : 'Nobody around' + (sv.loop_fps ? ` · ${sv.loop_fps} fps` : '');
+}
+function applyCart(c) {
+  const row = document.getElementById('cartRow');
+  row.hidden = !(c && c.enabled);
+  if (row.hidden) return;
+  const g = c.guard || {};
+  document.getElementById('cartState').textContent =
+      'Cart ' + (c.connected ? 'connected' : 'MOCK')
+      + (c.governed_speed ? ` · moving ${c.governed_speed}` : ' · stopped')
+      + (g.why ? ` · ⚠ ${g.why}` : '');
+}
+async function pollSurround() {
+  try {
+    const [sv, c] = await Promise.all([api('/api/surround'), api('/api/cart')]);
+    if (STATE) STATE.surround = sv, STATE.cart = c;
+    applySurround(sv); applyCart(c);
+  } catch (e) { /* transient — next tick */ }
+}
+async function toggleWatch() {
+  const on = !(STATE.surround && STATE.surround.running);
+  const sv = await api('/api/surround', {on});
+  if (STATE) STATE.surround = sv;
+  applySurround(sv);
+  toast(on ? 'Surround vision on' : 'Surround vision off');
+}
+function togglePano() {
+  const img = document.getElementById('panoImg');
+  PANO_ON = !PANO_ON;
+  if (PANO_ON) {
+    img.src = '/camera360/pano?t=' + performance.now();
+    img.hidden = false;
+    document.getElementById('panoMsg').textContent = '';
+  } else {
+    img.src = ''; img.hidden = true;
+    document.getElementById('panoMsg').textContent = '360° camera off';
+  }
+  document.getElementById('panoBtn').textContent = PANO_ON ? '⏹ Panorama' : '▶ Panorama';
+}
+async function cartStop() {
+  const c = await api('/api/cart', {stop: true});
+  if (STATE) STATE.cart = c;
+  applyCart(c);
+  toast('Cart stopped');
 }
 
 function render() {

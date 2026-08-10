@@ -1,5 +1,30 @@
 # InMoov TODO
 
+## Insta360 X5 surround vision (built 2026-08-10 — awaiting the camera)
+
+The whole 360° stack is **built and bench-tested against the mock scene**
+(`demo360.py` passes end to end): `camera360.py` (UVC capture + equirect
+dewarp + MJPEG), `surround.py` (motion sectors → targeted Haar → presence
+tracks / bearings / spoken summary), `cart.py` (governed serial drive with
+TTL + keepalive), Claude's `look_around` (real images) / `scan_surroundings`
+/ gated `drive_cart` + `stop_cart` tools, the panel's 360° Surround card, the
+admin toggles, and the face tracker's surround-first bearing. What remains
+needs the physical X5 (bring-up checklist in `INSTA360.md`):
+
+- [ ] Confirm the X5's webcam-mode equirect sizes/fps on the Pi; set
+      `camera360.device/width/height/fps` to a real mode.
+- [ ] Calibrate `front_yaw` for the mount (Admin → Forward offset).
+- [ ] Walk-around test: motion sectors → face upgrade → distances sane;
+      tune `motion_threshold` for the venue floor.
+- [ ] Face-tracker handoff: approach from behind, head should turn before
+      the eye camera can see you.
+- [ ] Governor live test at walking speed with a spotter; then decide on
+      the AI-driving toggle.
+- [ ] Follow-ups worth considering: greet on surround presence (not just the
+      PIR), a panel radar rose instead of the text readout, upgrade Haar to
+      the OpenCV DNN face detector if backs-of-heads matter, and let the
+      chest display point its eyes at the strongest presence.
+
 ## STEM event readiness (planned 2026-07-08)
 
 FRED will be shown at STEM events with students walking up and asking questions.

@@ -66,6 +66,37 @@ DEFAULT_SETTINGS = {
                                       # stops a person lingering at the edge of the cone
                                       # from being greeted over and over
     },
+    "camera360": {
+        # The Insta360 X5 on the cart mast, consumed as a UVC webcam (put the
+        # camera in webcam mode over USB-C). See inmoov/camera360.py and
+        # docs/INSTA360.md. source: "auto" (open `device`, fall back to the
+        # mock scene), "mock" (always synthetic), or an rtsp://... URL.
+        "source": "auto",
+        "device": "/dev/video8",      # UVC node; the Pi camera stack owns the low
+                                      # numbers, so the X5 usually lands high — check
+                                      # `v4l2-ctl --list-devices` on bring-up
+        "width": 1920,                # equirect capture size; confirm the X5's
+        "height": 960,                # actual webcam-mode list on bring-up
+        "fps": 15,
+        "front_yaw": 0.0,             # camera yaw of cart-forward (mount calibration)
+    },
+    "surround": {
+        # SurroundVision person/motion awareness over the 360 camera. Tunables
+        # beyond these live in inmoov/surround.py (TUNABLE) and persist here
+        # once touched via POST /api/surround, same pattern as "track".
+        "enabled": False,             # start watching at boot
+    },
+    "cart": {
+        # The FRED-Cart hoverboard base (Project-FRED-Cart repo): a Pico on USB
+        # serial taking "<steer> <speed>" lines. The Pico's own failsafes stay
+        # underneath everything here (2 s host silence = stop; PS2 outranks us).
+        "enabled": False,             # master switch — no serial is ever opened when off
+        "port": "/dev/ttyACM1",       # the sensor node usually claims ACM0
+        "baud": 115200,
+        "max_speed": 150,             # walking pace; firmware full scale is 1000
+        "max_steer": 300,
+        "ai_drive": False,            # allow Claude's drive_cart tool (stop always works)
+    },
     "track": {
         # Face-tracking tunables (gains, invert flags, deadzone...). Deliberately
         # empty: the defaults live in FaceTracker's signature, so there is one

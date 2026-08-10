@@ -30,6 +30,9 @@ from flask import Flask, Response, jsonify, render_template, request  # noqa: E4
 
 from inmoov.servo_controller import ServoController, CONFIG_PATH, load_config  # noqa: E402
 from inmoov.camera import Camera  # noqa: E402
+from inmoov.camera360 import Camera360  # noqa: E402
+from inmoov.surround import SurroundVision, TUNABLE as SURROUND_TUNABLE  # noqa: E402
+from inmoov.cart import Cart  # noqa: E402
 from inmoov.face_tracker import FaceTracker, TUNABLE  # noqa: E402
 from inmoov.assistant import Assistant  # noqa: E402
 from inmoov import sysinfo  # noqa: E402
@@ -86,19 +89,60 @@ _track_cfg = {k: v for k, v in (_settings.get("track") or {}).items()
 _sensor_cfg = _settings.get("sensors", {})
 _sensors = SensorHub(on_event=None, log=_log,
                      offline_after=float(_sensor_cfg.get("offline_after", 10.0)))
+# The Insta360 X5 on the cart mast (UVC webcam mode) + the surround-awareness
+# layer over it. Independent of the head camera and of the MyRobotLab handoff —
+# it's a plain USB device the handoff doesn't cover. Mocks itself without one.
+_c360_cfg = _settings.get("camera360", {})
+_camera360 = Camera360(source=str(_c360_cfg.get("source", "auto")),
+                       device=str(_c360_cfg.get("device", "/dev/video8")),
+                       size=(int(_c360_cfg.get("width", 1920)),
+                             int(_c360_cfg.get("height", 960))),
+                       fps=float(_c360_cfg.get("fps", 15)),
+                       front_yaw=float(_c360_cfg.get("front_yaw", 0.0)))
+_surround_cfg = _settings.get("surround", {})
+_surround = SurroundVision(_camera360, event_cb=_log.event,
+                           **{k: v for k, v in _surround_cfg.items()
+                              if k in SURROUND_TUNABLE})
+# The cart base (Project-FRED-Cart Pico over USB serial), its speed governed
+# live by what the 360 camera sees in the direction of travel.
+_cart_cfg = _settings.get("cart", {})
+_cart = Cart(port=str(_cart_cfg.get("port", "/dev/ttyACM1")),
+             baud=int(_cart_cfg.get("baud", 115200)),
+             guard_cb=_surround.nav_assess, log=_log,
+             max_speed=int(_cart_cfg.get("max_speed", 150)),
+             max_steer=int(_cart_cfg.get("max_steer", 300)),
+             enabled=bool(_cart_cfg.get("enabled", False)))
+_cart.ai_drive = bool(_cart_cfg.get("ai_drive", False))   # Claude's drive_cart gate
+
+
+def _tracker_bearing():
+    """Best available "someone is over there" hint for the face tracker.
+
+    The 360 camera, when it's watching, actually *sees* people and beats two
+    ultrasonics at their own game; otherwise fall through to the chest sensors.
+    0.0 is a valid bearing (dead ahead), so test against None, not truthiness.
+    """
+    if _surround.is_running():
+        b = _surround.bearing()
+        if b is not None:
+            return b
+    return _sensors.bearing(
+        left=_sensor_cfg.get("bearing_left", "dist_left"),
+        right=_sensor_cfg.get("bearing_right", "dist_right"))
+
+
 _tracker = FaceTracker(_camera, _ctrl,       # face-follow: eyes + neck + head tilt
                        event_cb=_log.event,  # logs face-detected / lost / tracking on-off
                        # Coarse "someone is over there" for when the camera has
-                       # nothing — the ultrasonics see a wider arc than the lens.
-                       bearing_cb=lambda: _sensors.bearing(
-                           left=_sensor_cfg.get("bearing_left", "dist_left"),
-                           right=_sensor_cfg.get("bearing_right", "dist_right")),
+                       # nothing — surround vision first, ultrasonics as backup.
+                       bearing_cb=_tracker_bearing,
                        **_track_cfg)         # bench tuning persisted from /api/track
 _assistant = Assistant(_ctrl, _status_led, _tracker, _sound,  # voice: wake word + Claude + lip-sync
                        device=_snd_cfg.get("device", "plughw:0,0"), log=_log,
                        mic_gain=float(_voice_cfg.get("gain", 1.0)),
                        model=_voice_cfg.get("model") or None,
-                       sensors=_sensors)
+                       sensors=_sensors, camera360=_camera360,
+                       surround=_surround, cart=_cart)
 # Auto-greet: the first thing FRED does unprompted. Wired after the assistant
 # because it needs one, and attached to the hub afterwards because the hub was
 # needed to build the assistant — the dependency is genuinely circular.
@@ -186,7 +230,8 @@ def _state() -> dict:
             "sound": sound, "led": _status_led.status(), "track": _tracker.status(),
             "voice": _assistant.status(), "servos": servos, "settings": _settings,
             "handoff": _handoff_state(), "sensors": _sensors.state(),
-            "greet": _greeter.state()}
+            "greet": _greeter.state(), "camera360": _camera360.status(),
+            "surround": _surround.status(), "cart": _cart.status()}
 
 
 @app.get("/")
@@ -509,6 +554,166 @@ def api_track():
     if "on" in data:
         _tracker.start() if data["on"] else _tracker.stop()
     return jsonify(_tracker.status())
+
+
+# --- 360 surround camera (Insta360 X5 on the cart mast) ----------------------
+# Independent of the head camera and the MyRobotLab handoff: a plain USB UVC
+# device. All endpoints work in mock mode too — that's how this was built.
+
+@app.get("/api/camera360")
+def api_camera360_status():
+    return jsonify(_camera360.status())
+
+
+@app.post("/api/camera360")
+def api_camera360():
+    """Adjust the 360 camera. ``{"front_yaw": deg}`` re-zeros where
+    cart-forward sits in the image (mount calibration; applied live).
+    ``{"source": .., "device": ..}`` persist for the next capture start."""
+    data = request.get_json(force=True) or {}
+    cfg = _settings.setdefault("camera360", {})
+    changed = False
+    if "front_yaw" in data:
+        try:
+            _camera360.set_front_yaw(float(data["front_yaw"]))
+        except (TypeError, ValueError):
+            return jsonify({"error": "front_yaw must be a number"}), 400
+        cfg["front_yaw"] = _camera360.front_yaw
+        changed = True
+    if "source" in data or "device" in data:
+        _camera360.set_source(source=data.get("source"), device=data.get("device"))
+        if "source" in data:
+            cfg["source"] = str(data["source"]).strip() or "auto"
+        if "device" in data:
+            cfg["device"] = str(data["device"]).strip()
+        changed = True
+    if changed:
+        save_settings(_settings)
+    return jsonify(_camera360.status())
+
+
+@app.get("/camera360/pano")
+def camera360_pano():
+    """Live equirect panorama, MJPEG (the panel's strip view)."""
+    if not _camera360.available():
+        return jsonify({"error": "no 360 camera (OpenCV missing)"}), 503
+
+    def gen():
+        for frame in _camera360.frames_pano():
+            yield (b"--frame\r\n"
+                   b"Content-Type: image/jpeg\r\n"
+                   b"Content-Length: " + str(len(frame)).encode() + b"\r\n\r\n"
+                   + frame + b"\r\n")
+
+    return Response(gen(), mimetype="multipart/x-mixed-replace; boundary=frame")
+
+
+@app.get("/camera360/view")
+def camera360_view():
+    """A dewarped rectilinear view: ``?yaw=&pitch=&fov=`` (robot-frame degrees).
+    ``&stream=1`` for MJPEG, else a single JPEG still."""
+    if not _camera360.available():
+        return jsonify({"error": "no 360 camera (OpenCV missing)"}), 503
+    try:
+        yaw = float(request.args.get("yaw", 0))
+        pitch = float(request.args.get("pitch", 0))
+        fov = float(request.args.get("fov", 90))
+    except ValueError:
+        return jsonify({"error": "yaw/pitch/fov must be numbers"}), 400
+    if request.args.get("stream"):
+        def gen():
+            for frame in _camera360.frames_view(yaw=yaw, pitch=pitch, fov=fov):
+                yield (b"--frame\r\n"
+                       b"Content-Type: image/jpeg\r\n"
+                       b"Content-Length: " + str(len(frame)).encode() + b"\r\n\r\n"
+                       + frame + b"\r\n")
+        return Response(gen(), mimetype="multipart/x-mixed-replace; boundary=frame")
+    jpg = _camera360.jpeg_view(yaw=yaw, pitch=pitch, fov=fov)
+    if not jpg:
+        return jsonify({"error": "no frame"}), 503
+    return Response(jpg, mimetype="image/jpeg")
+
+
+@app.get("/api/surround")
+def api_surround_status():
+    return jsonify(_surround.status())
+
+
+@app.post("/api/surround")
+def api_surround():
+    """Start/stop surround vision and/or live-tune it — same contract as
+    ``/api/track``: ``{"on": bool, <tuning>...}``, tuning persists on change."""
+    if not _surround.available():
+        return jsonify({"error": "surround vision unavailable (needs OpenCV)"}), 503
+    data = request.get_json(force=True) or {}
+    before = _surround.tuning()
+    _surround.configure(**data)
+    after = _surround.tuning()
+    if after != before:
+        _settings.setdefault("surround", {}).update(after)
+        save_settings(_settings)
+    if "on" in data:
+        if data["on"]:
+            _surround.start()
+        else:
+            _surround.stop()
+        _settings.setdefault("surround", {})["enabled"] = bool(data["on"])
+        save_settings(_settings)
+    return jsonify(_surround.status())
+
+
+# --- cart base (Project-FRED-Cart) -------------------------------------------
+
+@app.get("/api/cart")
+def api_cart_status():
+    return jsonify(_cart.status())
+
+
+@app.post("/api/cart")
+def api_cart():
+    """Drive the cart. Body: ``{"stop": true}`` or ``{"steer": n, "speed": n,
+    "ttl": s}``. Commands expire after ``ttl`` (default 1 s) unless renewed —
+    hold-to-drive from the panel means re-POSTing while held. The vision
+    governor caps ``speed`` regardless of what's asked."""
+    data = request.get_json(force=True) or {}
+    if data.get("stop"):
+        return jsonify(_cart.stop())
+    if not _cart.enabled:
+        return jsonify({"error": "cart is disabled — enable it in settings first"}), 409
+    try:
+        steer = int(data.get("steer", 0))
+        speed = int(data.get("speed", 0))
+        ttl = float(data.get("ttl", 1.0))
+    except (TypeError, ValueError):
+        return jsonify({"error": "steer/speed must be integers"}), 400
+    return jsonify(_cart.drive(steer, speed, ttl=ttl))
+
+
+@app.post("/api/cart/config")
+def api_cart_config():
+    """Cart operator settings: ``enabled``, ``ai_drive``, ``max_speed``,
+    ``max_steer``, ``port``. Persisted; enable/disable takes effect live
+    (disabling stops the cart and closes the port)."""
+    data = request.get_json(force=True) or {}
+    cfg = _settings.setdefault("cart", {})
+    if "enabled" in data:
+        cfg["enabled"] = _cart.enabled = bool(data["enabled"])
+        if not _cart.enabled:
+            _cart.shutdown()
+    if "ai_drive" in data:
+        cfg["ai_drive"] = _cart.ai_drive = bool(data["ai_drive"])
+    if "max_speed" in data or "max_steer" in data:
+        try:
+            _cart.set_limits(max_speed=data.get("max_speed"),
+                             max_steer=data.get("max_steer"))
+        except (TypeError, ValueError):
+            return jsonify({"error": "max_speed/max_steer must be integers"}), 400
+        cfg["max_speed"], cfg["max_steer"] = _cart.max_speed, _cart.max_steer
+    if "port" in data:
+        _cart.set_port(str(data["port"]))
+        cfg["port"] = str(data["port"])
+    save_settings(_settings)
+    return jsonify(_cart.status())
 
 
 @app.get("/api/voice")
@@ -927,6 +1132,12 @@ if __name__ == "__main__":
     if (_settings.get("voice", {}).get("enabled") and _assistant.available()
             and not _handoff_released):
         _assistant.start(greet=True)             # "Hey FRED" listener on at boot
+    # The 360 stack ignores the handoff: it's a plain USB camera MyRobotLab
+    # doesn't take, and the cart is its own serial device.
+    if _surround_cfg.get("enabled") and _surround.available():
+        _surround.start()                        # 360 person/motion awareness on at boot
+    if _cart.enabled:
+        _cart.start()                            # opens the Pico link + keepalive/governor
     if _sensor_cfg.get("serial_enabled"):
         _serial_sensors.start()                  # read a USB-serial sensor node (no-WiFi fallback)
     app.run(host="0.0.0.0", port=8080, threaded=True)

@@ -160,6 +160,35 @@
   </section>
 
   <section class="panel">
+    <p class="phead">360&deg; camera &amp; cart</p>
+    <div class="row">
+      <div class="label"><b>360&deg; camera device</b><span>Insta360 X5 in webcam mode (UVC)</span></div>
+      <input type="text" id="c360Device" placeholder="/dev/video8" style="width:150px">
+      <select id="c360Source">
+        <option value="auto">Auto (device, else mock)</option>
+        <option value="mock">Mock scene</option>
+      </select>
+    </div>
+    <div class="row">
+      <div class="label"><b>Forward offset</b><span>camera yaw of cart-forward, degrees</span></div>
+      <input type="number" id="c360Yaw" step="1" min="-180" max="180" style="width:90px">
+    </div>
+    <div class="row">
+      <div class="label"><b>Cart drive</b><span>USB serial link to the cart Pico</span></div>
+      <label class="switch"><input type="checkbox" id="cartEnabled" onchange="onCart()"> Enable the cart</label>
+      <input type="text" id="cartPort" placeholder="/dev/ttyACM1" style="width:150px">
+    </div>
+    <div class="row">
+      <div class="label"><b>AI driving</b><span>let Claude's drive_cart tool move the cart</span></div>
+      <label class="switch"><input type="checkbox" id="cartAi" onchange="onCart()"> Allow short AI-driven moves</label>
+    </div>
+    <p class="hint">The 360&deg; camera feeds the surround-vision radar, the face tracker's
+       bearings, and FRED's look-around tool. The vision governor slows or stops the cart
+       whenever a person is in its path, whoever is driving; the PS2 controller always
+       outranks this app. Device/source changes apply the next time the camera starts.</p>
+  </section>
+
+  <section class="panel">
     <p class="phead">Chest display</p>
     <div class="row">
       <div class="label"><b>Display Pi</b><span>IP address &amp; control port</span></div>
@@ -332,6 +361,25 @@ function fill(s) {
   onLead(sound.lead_in ?? 0.0);
   document.getElementById('syncOffset').value = sound.sync_offset ?? 0.0;
   onSync(sound.sync_offset ?? 0.0);
+  const c360 = s.camera360 || {};
+  document.getElementById('c360Device').value = c360.device || '/dev/video8';
+  document.getElementById('c360Source').value = c360.source === 'mock' ? 'mock' : 'auto';
+  document.getElementById('c360Yaw').value = c360.front_yaw ?? 0;
+  const cart = s.cart || {};
+  document.getElementById('cartEnabled').checked = !!cart.enabled;
+  document.getElementById('cartAi').checked = !!cart.ai_drive;
+  document.getElementById('cartPort').value = cart.port || '/dev/ttyACM1';
+}
+
+// Cart safety switches apply immediately (not on Save): an operator reaching
+// for "disable" should not have to also find the Save button.
+async function onCart() {
+  const r = await api('/api/cart/config', {
+    enabled: document.getElementById('cartEnabled').checked,
+    ai_drive: document.getElementById('cartAi').checked,
+  });
+  if (r.error) { toast('⚠ ' + r.error, true); return; }
+  toast(r.enabled ? 'Cart enabled' + (r.mock ? ' (mock)' : '') : 'Cart disabled');
 }
 
 async function load() { fill(await api('/api/settings')); }
@@ -359,7 +407,16 @@ async function save() {
   };
   const res = await api('/api/settings', payload);
   if (res.error) { toast('⚠ ' + res.error, true); return; }
-  fill(res);
+  // The 360 camera and cart have their own live-apply endpoints.
+  await api('/api/camera360', {
+    device: document.getElementById('c360Device').value.trim(),
+    source: document.getElementById('c360Source').value,
+    front_yaw: +document.getElementById('c360Yaw').value || 0,
+  });
+  await api('/api/cart/config', {
+    port: document.getElementById('cartPort').value.trim(),
+  });
+  fill(await api('/api/settings'));
   toast('Settings saved');
   refreshDisplay();     // a new address/token may have just come online
 }
