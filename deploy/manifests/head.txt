@@ -26,7 +26,11 @@ deploy/led-server.service
 # when the head was the brain, and it imports netinfo + settings + sound — three
 # modules with no other reason to be on this machine, one of which needs audio
 # hardware the head no longer has. Its address is now fixed by the NUC's DHCP
-# anyway. inmoov-announce-ip.service was disabled 2026-08-09 to match.
+# anyway. inmoov-announce-ip.service was disabled and its unit file removed from
+# the head Pi on 2026-08-09. Both files stay in this repo: deploy/inmoov.service
+# still orders against the announcement, and that is the single-Pi build's story,
+# not this one. Note inmoov/netinfo.py is NOT announce-only — sysinfo.py uses it
+# for the panel's "what is my IP" answer, so it lives on with the brain.
 
 # --- the shared package, closure only ---------------------------------------
 # servo_server imports servo_controller; led_server imports led. That is the
