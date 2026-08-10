@@ -20,8 +20,8 @@ Switching is just "kill the child, spawn the next one", so it lands in ~100ms.
     POST /api/cart/stop  -> {"estop": false}; stop now, optionally latching
 
 It also carries the **sensor relay**: the Pico in FRED's stomach plugs into this
-Pi, and sensor_relay.py reads its USB-serial stream and forwards it to the head
-over the Bluetooth PAN. That lives here rather than in its own unit because this
+Pi, and sensor_relay.py reads its USB-serial stream and forwards it to the brain
+over the robot LAN. That lives here rather than in its own unit because this
 is already the supervised, always-on process on this Pi — one thing to install,
 one thing to restart. It is strictly best-effort and shares nothing with the
 animation, so a missing Pico or an unreachable head can't disturb the screen.

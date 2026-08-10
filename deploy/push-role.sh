@@ -79,8 +79,11 @@ if [ "$LIST_EXTRA" -eq 1 ]; then
   } | sort -u > "$claimed"
 
   echo "--- present on $TARGET:$ROOT but NOT claimed by the manifest ---"
-  ssh "$TARGET" "cd '$ROOT' 2>/dev/null && find . -mindepth 1 \
-        -not -path './.git/*' -not -path './venv/*' -not -path '*/__pycache__/*' \
+  # Files only. Directories are implied by the files inside them, and listing
+  # them just produces noise you cannot act on ("deploy/ is unclaimed" is not a
+  # thing you delete). __pycache__ is excluded as a path, not just its contents.
+  ssh "$TARGET" "cd '$ROOT' 2>/dev/null && find . -mindepth 1 -type f \
+        -not -path './.git/*' -not -path './venv/*' -not -path '*__pycache__*' \
         -printf '%P\n' 2>/dev/null | sort" \
     | grep -vxF -f "$claimed" || true
   echo "--- end (nothing was deleted) ---"

@@ -109,7 +109,7 @@ _track_cfg = {k: v for k, v in (_settings.get("track") or {}).items()
               if k in TUNABLE}             # drop stale/unknown keys: a hand-edited
                                            # settings.json must not break startup
 # Remote smart-sensor nodes (a Pico in the stomach) push readings/events here,
-# relayed by the chest Pi over the Bluetooth PAN. Events land in the transcript.
+# relayed by the chest Pi over the robot LAN. Events land in the transcript.
 # Built first because two things downstream consume it: the tracker takes a
 # left/right bearing off the ultrasonics, and the assistant hands the whole hub
 # to Claude as a tool so FRED can answer "is anyone there?" from real hardware.
@@ -464,7 +464,7 @@ def api_sensors_ingest():
 
     A node may name its own ``transport`` so the panel shows the real path: the
     stomach node reaches us as ``serial-relay`` (USB into the chest Pi, forwarded
-    over the Bluetooth PAN by display_control.py), which is worth telling apart
+    over the robot LAN by display_control.py), which is worth telling apart
     from a node posting directly over WiFi."""
     token = str(_sensor_cfg.get("token", "") or "")
     data = request.get_json(force=True, silent=True) or {}

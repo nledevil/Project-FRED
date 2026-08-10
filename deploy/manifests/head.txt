@@ -17,16 +17,16 @@ deploy/servo_server.py
 deploy/camera_stream.py
 deploy/led_server.py
 
-# Enabled and points into this directory, so it ships or it breaks at boot.
-# Legacy: it announced the Pi's DHCP address aloud back when the head had audio
-# and no fixed address. Both are now false. A candidate for disabling.
-deploy/announce_ip.py
-
 # --- unit files, for reinstalling from scratch ------------------------------
 deploy/servo-server.service
 deploy/camera-stream.service
 deploy/led-server.service
-deploy/inmoov-announce-ip.service
+
+# NOT shipped: deploy/announce_ip.py. It spoke the Pi's DHCP address aloud back
+# when the head was the brain, and it imports netinfo + settings + sound — three
+# modules with no other reason to be on this machine, one of which needs audio
+# hardware the head no longer has. Its address is now fixed by the NUC's DHCP
+# anyway. inmoov-announce-ip.service was disabled 2026-08-09 to match.
 
 # --- the shared package, closure only ---------------------------------------
 # servo_server imports servo_controller; led_server imports led. That is the
@@ -49,6 +49,9 @@ deploy/vcgencmd_power_report.sh
 seed: config/servos.json
 
 # --- never touch ------------------------------------------------------------
+# No .git here: as of 2026-08-09 this directory is a deploy target, not a
+# checkout. Stripping it left ~50 tracked files "deleted", which is one stray
+# `git checkout .` away from undoing the strip — and a second checkout is how
+# the branches drift apart in the first place. Deploy from the NUC.
 keep: venv
-keep: .git
 keep: __pycache__

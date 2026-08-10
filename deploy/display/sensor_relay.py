@@ -3,14 +3,16 @@
 
 The Pico in FRED's stomach reads the ultrasonics + PIR and prints one JSON
 object per line to USB serial (see firmware/pico_sensor_node/main.py). It's
-plugged into *this* Pi, but the app that reacts to sensors runs on the head — so
+plugged into *this* Pi, but the app that reacts to sensors runs on the brain — so
 something has to carry the lines across. That's this: read the tty, POST each
-line to ``http://10.0.0.1:8080/api/sensors/ingest`` over the Bluetooth PAN.
+line to ``http://10.0.0.1:8080/api/sensors/ingest`` over the robot LAN.
 
-The PAN address is the whole reason this design beats putting WiFi on the node:
-the head is *always* 10.0.0.1 on ``pan0``. No DHCP lease to chase, no mDNS, no
-venue network required. It rides inside display_control.py rather than being its
-own service because there's already a supervised, always-on process on this Pi.
+The fixed address is the whole reason this design beats putting WiFi on the node:
+the brain is *always* 10.0.0.1. That was true of the Bluetooth PAN this was
+written for, and it stayed true when the wired LAN replaced it — the NUC serves
+DHCP and keeps .1 for itself, so this line never had to change. No lease to
+chase, no mDNS, no venue network. It rides inside display_control.py rather than
+its own service because there's already a supervised, always-on process on this Pi.
 
 Stdlib only — this Pi has no pyserial and no requests, and a relay this small
 doesn't justify adding them. The tty is configured through ``termios`` and the
