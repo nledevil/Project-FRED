@@ -231,6 +231,27 @@ class RemoteServoController:
             time.sleep(duration / steps)
         return target
 
+    def push_config(self, config: dict | None = None) -> dict:
+        """Make `config` (default: our local copy) the head's servo config.
+
+        The counterpart to `_refresh`: because the head owns the hardware, its
+        servos.json wins on every refresh, so a calibration saved on this
+        machine is invisible to the servos until it is pushed. The head
+        validates, persists, and adopts it without moving anything; we then
+        re-read so our cached limits are the head's, not our own.
+
+        Returns the head's summary (updated/unchanged/outside_limits/...).
+        Raises RemoteServoError if the head is unreachable or rejects it.
+        """
+        cfg = config if config is not None else self.config
+        servos = cfg.get("servos") if isinstance(cfg, dict) else None
+        if not isinstance(servos, dict) or not servos:
+            raise RemoteServoError("nothing to push: config has no 'servos'")
+        data = self._request("POST", "/api/config", {"servos": servos})
+        self._stale = True
+        self._refresh_if_stale()
+        return data
+
     def rest(self) -> None:
         """Every servo to its rest position (locked ones are skipped by the head)."""
         try:

@@ -22,6 +22,7 @@ Endpoints:
   POST /api/relax               {"name": "jaw"} or {} for all — cuts pulses
   POST /api/suspend             release the I2C bus (hand off to MyRobotLab)
   POST /api/resume              take it back
+  POST /api/config              adopt a new servos.json: {"servos": {...}}
 
 Every move returns the angle the controller *actually* applied after clamping,
 so the caller's cached position stays truthful rather than drifting from the
@@ -59,7 +60,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from inmoov.servo_controller import ServoController, load_config  # noqa: E402
+from inmoov.servo_controller import ServoController, load_config, CONFIG_PATH  # noqa: E402
 
 PORT = int(os.environ.get("SERVO_PORT", "8082"))
 TOKEN = os.environ.get("SERVO_TOKEN", "").strip()
@@ -69,6 +70,127 @@ MOVE_TO_REST = os.environ.get("SERVO_MOVE_TO_REST", "0") == "1"
 _ctrl: ServoController | None = None
 _lock = threading.Lock()      # serialise requests; the controller guards I2C itself,
                               # but batch moves should not interleave with a rest sweep
+
+# Fields /api/config may change. `channel` is handled separately (it needs the
+# controller's own remap to stop driving the old port), and anything not listed
+# here — servo names, the i2c block — is ignored rather than half-applied.
+_TUNABLE = ("min_angle", "max_angle", "rest_angle", "pulse_min_us",
+            "pulse_max_us", "actuation_range", "invert", "description")
+
+
+def _merged(name: str, src: dict, cur: dict) -> dict:
+    """Overlay `src` onto the servo's current settings and sanity-check the
+    result. Raises ValueError on anything that would be unsafe to drive.
+
+    Validating the *merged* dict rather than the incoming one means a partial
+    update (just a rest_angle, say) is still checked against the limits it will
+    actually live under.
+    """
+    out = dict(cur)
+    for k in _TUNABLE:
+        if k in src:
+            out[k] = src[k]
+
+    for k in ("min_angle", "max_angle", "rest_angle", "pulse_min_us",
+              "pulse_max_us", "actuation_range"):
+        v = out.get(k)
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            raise ValueError(f"{name}.{k} must be a number, got {v!r}")
+
+    rng = float(out["actuation_range"])
+    lo, hi, rest = float(out["min_angle"]), float(out["max_angle"]), float(out["rest_angle"])
+    if not 0 < rng <= 360:
+        raise ValueError(f"{name}.actuation_range {rng} outside 0..360")
+    if lo > hi:
+        raise ValueError(f"{name}: min_angle {lo} > max_angle {hi}")
+    if not (0 <= lo <= rng and 0 <= hi <= rng):
+        raise ValueError(f"{name}: limits {lo}..{hi} outside the servo's 0..{rng}")
+    # rest == a limit is legitimate: the jaw rests exactly on min_angle so the
+    # mouth defaults closed. Only rest *outside* the limits is rejected.
+    if not lo <= rest <= hi:
+        raise ValueError(f"{name}: rest_angle {rest} outside limits {lo}..{hi}")
+    if float(out["pulse_min_us"]) >= float(out["pulse_max_us"]):
+        raise ValueError(f"{name}: pulse_min_us must be below pulse_max_us")
+
+    out["invert"] = bool(out.get("invert", False))
+    out["description"] = str(out.get("description", ""))
+    return out
+
+
+def _persist() -> None:
+    """Write the live config back to servos.json, atomically."""
+    tmp = CONFIG_PATH.with_name(CONFIG_PATH.name + ".tmp")
+    with open(tmp, "w") as f:
+        json.dump(_ctrl.config, f, indent=2)
+        f.write("\n")
+    os.replace(tmp, CONFIG_PATH)
+
+
+def _adopt_config(body: dict) -> dict:
+    """Adopt a servo config pushed by the brain and persist it.
+
+    This exists because this server is the authority: it reads servos.json once
+    at startup and RemoteServoController pulls limits/rest from here on every
+    refresh. Without this endpoint a calibration saved on the NUC never reaches
+    the hardware, and Rest keeps using whatever this machine booted with.
+
+    **Never moves a servo.** If new limits exclude where a servo currently sits,
+    that is reported in ``outside_limits`` and left alone — the next commanded
+    move clamps it back into range. Deciding to move belongs to a caller with
+    eyes on the robot, not to a config push.
+    """
+    incoming = body.get("servos")
+    if not isinstance(incoming, dict) or not incoming:
+        raise ValueError('expected {"servos": {"<name>": {...}, ...}}')
+
+    known = set(_ctrl.servos)
+    unknown = sorted(set(incoming) - known)
+    shared = [n for n in incoming if n in known]
+    if not shared:
+        raise ValueError(f"none of the pushed servos exist here; got {unknown}, "
+                         f"known: {sorted(known)}")
+
+    # Validate the whole batch first: a half-applied calibration is worse than a
+    # rejected one, since the caller would have no idea which half landed.
+    validated = {}
+    for n in shared:
+        src = incoming[n]
+        if not isinstance(src, dict):
+            raise ValueError(f"{n}: expected an object, got {type(src).__name__}")
+        validated[n] = _merged(n, src, _ctrl.servos[n])
+
+    changed, rechannelled, outside = [], [], {}
+    for n, new in validated.items():
+        s = _ctrl.servos[n]
+
+        # Channel first, via the controller, so the old port stops being driven
+        # and the new one gets this servo's pulse range.
+        want_ch = incoming[n].get("channel", s["channel"])
+        if isinstance(want_ch, (int, float)) and int(want_ch) != s["channel"]:
+            _ctrl.set_channel(n, int(want_ch))
+            rechannelled.append(n)
+
+        if any(s.get(k) != new[k] for k in _TUNABLE):
+            changed.append(n)
+        s.update(new)                      # _ctrl.servos IS _ctrl.config["servos"]
+
+        # Pulse width and actuation range live on the PCA9685 channel, not only
+        # in the dict, so they have to be re-applied to take effect.
+        if not _ctrl.mock and not _ctrl.is_suspended():
+            with _ctrl._io_lock:
+                port = _ctrl._kit.servo[s["channel"]]
+                port.set_pulse_width_range(s["pulse_min_us"], s["pulse_max_us"])
+                port.actuation_range = s.get("actuation_range", 180)
+
+        at = _ctrl.get_angle(n)
+        if at is not None and not s["min_angle"] <= at <= s["max_angle"]:
+            outside[n] = at
+
+    _persist()
+    return {"updated": sorted(changed), "rechannelled": sorted(rechannelled),
+            "unchanged": sorted(set(shared) - set(changed)), "ignored_unknown": unknown,
+            "not_in_push": sorted(known - set(incoming)),
+            "outside_limits": outside, "saved": str(CONFIG_PATH)}
 
 
 class _Handler(server.BaseHTTPRequestHandler):
@@ -197,6 +319,14 @@ class _Handler(server.BaseHTTPRequestHandler):
                     continue
                 _ctrl.set_angle(name, s["rest_angle"])
             return self._send(200, {"angles": dict(_ctrl._current), "skipped_locked": skipped})
+
+        if path == "/api/config":
+            try:
+                return self._send(200, _adopt_config(body))
+            except ValueError as exc:
+                # A rejected calibration must say why — this is the one endpoint
+                # whose failure the operator will otherwise read as "saved fine".
+                return self._send(400, {"error": str(exc)})
 
         if path == "/api/relax":
             name = body.get("name")

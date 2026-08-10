@@ -803,11 +803,32 @@ def api_identify():
 
 @app.post("/api/save")
 def api_save():
-    """Persist the current (possibly re-recorded) config to disk."""
+    """Persist the current (possibly re-recorded) config to disk, and push it to
+    the head Pi when the servos live there.
+
+    Writing this file used to be the whole job, and on a Pi-hosted panel it was.
+    With the servos remote it is only half: the head owns the hardware and its
+    own servos.json wins on every RemoteServoController refresh, so a
+    calibration saved only here never reaches a servo — Rest and the soft limits
+    silently keep the values the head booted with.
+    """
     with open(CONFIG_PATH, "w") as f:
         json.dump(_config, f, indent=2)
         f.write("\n")
-    return jsonify({"saved": str(CONFIG_PATH)})
+    out = {"saved": str(CONFIG_PATH)}
+
+    push = getattr(_ctrl, "push_config", None)   # absent on the local controller
+    if push is None:
+        return jsonify(out)
+    try:
+        out["pushed"] = push(_config)
+    except Exception as exc:                     # noqa: BLE001 - report, don't crash
+        # The file on this machine is written, but the calibration is NOT live.
+        # Saying 200 here would recreate exactly the silent failure this push
+        # was added to remove, so the status has to carry the bad news.
+        out["push_error"] = f"{type(exc).__name__}: {exc}"
+        return jsonify(out), 502
+    return jsonify(out)
 
 
 @app.post("/api/camera")
