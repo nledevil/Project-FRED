@@ -94,6 +94,7 @@ PRESETS = [
     {"id": "flux",           "label": "Flux Capacitor",       "argv": ["flux.py"]},
     {"id": "face",           "label": "Face (live voice)",    "argv": ["face.py"]},
     {"id": "voice-hud",      "label": "Voice HUD",            "argv": ["voice_hud.py"]},
+    {"id": "voice-hud-c",    "label": "Voice HUD (native)",   "argv": ["voice_hud"]},
     {"id": "face-talk",      "label": "Face (demo talk)",     "argv": ["face.py", "--talk"]},
     {"id": "off",            "label": "Off (blank screen)",   "argv": None},
 ]
@@ -165,7 +166,13 @@ class Supervisor:
             proc.wait(timeout=2)
 
     def _spawn(self, preset: dict) -> None:
-        argv = [self._py] + list(preset["argv"])
+        argv = list(preset["argv"])
+        # A ".py" entry runs under this interpreter; anything else is a compiled
+        # animation sitting in the work directory, so it runs on its own. Both
+        # keep the same contract — own the framebuffer, exit on SIGTERM — and the
+        # supervisor cannot tell the difference.
+        argv = ([self._py] + argv if argv[0].endswith(".py")
+                else ["./" + argv[0]] + argv[1:])
         try:
             err = open(CHILD_LOG, "wb")     # truncate: only the latest run matters
         except OSError:
