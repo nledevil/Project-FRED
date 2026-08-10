@@ -14,6 +14,10 @@ Switching is just "kill the child, spawn the next one", so it lands in ~100ms.
                             on top of whatever animation is running
     POST /api/voice      -> FRED's live voice state + speech envelope, handed to
                             the animation through voice_state.py
+    GET  /api/cart       -> drive base state: telemetry, PS2 priority, watchdog
+    POST /api/cart/drive -> {"steer": 0, "speed": 150}; must be repeated or the
+                            watchdog stops the cart (see cart_driver.py)
+    POST /api/cart/stop  -> {"estop": false}; stop now, optionally latching
 
 It also carries the **sensor relay**: the Pico in FRED's stomach plugs into this
 Pi, and sensor_relay.py reads its USB-serial stream and forwards it to the head
@@ -21,6 +25,14 @@ over the Bluetooth PAN. That lives here rather than in its own unit because this
 is already the supervised, always-on process on this Pi — one thing to install,
 one thing to restart. It is strictly best-effort and shares nothing with the
 animation, so a missing Pico or an unreachable head can't disturb the screen.
+
+And the **cart driver**: the hoverboard base's Pico is on this Pi too, for the
+same physical reason. That one is not best-effort — it moves a 350 lb-rated
+chassis — so the safety layer lives at this end of the link rather than the
+brain's. The brain has to keep asking for motion; if it stops, or the link dies,
+cart_driver stops the cart without waiting to be told. Same process again, but
+note it is shut down *first* on the way out, so the cart is stopped before
+anything else is torn down.
 
 If a token is configured (--token, or DISPLAY_TOKEN in the environment) every
 request must carry it as ``X-Display-Token`` — the same shape as the head's
@@ -42,6 +54,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import cart_driver                          # noqa: E402 — sibling module
 import metrics_hud                          # noqa: E402 — sibling module
 import sensor_relay                         # noqa: E402 — sibling module
 import voice_state                          # noqa: E402 — sibling module
@@ -255,6 +268,7 @@ class Handler(BaseHTTPRequestHandler):
     supervisor: Supervisor
     relay: "sensor_relay.SensorRelay | None" = None
     metrics: "metrics_hud.MetricsPublisher | None" = None
+    cart: "cart_driver.CartDriver | None" = None
     token: str = ""
 
     def log_message(self, *a):              # keep the journal to real events
@@ -290,6 +304,9 @@ class Handler(BaseHTTPRequestHandler):
             # toggle from the same poll it already does for the animation.
             self._send(200, {**self.supervisor.state(),
                              "metrics": bool(self.metrics and self.metrics.enabled)})
+        elif self.path.startswith("/api/cart"):
+            self._send(200, self.cart.state() if self.cart
+                       else {"enabled": False})
         elif self.path.startswith("/api/sensors"):
             # Not the sensor data itself — that goes straight to the head. This
             # is the relay's own health, so you can tell "the Pico is unplugged"
@@ -304,7 +321,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         if not (self.path.startswith("/api/animation")
                 or self.path.startswith("/api/voice")
-                or self.path.startswith("/api/metrics")):
+                or self.path.startswith("/api/metrics")
+                or self.path.startswith("/api/cart")):
             self._send(404, {"error": "not found"})
             return
         try:
@@ -319,6 +337,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self.path.startswith("/api/metrics"):
             self._send(200, self._metrics(data))
+            return
+        if self.path.startswith("/api/cart"):
+            self._send(200, self._cart(data))
             return
         try:
             self._send(200, self.supervisor.select(str(data.get("animation", ""))))
@@ -336,6 +357,25 @@ class Handler(BaseHTTPRequestHandler):
         enabled = self.metrics.set_enabled(bool(data.get("enabled")))
         write_state(metrics=enabled)
         return {"ok": True, "metrics": enabled}
+
+    def _cart(self, data: dict) -> dict:
+        """Drive or stop the cart.
+
+        Stop is matched before drive and answered even when the driver is
+        disabled: a stop request must never fail on a technicality, and a caller
+        that gets an error back from "stop" has no good next move.
+        """
+        if self.path.startswith("/api/cart/stop"):
+            if self.cart is None:
+                return {"ok": True, "stopped": True, "note": "cart driver disabled"}
+            if data.get("clear_estop"):
+                return self.cart.clear_estop()
+            return self.cart.stop(estop=bool(data.get("estop")))
+        if self.cart is None:
+            return {"error": "cart driver disabled on this Pi"}
+        if self.path.startswith("/api/cart/drive"):
+            return self.cart.drive(data.get("steer", 0), data.get("speed", 0))
+        return {"error": "unknown cart action"}
 
     def _voice(self, data: dict) -> dict:
         """Hand FRED's voice state to the animation via /dev/shm.
@@ -382,6 +422,15 @@ def main() -> None:
                     help="matches the head's settings.json sensors.token")
     ap.add_argument("--no-sensor-relay", action="store_true",
                     help="don't read the stomach sensor node at all")
+    ap.add_argument("--cart-port", default=os.environ.get("CART_PORT", "auto"),
+                    help="cart Pico tty: a path, a glob, or 'auto' "
+                         "(auto never selects the MicroPython sensor node)")
+    ap.add_argument("--cart-watchdog", type=float,
+                    default=float(os.environ.get("CART_WATCHDOG",
+                                                 cart_driver.WATCHDOG_S)),
+                    help="seconds of head silence before the cart is stopped")
+    ap.add_argument("--no-cart", action="store_true",
+                    help="don't drive the hoverboard base at all")
     args = ap.parse_args()
 
     sup = Supervisor(Path(args.dir))
@@ -403,6 +452,14 @@ def main() -> None:
     Handler.relay = relay
     Handler.metrics = metrics
 
+    cart = None
+    if not args.no_cart:
+        cart = cart_driver.CartDriver(port=args.cart_port,
+                                      watchdog=args.cart_watchdog,
+                                      log=lambda m: print(m, flush=True))
+        cart.start()
+    Handler.cart = cart
+
     srv = ThreadingHTTPServer((args.host, args.port), Handler)
     print(f"display control on {args.host}:{args.port} "
           f"({'token required' if args.token else 'no token'})", flush=True)
@@ -411,6 +468,9 @@ def main() -> None:
     except KeyboardInterrupt:
         pass
     finally:
+        # Cart first: everything else here is pixels, but this one is wheels.
+        if cart:
+            cart.shutdown()
         if relay:
             relay.shutdown()
         sup.shutdown()

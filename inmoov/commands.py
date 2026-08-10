@@ -161,8 +161,73 @@ def _sensor_report(ctx, which: str = "all") -> str:
     return ". ".join(p[0].upper() + p[1:] for p in parts) + "."
 
 
+_DRIVE_WORDS = {
+    "forward":  ("forward", 1, 0),
+    "back":     ("backwards", -1, 0),
+    "left":     ("left", 0, -1),
+    "right":    ("right", 0, 1),
+    "around":   ("around", 0, 1),      # spin in place; steer only, no forward speed
+}
+
+
+def _drive(ctx, direction: str, seconds=None) -> str:
+    """Move the cart a bounded distance and say so.
+
+    Everything programmatic goes through CartClient.nudge(), which runs for a
+    fixed time and stops itself — there is deliberately no "start driving and
+    keep going" path for Claude or the matcher to reach.
+    """
+    cart = getattr(ctx, "cart", None)
+    if cart is None or not cart.configured():
+        return "I don't have a drive base connected."
+
+    key = str(direction or "").lower()
+    spec = _DRIVE_WORDS.get(key)
+    if spec is None:
+        return "I can go forward, backwards, left, right, or turn around."
+    label, fwd, turn = spec
+
+    cfg = getattr(ctx, "cart_cfg", None) or {}
+    speed = int(cfg.get("speed", 150)) * fwd
+    steer = int(cfg.get("turn", 150)) * turn
+    if seconds is None:
+        seconds = float(cfg.get("step_seconds", 1.5))
+    if key == "around":
+        seconds = max(float(seconds), 2.0)   # a spin needs longer than a nudge
+
+    try:
+        result = cart.nudge(steer, speed, seconds)
+    except Exception as exc:                  # noqa: BLE001 - CartError or transport
+        return f"I couldn't move: {exc}"
+    if result.get("ignored"):
+        # The firmware hands priority to the PS2 controller. Say so plainly —
+        # otherwise this looks like the robot just ignoring an instruction.
+        return "Someone's holding the controller, so it has priority over me."
+    if key == "around":
+        return "Turning around."
+    return f"Moving {label}."
+
+
+def _cart_stop(ctx) -> str:
+    cart = getattr(ctx, "cart", None)
+    if cart is None or not cart.configured():
+        return "I don't have a drive base connected."
+    try:
+        cart.stop()
+    except Exception as exc:                  # noqa: BLE001
+        # Worth being explicit: the chest Pi stops the cart on its own if it
+        # stops hearing from us, so a failed stop request is not a runaway.
+        return f"I couldn't reach the drive base ({exc}) — it stops itself in half a second."
+    return "Stopped."
+
+
 def execute_action(ctx, name: str, **args) -> str:
     """Run one action and return FRED's spoken confirmation."""
+    if name == "drive":
+        return _drive(ctx, str(args.get("direction", "")), args.get("seconds"))
+    if name == "cart_stop":
+        return _cart_stop(ctx)
+
     if name == "open_mouth":
         _jaw(ctx, True)
         return "Ahhh."
@@ -267,6 +332,19 @@ _PATTERNS = [
     (re.compile(r"\bface (forward|front|straight ahead)\b", re.I), "turn_head", {"direction": "center"}),
     (re.compile(r"\bturn (to (the )?)?(?P<direction>left|right)\b", re.I), "turn_head", "group"),
     (re.compile(r"\bface (to (the )?)?(?P<direction>left|right)\b", re.I), "turn_head", "group"),
+    # Driving the cart. These sit *after* the head-turn rules on purpose: bare
+    # "turn left" has always meant his neck, and quietly changing that to mean
+    # "roll the whole robot left" would be a surprising thing for a wheeled base
+    # to start doing. Rolling needs a movement verb ("drive/move/go/roll left")
+    # or "turn around"; Claude's drive tool covers the phrasings this misses.
+    (re.compile(r"\bstop\b.*\b(moving|driving|rolling|the cart|your wheels)\b", re.I), "cart_stop", {}),
+    (re.compile(r"^\s*(stop|halt|whoa|freeze)\s*[.!]?\s*$", re.I), "cart_stop", {}),
+    (re.compile(r"\bturn (yourself |the cart |a)?(a)?round\b", re.I), "drive", {"direction": "around"}),
+    (re.compile(r"\b(drive|move|go|roll|head)\b.*\b(forward|forwards|ahead|straight on)\b", re.I), "drive", {"direction": "forward"}),
+    (re.compile(r"\b(back up|backup|reverse)\b", re.I), "drive", {"direction": "back"}),
+    (re.compile(r"\b(drive|move|go|roll)\b.*\b(back|backward|backwards)\b", re.I), "drive", {"direction": "back"}),
+    (re.compile(r"\b(drive|move|go|roll|steer)\b.*\b(to (the )?)?(?P<direction>left|right)\b", re.I), "drive", "group"),
+    (re.compile(r"\bcome (here|closer|to me|towards me|forward)\b", re.I), "drive", {"direction": "forward"}),
     # Proximity sensors. Ahead of the system-facts block below because "what do
     # you see" style phrasings are more specific than the catch-all fact rules.
     # "did anyone walk by" first: the generic presence rule below would also
@@ -336,6 +414,26 @@ CLAUDE_TOOLS = [
      "input_schema": {"type": "object", "properties": {
          "which": {"type": "string", "enum": ["all", "distance", "motion"],
                    "description": "Limit the reading to one kind of sensor. Defaults to all."}}}},
+    {"name": "drive", "description":
+        "Drive FRED's wheeled base to move his whole body across the room. Use "
+        "this for 'come here', 'back up', 'move forward', 'turn around'. This "
+        "MOVES THE ENTIRE ROBOT — it is not turn_head, which only rotates his "
+        "neck, and not look, which only moves his eyes. Each call moves for a "
+        "short fixed time and then stops on its own, so to travel further, call "
+        "it again. Prefer short moves and check the sensors if unsure of the "
+        "space. If someone is holding the manual controller, it has priority and "
+        "this will report that it did nothing.",
+     "input_schema": {"type": "object", "properties": {
+         "direction": {"type": "string",
+                       "enum": ["forward", "back", "left", "right", "around"],
+                       "description": "'around' spins him in place to face the other way."},
+         "seconds": {"type": "number",
+                     "description": "How long to move, 0.1-5. Defaults to a short "
+                                    "nudge of about 1.5s. Keep it small indoors."}},
+         "required": ["direction"]}},
+    {"name": "stop_moving", "description":
+        "Stop the wheeled base immediately. Use for 'stop', 'halt', 'whoa'.",
+     "input_schema": {"type": "object", "properties": {}}},
     {"name": "reset_pose", "description": "Return all servos to their neutral resting position.",
      "input_schema": {"type": "object", "properties": {}}},
     {"name": "relax", "description": "Release the servos so they stop holding torque.",
@@ -358,6 +456,11 @@ def run_tool(ctx, tool_name: str, tool_input: dict) -> str:
         return execute_action(ctx, "turn_head", direction=ti.get("direction", "center"))
     if tool_name == "read_sensors":
         return execute_action(ctx, "read_sensors", which=ti.get("which", "all"))
+    if tool_name == "drive":
+        return execute_action(ctx, "drive", direction=ti.get("direction", ""),
+                              seconds=ti.get("seconds"))
+    if tool_name == "stop_moving":
+        return execute_action(ctx, "cart_stop")
     if tool_name == "reset_pose":
         return execute_action(ctx, "reset")
     if tool_name == "relax":

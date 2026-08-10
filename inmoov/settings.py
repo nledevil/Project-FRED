@@ -88,6 +88,20 @@ DEFAULT_SETTINGS = {
         "animation": "reactor",       # last preset picked, so the head's UI shows
                                       # the right selection before it can reach the Pi
     },
+    "cart": {
+        # The hoverboard drive base. Its Pico plugs into the chest Pi, so this
+        # rides on the `display` connection above rather than repeating the
+        # host/token — one chest Pi, one address to keep correct.
+        #
+        # Speeds are in the hoverboard firmware's own units (see the cart repo):
+        # ~0.64 wheel RPM per unit, and the firmware caps host commands at 300
+        # speed / 250 steer regardless of what is asked for here.
+        "enabled": False,             # master switch; off until the cart is wired up
+        "speed": 150,                 # forward/back speed for spoken commands (~73 RPM)
+        "turn": 150,                  # steer magnitude for spoken turns
+        "step_seconds": 1.5,          # how long one spoken "forward"/"back" runs;
+                                      # capped at 5s by inmoov/cart.py regardless
+    },
     "voice": {
         "enabled": False,             # start the "Hey FRED" wake-word listener at boot
         "gain": 1.0,                  # software mic boost (analog capture is already

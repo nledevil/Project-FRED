@@ -56,6 +56,17 @@ class Assistant:
         self._mouth: dict | None = None
         self._mouth_seq = 0
 
+    @property
+    def ctx(self):
+        """The namespace actions run against.
+
+        Exposed so the web app can attach hardware that is discovered after the
+        assistant is built — the cart is configured from settings the app owns,
+        and Brain already holds this same object, so late-attaching to it is
+        what makes the new capability visible to both Claude and the matcher.
+        """
+        return self._ctx
+
     # ---- capability / status ---------------------------------------------
     def available(self) -> bool:
         return self.listener.available()

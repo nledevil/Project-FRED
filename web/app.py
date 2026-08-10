@@ -40,6 +40,8 @@ from inmoov.led import Led  # noqa: E402
 from inmoov.remote_led import RemoteLed  # noqa: E402
 from inmoov.sound import Sound  # noqa: E402
 from inmoov.sensors import SensorHub, SerialSensorReader  # noqa: E402
+from inmoov import cart as cart_mod  # noqa: E402
+from inmoov.cart import CartClient, CartError  # noqa: E402
 from inmoov.display import DisplayClient, DisplayError, VoicePusher  # noqa: E402
 from inmoov.greeter import Greeter  # noqa: E402
 from inmoov.settings import load_settings, save_settings  # noqa: E402
@@ -173,6 +175,27 @@ _display = DisplayClient(host=str(_display_cfg.get("host", "") or ""),
 # design: it polls, and a dead chest Pi can never stall a reply.
 _voice_pusher = VoicePusher(_display, _assistant)
 _voice_pusher.start()
+# The hoverboard drive base. Its Pico is on the chest Pi, so it rides on the same
+# connection as the display — one chest Pi, one address. Disabled by default:
+# a robot that can move itself should not start able to, and the safety layer
+# that stops it lives on the chest Pi, not here (see inmoov/cart.py).
+_cart_cfg = _settings.get("cart", {})
+_cart = CartClient(host=str(_display_cfg.get("host", "") or ""),
+                   port=int(_display_cfg.get("port", 8081)),
+                   token=str(_display_cfg.get("token", "") or ""))
+
+
+def _cart_enabled() -> bool:
+    """Both configured and switched on. Checked per request, so the admin
+    toggle takes effect without a restart."""
+    return bool(_cart_cfg.get("enabled")) and _cart.configured()
+
+
+# Hand the cart to the action layer so "come here" and Claude's drive tool can
+# reach it. cart_cfg goes too: speeds are policy, not something commands.py
+# should hardcode.
+_assistant.ctx.cart = _cart
+_assistant.ctx.cart_cfg = _cart_cfg
 _lock = threading.Lock()                     # serialize hardware access
 
 # Whether the shared hardware is currently released to another owner (MyRobotLab).
@@ -472,6 +495,63 @@ def api_display_status():
         body.update({"online": False, "error": str(e),
                      "animation": _display_cfg.get("animation", "")})
     return jsonify(body)
+
+
+@app.get("/api/cart")
+def api_cart_status():
+    """Drive base state for the panel: telemetry, PS2 priority, reachability.
+
+    Like the display, an unreachable cart is a reportable condition rather than
+    an error — the robot standing still does not depend on its wheels."""
+    if not _cart_enabled():
+        return jsonify({"configured": False, "online": False,
+                        "enabled": bool(_cart_cfg.get("enabled"))})
+    body = {"configured": True, "enabled": True,
+            "limits": {"steer": cart_mod.STEER_LIMIT, "speed": cart_mod.SPEED_LIMIT}}
+    try:
+        body.update(_cart.state())
+        body["online"] = True
+    except CartError as e:
+        body.update({"online": False, "error": str(e)})
+    return jsonify(body)
+
+
+@app.post("/api/cart/drive")
+def api_cart_drive():
+    """One drive command from the joystick. Body: ``{"steer": 0, "speed": 150}``.
+
+    Authority expires: the chest Pi stops the cart unless this is called again
+    inside its watchdog window, so the panel posts continuously while the stick
+    is held and simply stops posting when it is released. Letting go, closing
+    the tab, or losing WiFi are all the same event to the cart, and all of them
+    stop it — which is why there is no "release" call to forget to send."""
+    if not _cart_enabled():
+        return jsonify({"error": "cart is disabled"}), 409
+    data = request.get_json(force=True) or {}
+    try:
+        return jsonify(_cart.drive(data.get("steer", 0), data.get("speed", 0)))
+    except CartError as e:
+        return jsonify({"error": str(e)}), 502
+
+
+@app.post("/api/cart/stop")
+def api_cart_stop():
+    """Stop the cart. ``{"estop": true}`` latches until explicitly cleared.
+
+    Answers 200 even when the cart is disabled or unreachable: a stop button
+    that reports failure invites a second, more panicked press, and the honest
+    news is that an unreachable cart is already stopping itself."""
+    data = request.get_json(force=True) or {}
+    if not _cart_enabled():
+        return jsonify({"ok": True, "stopped": True, "note": "cart is disabled"})
+    try:
+        if data.get("clear_estop"):
+            return jsonify(_cart.clear_estop())
+        return jsonify(_cart.stop(estop=bool(data.get("estop"))))
+    except CartError as e:
+        return jsonify({"ok": True, "stopped": True, "unreachable": str(e),
+                        "note": "the chest Pi stops the cart on its own within "
+                                "half a second of losing contact"})
 
 
 @app.get("/api/display/animations")

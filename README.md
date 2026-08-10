@@ -31,6 +31,7 @@ so call yours whatever you like.
 | **Web panel** | Flask on `:8080` — live servo sliders, camera view, conversation transcript, calibration mode, and an admin screen. |
 | **Chest display** | A second Pi drives a 7" DSI panel with framebuffer animations (arc reactor, flux capacitor, animated face, voice HUD), switchable at runtime from the panel. |
 | **Sensors** | A Raspberry Pi Pico reads two HC-SR04 ultrasonics and a PIR, does its own echo timing and event detection, and streams JSON to the robot. Claude can read them, so "is anyone there?" and "did someone walk by?" are answered from actual hardware. |
+| **Drive base** | An optional [hoverboard cart](https://github.com/nledevil/Project-FRED-Cart) — two hub motors and a Pico on the chest Pi. Hold-to-drive joystick in the panel, plus drive actions Claude can call. Motion has to be continuously requested or it stops; see below. |
 | **Networking** | A private wired robot LAN with the brain serving DHCP, so the machines find each other on any venue's network — or none. Falls back to being its own WiFi access point when no known network is around. |
 
 ---
@@ -86,6 +87,55 @@ the I²C bus is six inches away or on the far end of an ethernet cable — see
 `RemoteServoController` and the `mjpeg` camera backend. The payoff is latency:
 the head↔brain round trip went from 7.3 ms over Bluetooth to **0.36 ms** over
 ethernet, which is the budget the face tracker's PD loop has to live in.
+
+---
+
+## Drive base (optional)
+
+FRED can be bolted to a [hoverboard cart](https://github.com/nledevil/Project-FRED-Cart):
+two hub motors on a mainboard running EFeru FOC firmware, commanded by a Pico that
+also owns a PS2 controller for manual driving.
+
+The Pico plugs into the **chest** Pi, for the same reason the sensor node does — the
+cart is at the base, and the head is on pan/tilt servos. But the thing deciding where
+to go (Claude, the web panel) runs on the brain, so drive intent crosses the robot LAN
+to get there. That shapes the whole design:
+
+**The safety layer lives on the chest Pi, not with the brain.**
+`deploy/display/cart_driver.py` holds the only handle on the serial port, re-sends the
+current command at 10 Hz, and zeroes it if it goes half a second without hearing a
+fresh one. Any link between the deciding machine and the wheels is a link that can
+fail: this was written when the two Pis were joined by a Bluetooth PAN, which dropped
+outright once when the head's Bluetooth controller threw a hardware error. The wired
+LAN that replaced it is far better, but it is still a cable, a switch and a NIC, and
+the brain is now a separate machine again — one more hop, not fewer. If the deciding
+end were the only thing keeping the cart going, a dead link would leave it rolling on
+its last command until the Pico's own 2 s host-silence failsafe expired — about 3.3 m
+at the firmware's speed cap. With the watchdog on the chest it is under a metre.
+
+Everything else follows from that:
+
+- **Motion must be continuously requested.** The panel's joystick posts while it is
+  held; let go, close the tab, or lose WiFi and the cart stops. There is no "release"
+  message to fail to arrive.
+- **Claude gets `nudge()`, not "go".** `inmoov/cart.py` has no API for "start moving and
+  return" — a programmatic move takes a duration, is capped at 5 s, and stops itself.
+- **The PS2 controller always wins.** The firmware ignores host drive commands whenever
+  a controller is connected, so picking it up takes the robot away from autonomous
+  control mid-drive. The panel and FRED both say so rather than appearing to ignore you.
+
+Off by default. Enable it in the admin panel (or `cart.enabled` in
+`config/settings.json`) once the Pico is wired up; it reuses the chest Pi's address
+from the `display` settings. Speeds are in the firmware's units — roughly 0.64 wheel
+RPM each, capped at 300 by the Pico regardless of what is asked for.
+
+Testable with no cart attached:
+
+```bash
+python3 deploy/display/tools/test_cart_driver.py   # driver vs a simulated Pico
+python3 deploy/display/tools/test_cart_api.py      # the chest Pi's HTTP surface
+./venv/bin/python deploy/display/tools/test_cart_head.py   # client + spoken actions
+```
 
 ---
 
