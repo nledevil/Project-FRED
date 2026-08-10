@@ -1,0 +1,64 @@
+# Chest Pi — 7" DSI panel, the stomach sensor node, the cart's Pico.
+#
+# This machine is stdlib-only on purpose: it has no pip and no ensurepip, and
+# nothing here imports the inmoov/ package. Keep it that way — the moment a file
+# here needs a dependency, it stops being installable on this Pi.
+#
+# flatten: yes -> everything lands directly in <root>, no subdirectories. That
+# matches how it is already deployed, and display_control.py imports its
+# siblings by adding its own directory to sys.path.
+
+root: /home/dietpi/display
+flatten: yes
+
+# --- supervisor + control API -----------------------------------------------
+deploy/display/display_control.py
+deploy/display/inmoov-display.service
+
+# --- framebuffer animations -------------------------------------------------
+deploy/display/fb.py
+deploy/display/font5x7.py
+deploy/display/reactor.py
+deploy/display/flux.py
+deploy/display/face.py
+deploy/display/voice_state.py
+deploy/display/metrics_hud.py
+
+# --- voice HUD, both renderers ----------------------------------------------
+# The native one is what actually runs. The binary is built ON this Pi (`make`)
+# and is git-ignored, so it is a keep: below, not a deploy.
+deploy/display/voice_hud.py
+deploy/display/voice_hud.c
+deploy/display/Makefile
+deploy/display/tools/verify_voice_hud.py
+
+# --- sensor relay + drive base ----------------------------------------------
+deploy/display/sensor_relay.py
+deploy/display/cart_driver.py
+
+# --- the tool that flashes the sensor node ----------------------------------
+# push.py is a stdlib stand-in for `mpremote cp` — it exists precisely because
+# this Pi cannot pip install one, and the Pico it flashes is plugged in here.
+#
+# The firmware itself is deliberately NOT shipped. This directory is flattened,
+# and `main.py` is far too generic a name to drop beside the animations — and
+# `push.py --target` defaults to the *local* basename, so renaming it would
+# quietly flash the board under the wrong name and stop MicroPython running it
+# at boot. Copy it over at flash time instead, which is a rare operation:
+#
+#   scp firmware/pico_sensor_node/main.py dietpi@10.0.0.11:/tmp/
+#   ssh dietpi@10.0.0.11 'sudo systemctl stop inmoov-display &&
+#       cd ~/display && python3 push.py /tmp/main.py &&
+#       sudo systemctl start inmoov-display'
+firmware/pico_sensor_node/push.py
+
+# --- diagnostics ------------------------------------------------------------
+deploy/vcgencmd_power_report.sh
+
+# --- never touch ------------------------------------------------------------
+# voice_hud: compiled here, from voice_hud.c, by the Makefile above.
+# state.json: the animation pick, persisted across reboots.
+keep: voice_hud
+keep: state.json
+keep: child-stderr.log
+keep: __pycache__

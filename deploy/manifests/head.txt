@@ -1,0 +1,54 @@
+# Head Pi — servo bus (PCA9685 over I2C), CSI camera, status LED.
+#
+# Everything the brain does NOT do here. This machine stopped being the brain on
+# 2026-08-06; what is left is three device servers. Anything in the repo that is
+# not listed below has no business on this Pi.
+#
+# root:    where the tree lands on the target
+# flatten: no  -> repo paths are preserved (deploy/x.py -> <root>/deploy/x.py)
+# seed:    copy only if absent — never clobber the live copy
+# keep:    exists on the target, is not deployed, must never be touched
+
+root: /home/dietpi/inmoov
+flatten: no
+
+# --- the three services this Pi actually runs -------------------------------
+deploy/servo_server.py
+deploy/camera_stream.py
+deploy/led_server.py
+
+# Enabled and points into this directory, so it ships or it breaks at boot.
+# Legacy: it announced the Pi's DHCP address aloud back when the head had audio
+# and no fixed address. Both are now false. A candidate for disabling.
+deploy/announce_ip.py
+
+# --- unit files, for reinstalling from scratch ------------------------------
+deploy/servo-server.service
+deploy/camera-stream.service
+deploy/led-server.service
+deploy/inmoov-announce-ip.service
+
+# --- the shared package, closure only ---------------------------------------
+# servo_server imports servo_controller; led_server imports led. That is the
+# whole of it — camera_stream imports picamera2 directly and nothing from here.
+# Both hardware libs (adafruit_servokit, RPi.GPIO) are imported lazily inside
+# the modules, so neither is needed to import the package.
+inmoov/__init__.py
+inmoov/servo_controller.py
+inmoov/led.py
+
+# --- diagnostics ------------------------------------------------------------
+# Pi-only (no vcgencmd on x86); this build has a history of thermal throttling.
+deploy/vcgencmd_power_report.sh
+
+# --- config -----------------------------------------------------------------
+# This Pi is the AUTHORITY for servo calibration: servo_server reads it at
+# startup, and RemoteServoController pulls limits from here rather than trusting
+# the brain's copy. The panel's /api/save pushes changes over HTTP, so a deploy
+# must not overwrite it — a stale repo copy would silently undo a calibration.
+seed: config/servos.json
+
+# --- never touch ------------------------------------------------------------
+keep: venv
+keep: .git
+keep: __pycache__
