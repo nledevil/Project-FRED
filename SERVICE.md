@@ -142,6 +142,126 @@ them back on toggle-off. Built 2026-07-10.
 - **Note:** this only frees *our* side. It does **not** start/stop the `myrobotlab`
   service — do that separately (`sudo systemctl start myrobotlab`). Wiring the two
   together is a noted follow-up in `TODO.md`.
+
+## Local LLM brain (Ollama, Intel Arc iGPU)
+
+FRED goes places without reliable WiFi, so the cloud can't be the only brain. A
+local model runs on the NUC and answers the open questions the command matcher
+doesn't catch — no network, no API cost, nothing leaving the robot. Built
+2026-08-11.
+
+- **Runtime:** Ollama (`systemctl status ollama`, enabled at boot), bound to
+  **127.0.0.1:11434 only**. Models are cached under
+  `/usr/share/ollama/.ollama/models`, so this works with the uplink unplugged.
+- **Model:** `qwen2.5:3b`. Chosen by benchmark, not vibes — see below.
+- **Backend switch:** admin panel → "Brain backend", or
+  `POST /api/brain {"backend": "auto"|"claude"|"local"}`. `GET /api/brain` reports
+  what's reachable; `/api/state` carries a `brain` block. Persisted under
+  `brain.backend` in `config/settings.json`.
+  - `auto` (default) — Claude when reachable, local when not. After a cloud
+    failure it stays local for 60 s (`CLOUD_RETRY_SECS`) rather than paying a
+    network timeout on every utterance, which the listener would hear as a hang.
+  - `claude` — cloud only. `local` — never touches the network.
+
+### Using the Intel Arc iGPU
+
+Ollama ships a **Vulkan** backend (`/usr/local/lib/ollama/vulkan/`), but
+integrated GPUs are opt-in — out of the box it logs "No NVIDIA/AMD GPU detected"
+and runs CPU-only. The fix is one env var, in
+`/etc/systemd/system/ollama.service.d/igpu.conf`:
+
+```ini
+[Service]
+Environment="OLLAMA_IGPU_ENABLE=1"
+```
+
+It then reports `library=Vulkan … Intel(R) Graphics (PTL) … type=iGPU
+total=22.7 GiB` and offloads to the Arc B390. Measured on a 4B model:
+**11.9 tok/s CPU → 20.6 tok/s GPU** (1.7x). No oneAPI/SYCL or Level Zero install
+needed — Mesa's Vulkan driver is enough. The NPU at `/dev/accel0` is *not* used;
+that would need OpenVINO, which Ollama can't drive.
+
+### Why this model (measured through FRED's own system prompt + 10 tools)
+
+| model | first word | tool calls | tokens/reply |
+|---|---|---|---|
+| **qwen2.5:3b** | **1.05 s** | **8/8** | **~17** |
+| llama3.2:3b | 1.04 s | 6/8 | ~13 |
+| qwen3:4b | 0.65 s | 4/8 | ~152 |
+
+`llama3.2:3b` reaches for `read_sensors` on general-knowledge questions.
+`qwen3:4b` is a **reasoning** model: it burns 150+ tokens thinking, that thinking
+leaks into `content` (so FRED would say it aloud — `think:false` and `/no_think`
+both failed to suppress it on this build), and its tool calls get lost. **Don't
+put a reasoning model behind a talking head.**
+
+End-to-end through the full pipeline the local brain is *level with Claude*
+(4.30 s vs 4.01 s per exchange) — speech synthesis and playback dominate, so the
+model is not the bottleneck.
+
+### How it plugs in
+
+`inmoov/local_brain.py` deliberately mimics the slice of the Anthropic SDK that
+`brain.py` already drives — `client.messages.stream(...)` yielding `.text_stream`
+then `.get_final_message()` with `.stop_reason` / `.content[].type|name|input|id`.
+So the streaming sentence splitter, the bounded tool loop and the conversation
+memory are **backend-agnostic**: `Brain._ask_llm` runs identically either way, and
+the only difference is which client object it's handed. Wire-format translation
+(tool schemas, system message, tool results) lives in `_to_ollama`.
+
+```bash
+curl -s localhost:8080/api/brain                                     # backend + what's reachable
+curl -sX POST localhost:8080/api/brain -d '{"backend":"local"}'  -H 'Content-Type: application/json'
+curl -sX POST localhost:8080/api/brain -d '{"backend":"auto"}'   -H 'Content-Type: application/json'
+ollama list                                                          # installed models
+journalctl -u ollama -n 50 | grep -i vulkan                          # confirm GPU offload
+```
+
+## Audit mode (dry run)
+
+Talk to FRED through the web panel with **nothing physical happening**: no audio
+out of the speaker, no pulse to a servo, no cart motion. Everything else runs
+exactly as normal — the brain answers, the transcript fills, speech is really
+synthesised, and the on-screen face lip-syncs to it in real time. The servo
+readouts keep tracking the *commanded* angles, so the panel shows what FRED
+would have done. Admin panel → "Audit mode". Built 2026-08-11.
+
+- **API:** `GET /api/audit` → state; `POST /api/audit {"audit": true|false}`.
+  `/api/state` also carries an `audit` block, and `/api/sounds` an `audit` flag.
+- **Not a mute, and not the handoff.** `sound.enabled = false` makes playback
+  *fail*, which tells the lip-sync layer no audio is coming and kills the jaw and
+  the on-screen mouth with it. The handoff gives the devices away and 409s the
+  controls. Audit does neither: it simulates a *successful* playback of exactly
+  the right length, so the whole pipeline runs against a silent speaker.
+- **How each object suppresses** (each grew `set_audit()` / `is_audit()`):
+  - **Audio** (`Sound`): `play_file()` opens no device and spawns no `aplay`. It
+    stamps `audio_epoch()` as usual (lead-in + sync offset included) and keeps
+    `is_playing()` true for the clip's real duration off the clock, which is what
+    the jaw and mouth animations schedule against. `render_tts()` still runs for
+    real — the envelope has to come from somewhere.
+  - **Servos** (`ServoController` / `RemoteServoController`): `set_angle` still
+    clamps to the configured limits and still records the result, so `get_angle()`
+    and the panel keep moving; the I2C write / HTTP POST to the head is skipped.
+    `relax` and `identify` are suppressed; `rest()` moves the readout only.
+    `set_channel`/`push_config` are **not** gated — remapping a port commands no
+    angle, and blocking it would break calibration for no safety gain.
+  - **Cart** (`CartClient`): `drive()` is acknowledged but never sent, which also
+    neuters `nudge()`. `stop()`/`clear_estop()` are deliberately **never**
+    suppressed — a stop that doesn't reach the hardware is the one failure this
+    class must not have.
+- **Entering does not relax the servos.** They hold their pose. Cutting the
+  pulses would let the head sag under its own weight, and visible motion is
+  precisely what the mode exists to prevent. The cart *is* really stopped on the
+  way in, since a rolling cart must not coast on a watchdog nobody is feeding.
+- **Leaving returns the servos to rest.** During an audit the readouts track
+  commanded angles while the hardware sat still, so the two have diverged; rest is
+  the one pose both are known to agree on. Skipped if the hardware is released.
+- **Persistence:** saved to `config/settings.json` under `audit.enabled` and
+  re-applied at boot — including skipping the startup rest sweep, so booting into
+  an audit moves nothing.
+- **Endpoints are NOT blocked.** Unlike the handoff, every control still returns
+  success and reports what it would have done. That is the point: the panel stays
+  fully interactive.
 - **I2C access for MRL is confirmed at the OS level:** MRL runs as `dietpi`, which
   is in the `i2c` group, and `/dev/i2c-1` is `crw-rw---- root i2c` — so MRL can
   open the bus. Verified 2026-07-10 (`i2c-tools` installed): with the InMoov app
@@ -236,6 +356,10 @@ and MRL *already ships* an MJPEG grabber. See the git history of this file.)
 curl -s localhost:8080/api/handoff                                   # state
 curl -sX POST localhost:8080/api/handoff -d '{"release":true}'  -H 'Content-Type: application/json'   # hand off to MRL
 curl -sX POST localhost:8080/api/handoff -d '{"release":false}' -H 'Content-Type: application/json'   # take it back
+
+curl -s localhost:8080/api/audit                                     # audit (dry run) state
+curl -sX POST localhost:8080/api/audit -d '{"audit":true}'  -H 'Content-Type: application/json'   # silent + still
+curl -sX POST localhost:8080/api/audit -d '{"audit":false}' -H 'Content-Type: application/json'   # back to live
 ```
 
 # Spoken IP announcement at boot

@@ -65,6 +65,20 @@ DEFAULT_SETTINGS = {
         # persists so an event set-up survives a reboot. See /api/handoff.
         "released": False,
     },
+    "audit": {
+        # Audit (dry run) mode: FRED stays fully interactive through the web
+        # panel — the brain answers, the transcript fills, speech is synthesised
+        # and the on-screen face lip-syncs to it — but nothing physical happens.
+        # No audio reaches the speaker, no pulse reaches a servo, and the cart
+        # will not drive. The servo readouts keep tracking the commanded angles,
+        # so the panel shows exactly what he *would* have done.
+        #
+        # Distinct from "hardware.released" (which hands the devices to
+        # MyRobotLab and disables FRED's own controls) and from "sound.enabled"
+        # (a plain mute, which also kills the lip-sync). Persists across reboots
+        # so a bench session can't be undone by a power cycle. See /api/audit.
+        "enabled": False,
+    },
     "sensors": {
         # Remote smart-sensor nodes (a Pico W in the stomach reading ultrasonic +
         # PIR) push readings/events to POST /api/sensors/ingest over WiFi, or over
@@ -101,6 +115,19 @@ DEFAULT_SETTINGS = {
         "turn": 150,                  # steer magnitude for spoken turns
         "step_seconds": 1.5,          # how long one spoken "forward"/"back" runs;
                                       # capped at 5s by inmoov/cart.py regardless
+    },
+    "brain": {
+        # Which LLM answers the open questions the command matcher didn't catch.
+        #   "auto"   — Claude when reachable, the local model when it isn't. FRED
+        #              goes to events without reliable WiFi, so this is the point.
+        #   "claude" — cloud only; open questions fail with no internet.
+        #   "local"  — never touches the network.
+        # The local model runs on Ollama (127.0.0.1:11434) against the Intel Arc
+        # iGPU via Vulkan. See inmoov/local_brain.py for why this model and not a
+        # reasoning one. Live switch from the admin panel; persists.
+        "backend": "auto",
+        "local_model": "qwen2.5:3b",
+        "local_host": "http://127.0.0.1:11434",
     },
     "voice": {
         "enabled": False,             # start the "Hey FRED" wake-word listener at boot

@@ -2,15 +2,28 @@
 action and a spoken reply.
 
 Hybrid, as chosen for this build:
-  1. **Local first.** ``commands.match_local`` handles the known commands
+  1. **Matcher first.** ``commands.match_local`` handles the known commands
      instantly, offline, at zero cost.
-  2. **Claude fallback.** Anything else goes to Claude (Anthropic API) with the
-     same actions exposed as tools, so it can both *answer* open questions and
-     *act* on natural-language commands the matcher didn't catch. Replies are
-     kept short because they're spoken aloud.
+  2. **An LLM for the rest.** Anything else goes to a model with the same actions
+     exposed as tools, so it can both *answer* open questions and *act* on
+     natural-language commands the matcher didn't catch. Replies are kept short
+     because they're spoken aloud.
 
-Degrades gracefully: with no ``ANTHROPIC_API_KEY`` the local commands still work
-and open questions get a polite "my AI brain isn't connected" reply.
+Step 2 has two backends, chosen by ``backend``:
+  * ``"claude"`` — the Anthropic API. Best answers, needs internet.
+  * ``"local"``  — a local model via Ollama (``inmoov/local_brain.py``). Runs on
+    this machine with no network at all.
+  * ``"auto"``   — Claude when it's reachable, local when it isn't. FRED is
+    taken to events without reliable WiFi, so the fallback is the point: he gets
+    a worse answer instead of no answer.
+
+The local client deliberately mimics the Anthropic SDK's shape, so the streaming
+sentence splitter and the tool loop below are backend-agnostic — ``_ask_llm``
+runs identically either way.
+
+Degrades gracefully: with no ``ANTHROPIC_API_KEY`` and no local model the
+matcher still works and open questions get a polite "my AI brain isn't
+connected" reply.
 """
 from __future__ import annotations
 
@@ -19,6 +32,8 @@ import re
 import time
 
 from . import commands, sysinfo
+from .local_brain import (DEFAULT_HOST as LOCAL_HOST, DEFAULT_MODEL as LOCAL_MODEL,
+                          LocalClient)
 
 try:
     import anthropic
@@ -26,6 +41,13 @@ try:
 except Exception as exc:  # noqa: BLE001
     anthropic = None
     _ANTHROPIC_ERR = exc
+
+BACKENDS = ("auto", "claude", "local")
+
+# In "auto", how long a Claude failure keeps us on the local model before we try
+# the cloud again. Without this, every utterance during an outage pays a full
+# network timeout before falling back — which the listener hears as a hang.
+CLOUD_RETRY_SECS = 60.0
 
 # Haiku answers in ~0.7 s where Opus takes ~1.7 s (measured on this rig). FRED's
 # replies are one or two spoken sentences over a small tool set, which Haiku
@@ -167,11 +189,20 @@ class Brain:
 
     def __init__(self, ctx, api_key: str | None = None, model: str | None = None,
                  history_exchanges: int = HISTORY_MAX_EXCHANGES,
-                 history_idle_secs: float = HISTORY_IDLE_SECS):
+                 history_idle_secs: float = HISTORY_IDLE_SECS,
+                 backend: str = "auto", local_model: str | None = None,
+                 local_host: str | None = None):
         self.ctx = ctx
         self.model = model or MODEL
+        self.backend = backend if backend in BACKENDS else "auto"
         self._client = None
         self._ai_error = None
+        # The local model. Constructing this is free — it opens no connection and
+        # only probes the daemon when asked — so it's always built, and whether
+        # it's usable is answered by local_available() at call time.
+        self._local = LocalClient(host=local_host or LOCAL_HOST,
+                                  model=local_model or LOCAL_MODEL)
+        self._cloud_failed_at = 0.0      # monotonic; 0 = cloud not known-bad
         # Rolling conversation memory: the last few *final* user/assistant text
         # pairs (never the intermediate tool_use/tool_result blocks), replayed
         # into each Claude turn so FRED can follow "he/it/that" back-references.
@@ -191,7 +222,50 @@ class Brain:
             self._ai_error = "no ANTHROPIC_API_KEY"
 
     def ai_available(self) -> bool:
-        return self._client is not None
+        """True when *some* LLM backend can answer an open question."""
+        if self.backend == "claude":
+            return self._client is not None
+        if self.backend == "local":
+            return self._local.available()
+        return self._client is not None or self._local.available()
+
+    def local_available(self) -> bool:
+        return self._local.available()
+
+    def set_backend(self, backend: str) -> str:
+        """Switch backend at runtime. Unknown values fall back to 'auto'."""
+        self.backend = backend if backend in BACKENDS else "auto"
+        self._cloud_failed_at = 0.0        # a deliberate switch clears the sulk
+        return self.backend
+
+    def status(self) -> dict:
+        """What the admin panel shows about the brain."""
+        return {"backend": self.backend, "backends": list(BACKENDS),
+                "claude_model": self.model, "claude_ready": self._client is not None,
+                "claude_error": self._ai_error,
+                "local_model": self._local.model, "local_ready": self._local.available(),
+                "local_host": self._local.host, "local_models": self._local.models(),
+                "active": self._pick_backend()}
+
+    def _pick_backend(self) -> str:
+        """Which backend a question would actually go to right now."""
+        if self.backend == "claude":
+            return "claude" if self._client is not None else "none"
+        if self.backend == "local":
+            return "local" if self._local.available() else "none"
+        # auto: prefer Claude, unless it just failed us or isn't configured.
+        cloud_sulking = (self._cloud_failed_at
+                         and time.monotonic() - self._cloud_failed_at < CLOUD_RETRY_SECS)
+        if self._client is not None and not cloud_sulking:
+            return "claude"
+        if self._local.available():
+            return "local"
+        return "claude" if self._client is not None else "none"
+
+    def warm_local(self) -> None:
+        """Pre-load the local model (see LocalClient.warm). Safe on any thread."""
+        if self.backend in ("auto", "local"):
+            self._local.warm()
 
     # ---- conversation memory ---------------------------------------------
     def clear_history(self) -> None:
@@ -255,16 +329,29 @@ class Brain:
                 emit(reply)
             return {"reply": reply, "source": "local", "actions": [name]}
 
-        if self._client is None:
+        choice = self._pick_backend()
+        if choice == "none":
             reply = ("Sorry, I can't answer that — my A.I. brain isn't "
                      "connected yet.")
             emit(reply)
             return {"reply": reply, "source": "none", "actions": []}
 
-        return self._ask_claude(text, emit)
+        if choice == "claude":
+            result = self._ask_llm(text, emit, "claude")
+            # In auto, a Claude failure is exactly the case this whole module
+            # exists for: fall through to the local model rather than apologise.
+            # Only when nothing was spoken yet — cutting in mid-reply would be
+            # worse than the truncated answer.
+            if (result.get("source") == "error" and self.backend == "auto"
+                    and not result.get("spoke") and self._local.available()):
+                print("[Brain] Claude failed — falling back to the local model.")
+                self._cloud_failed_at = time.monotonic()
+                return self._ask_llm(text, emit, "local")
+            return result
+        return self._ask_llm(text, emit, "local")
 
-    # ---- Claude fallback --------------------------------------------------
-    def _ask_claude(self, text: str, emit) -> dict:
+    # ---- LLM turn (identical for both backends) ---------------------------
+    def _ask_llm(self, text: str, emit, which: str) -> dict:
         # Replay the recent exchanges so back-references resolve. This is a fresh
         # list; the tool loop appends its intermediate turns here without
         # touching self._history, which only ever holds final text pairs.
@@ -277,17 +364,22 @@ class Brain:
             said.append(sentence)
             emit(sentence)
 
+        # Both clients expose the same messages.stream(...) surface — that is the
+        # whole design of local_brain — so everything below is backend-agnostic.
+        client = self._client if which == "claude" else self._local
+        model = self.model if which == "claude" else self._local.model
+
         try:
             for _ in range(4):                       # bounded tool loop
-                kwargs = dict(model=self.model, max_tokens=400, system=system,
+                kwargs = dict(model=model, max_tokens=400, system=system,
                               messages=messages, tools=commands.CLAUDE_TOOLS)
-                if self.model.startswith(_EFFORT_MODELS):
+                if which == "claude" and model.startswith(_EFFORT_MODELS):
                     kwargs["output_config"] = {"effort": "low"}  # snappy — it's spoken
                 splitter = _SentenceSplitter(ship)
                 # Stream so the first sentence reaches the speaker while the rest
                 # is still being written. Text blocks arrive before tool_use ones,
                 # so FRED says "Sure," and *then* the servo moves.
-                with self._client.messages.stream(**kwargs) as stream:
+                with client.messages.stream(**kwargs) as stream:
                     for delta in stream.text_stream:
                         splitter.feed(delta)
                     resp = stream.get_final_message()
@@ -318,10 +410,18 @@ class Brain:
             else:
                 reply = "Done." if actions else "Sorry, I didn't catch that."
                 emit(reply)
-            return {"reply": reply, "source": "claude", "actions": actions}
+            return {"reply": reply, "source": which, "actions": actions}
         except Exception as exc:  # noqa: BLE001 - network/API hiccup shouldn't crash the loop
-            trouble = "I'm having trouble reaching my brain right now."
-            if not said:            # already talking? don't cut in with an apology
-                emit(trouble)
-            return {"reply": " ".join(said).strip() or trouble,
-                    "source": "error", "actions": actions, "error": str(exc)}
+            # Don't apologise out loud yet: in auto, respond() may still retry
+            # this turn on the local model. ``spoke`` tells it whether cutting in
+            # would interrupt something already being said.
+            print(f"[Brain] {which} turn failed: {exc}")
+            if said or self.backend != "auto" or which == "local":
+                trouble = "I'm having trouble reaching my brain right now."
+                if not said:        # already talking? don't cut in with an apology
+                    emit(trouble)
+                return {"reply": " ".join(said).strip() or trouble,
+                        "source": "error", "actions": actions,
+                        "spoke": bool(said), "error": str(exc)}
+            return {"reply": "", "source": "error", "actions": actions,
+                    "spoke": False, "error": str(exc)}

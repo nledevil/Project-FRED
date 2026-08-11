@@ -208,16 +208,26 @@ class Sound:
         wake-up). Positive = the jaw waits longer before it starts moving, for
         when the mouth runs ahead of the voice; negative = the jaw moves sooner.
         Tune by ear, usually within ±0.2.
+    audit : bool
+        Audit (dry-run) mode. Speech is still *rendered* and still occupies the
+        clock for exactly as long as it would have taken to play, but no audio
+        device is ever opened — see ``set_audit``.
     """
 
     def __init__(self, device: str = "plughw:0,0",
                  sounds_dir: str | Path = SOUNDS_DIR, enabled: bool = True,
-                 lead_in: float = 0.0, sync_offset: float = 0.0):
+                 lead_in: float = 0.0, sync_offset: float = 0.0,
+                 audit: bool = False):
         self.device = device
         self.sounds_dir = Path(sounds_dir)
         self.enabled = enabled
         self.lead_in = max(0.0, float(lead_in))
         self.sync_offset = float(sync_offset)
+        self._audit = bool(audit)
+        # In audit mode nothing is spawned, so there is no process to poll for
+        # "still playing". Instead we remember when the clip *would* have ended
+        # and let is_playing() answer from the clock.
+        self._virtual_end: float | None = None
         self._lock = threading.Lock()
         # Suspended = the audio card has been handed off to another owner (e.g.
         # MyRobotLab). While suspended, playback is a no-op. (The mic/arecord is
@@ -247,9 +257,31 @@ class Sound:
 
     # ---- capability -------------------------------------------------------
     def available(self) -> bool:
-        """True when playback is possible (aplay present). Independent of the
-        ``enabled`` mute flag, which callers can toggle at runtime."""
-        return self._ok
+        """True when playback is possible (aplay present, or audit mode, which
+        needs no device at all). Independent of the ``enabled`` mute flag, which
+        callers can toggle at runtime."""
+        return self._ok or self._audit
+
+    # ---- audit (dry run) --------------------------------------------------
+    def is_audit(self) -> bool:
+        return self._audit
+
+    def set_audit(self, on: bool) -> None:
+        """Turn audit mode on/off. Idempotent; stops anything currently playing.
+
+        Audit mode is deliberately *not* a mute. A mute (``enabled=False``) makes
+        play_file() fail, which tells the lip-sync layer no audio is coming and
+        stops the jaw and the on-screen mouth dead. Audit instead simulates a
+        successful playback of the correct duration, so the whole speech
+        pipeline — render, envelope, mouth publish, jaw schedule — runs in real
+        time against a silent speaker. That is the point: you get to watch
+        exactly what FRED would have done.
+        """
+        on = bool(on)
+        if on == self._audit:
+            return
+        self.stop()                # never leave a real aplay running behind us
+        self._audit = on
 
     def list(self) -> list[str]:
         """Sorted names of playable sounds (``.wav`` stems in sounds_dir)."""
@@ -267,6 +299,8 @@ class Sound:
 
     def is_playing(self) -> bool:
         with self._lock:
+            if self._virtual_end is not None:      # audit: the clock is the clip
+                return time.monotonic() < self._virtual_end
             return self._proc is not None and self._proc.poll() is None
 
     def can_speak(self) -> bool:
@@ -279,7 +313,7 @@ class Sound:
 
     def settings(self) -> dict:
         return {"device": self.device, "enabled": self.enabled,
-                "suspended": self._suspended,
+                "suspended": self._suspended, "audit": self._audit,
                 "lead_in": self.lead_in, "sync_offset": self.sync_offset,
                 "playing": self.is_playing(), "can_speak": self.can_speak(),
                 "tts": self.tts_engine(), "sounds": self.list()}
@@ -464,7 +498,7 @@ class Sound:
         startup, which delays the caller's lip-sync by that much when there's no
         lead-in to hide it — hence the shorter probe on continuation clips.
         """
-        if not self._ok or not self.enabled or self._suspended:
+        if not self.available() or not self.enabled or self._suspended:
             why = ("no aplay" if not self._ok
                    else "handed off" if self._suspended else "muted")
             print(f"[Sound] (silent) would play {path} [{why}]")
@@ -474,6 +508,9 @@ class Sound:
             print(f"[Sound] file not found: {path}")
             return False
         self.stop()                                  # one voice at a time
+        if self._audit:
+            # Dry run: no device, no aplay, no padded temp file — just the clock.
+            return self._play_virtual(path, pad=pad, wait=wait)
         if pad:
             play_path, owned = self._with_lead_in(path)   # prepend device-warmup silence
             pre_roll = self.lead_in if owned else 0.0     # padding may have failed
@@ -522,6 +559,37 @@ class Sound:
         self._audio_t0 = None
         cleanup()
         return False
+
+    @staticmethod
+    def _wav_duration(path: Path) -> float:
+        """Length of a WAV in seconds, or 0.0 if it can't be read."""
+        try:
+            with wave.open(str(path), "rb") as w:
+                rate = w.getframerate()
+                return w.getnframes() / float(rate) if rate else 0.0
+        except (wave.Error, OSError, EOFError):
+            return 0.0
+
+    def _play_virtual(self, path: Path, pad: bool, wait: bool) -> bool:
+        """Audit mode's stand-in for ``aplay``: report a successful playback of
+        the right length without opening the audio device.
+
+        The epoch is stamped exactly as the real path stamps it — including the
+        ``lead_in`` pre-roll and ``sync_offset`` — so ``audio_epoch()`` stays
+        truthful and the jaw/mouth animation is timed identically to a real
+        utterance. We don't bother writing the padded temp WAV: nothing reads it,
+        and the only thing the padding contributed was that delay.
+        """
+        duration = self._wav_duration(path)
+        pre_roll = self.lead_in if pad else 0.0
+        with self._lock:
+            self._proc = None
+            self._audio_t0 = time.monotonic() + pre_roll + self.sync_offset
+            self._virtual_end = self._audio_t0 + duration
+            end = self._virtual_end
+        if wait:
+            time.sleep(max(0.0, end - time.monotonic()))
+        return True
 
     def render_tts(self, text: str, speed: int = 150, voice: str = "en") -> str | None:
         """Render ``text`` to a WAV and return its path, or None if no TTS backend
@@ -585,6 +653,7 @@ class Sound:
         with self._lock:
             proc, self._proc = self._proc, None
             self._audio_t0 = None
+            self._virtual_end = None       # audit: the clip stops being "playing"
         if proc is not None and proc.poll() is None:
             proc.terminate()
             try:

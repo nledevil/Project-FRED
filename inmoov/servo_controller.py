@@ -51,6 +51,10 @@ class ServoController:
         # Suspended = we've released the I2C bus / PCA9685 to another owner (e.g.
         # MyRobotLab). While suspended, _kit is None and every write is a no-op.
         self._suspended = False
+        # Audit (dry run): the bus stays ours and every command is still clamped
+        # and recorded, but no pulse is emitted. Unlike suspend(), get_angle()
+        # keeps tracking the commanded position so the UI mirrors intent.
+        self._audit = False
         # Serialises hardware I2C writes. Several threads drive servos without
         # coordinating through the web app's lock — the lip-sync jaw animation,
         # the face tracker, and the request handlers — and concurrent I2C
@@ -128,6 +132,11 @@ class ServoController:
         if target != angle:
             print(f"[ServoController] {name}: {angle:.1f}° clamped to {target:.1f}° "
                   f"(limits {s['min_angle']}–{s['max_angle']})")
+        if self._audit:
+            # Dry run: record where he *would* be, drive nothing. Recording is the
+            # difference from suspend() — the panel's readout has to keep moving.
+            self._current[name] = target
+            return target
         phys = self._physical(s, target)
         if self.mock:
             print(f"[MOCK] {name} (ch{s['channel']}) -> {target:.1f}° (phys {phys:.1f}°)")
@@ -164,8 +173,8 @@ class ServoController:
 
         Pass a name to relax one servo, or nothing to relax all.
         """
-        if self._suspended:
-            return                          # bus released; nothing to relax
+        if self._suspended or self._audit:
+            return                          # bus released, or dry run: touch nothing
         names = [name] if name else list(self.servos)
         for n in names:
             s = self._require(n)
@@ -191,6 +200,9 @@ class ServoController:
         old = s["channel"]
         if channel == old:
             return old
+        # Not gated on audit: remapping a port cuts a pulse and sets pulse ranges,
+        # it never commands an angle — so it moves nothing, and blocking it would
+        # break calibration during an audit for no safety gain.
         if not self.mock and not self._suspended:
             with self._io_lock:
                 self._kit.servo[old].angle = None            # stop driving old port
@@ -220,6 +232,24 @@ class ServoController:
             self.set_angle(name, hi)
             time.sleep(dwell)
         self.set_angle(name, rest)
+
+    # ---- audit (dry run) --------------------------------------------------
+    def is_audit(self) -> bool:
+        return self._audit
+
+    def set_audit(self, on: bool) -> None:
+        """Turn audit mode on/off. Idempotent.
+
+        Entering audit deliberately does NOT relax: cutting the pulses would let
+        the head sag under its own weight, and visible motion is the one thing
+        this mode exists to prevent. The servos simply hold the pose they are
+        already in and stop receiving new commands.
+        """
+        on = bool(on)
+        if on == self._audit:
+            return
+        self._audit = on
+        print(f"[ServoController] audit mode {'ON — motion suppressed' if on else 'OFF'}.")
 
     # ---- hardware handoff -------------------------------------------------
     def is_suspended(self) -> bool:

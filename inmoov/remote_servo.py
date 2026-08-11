@@ -62,6 +62,9 @@ class RemoteServoController:
         self._lock = threading.Lock()
         self._current: dict[str, float] = {}
         self._suspended = False
+        # Audit (dry run): clamp and record every command, but send none of them
+        # to the head. See set_audit().
+        self._audit = False
         self.online = False
         self.last_error: str | None = None
         self.locked: set[str] = set()
@@ -174,6 +177,10 @@ class RemoteServoController:
             local = max(0.0, min(s.get("actuation_range", 180), angle))
         if self._suspended or name in self.locked:
             return local
+        if self._audit:
+            with self._lock:
+                self._current[name] = local   # track intent; the head never hears it
+            return local
         try:
             data = self._request("POST", f"/api/servos/{name}",
                                  {"angle": float(angle),
@@ -200,6 +207,11 @@ class RemoteServoController:
                   if n in self.servos and n not in self.locked}
         if not wanted or self._suspended:
             return {}
+        if self._audit:
+            applied = {n: self._clamp(self.servos[n], a) for n, a in wanted.items()}
+            with self._lock:
+                self._current.update(applied)
+            return applied
         try:
             data = self._request("POST", "/api/servos",
                                  {"angles": wanted,
@@ -254,6 +266,12 @@ class RemoteServoController:
 
     def rest(self) -> None:
         """Every servo to its rest position (locked ones are skipped by the head)."""
+        if self._audit:                      # dry run: move the readout, not the head
+            with self._lock:
+                self._current.update({n: float(s["rest_angle"])
+                                      for n, s in self.servos.items()
+                                      if n not in self.locked})
+            return
         try:
             data = self._request("POST", "/api/rest")
         except RemoteServoError:
@@ -263,6 +281,8 @@ class RemoteServoController:
 
     def relax(self, name: str | None = None) -> None:
         """Cut the pulse so the servo(s) stop holding torque."""
+        if self._audit:
+            return                           # nothing is being driven to relax
         try:
             self._request("POST", "/api/relax", {"name": name} if name else {})
         except RemoteServoError:
@@ -282,8 +302,28 @@ class RemoteServoController:
                  dwell: float = 0.13) -> None:
         """Wiggle `name` so you can spot which servo it is."""
         self._require(name)
+        if self._audit:
+            return                          # identify is pure motion — suppress it
         self._request("POST", f"/api/servos/{name}/identify",
                       {"sweep": sweep, "cycles": cycles, "dwell": dwell})
+
+    # ---- audit (dry run) --------------------------------------------------
+    def is_audit(self) -> bool:
+        return self._audit
+
+    def set_audit(self, on: bool) -> None:
+        """Turn audit mode on/off. Idempotent.
+
+        Entering audit deliberately does NOT relax the head: cutting the pulses
+        would let it sag under its own weight, and visible motion is the one
+        thing this mode exists to prevent. The servos hold their current pose and
+        simply stop receiving commands.
+        """
+        on = bool(on)
+        if on == self._audit:
+            return
+        self._audit = on
+        print(f"[RemoteServo] audit mode {'ON — motion suppressed' if on else 'OFF'}.")
 
     # ---- hardware handoff -------------------------------------------------
     def is_suspended(self) -> bool:
@@ -315,6 +355,7 @@ class RemoteServoController:
         """Link health, for the admin panel."""
         return {"host": self.host, "port": self.port, "online": self.online,
                 "mock": self.mock, "suspended": self._suspended,
+                "audit": self._audit,
                 "locked": sorted(self.locked), "error": self.last_error}
 
     # context-manager sugar: relax everything on exit

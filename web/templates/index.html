@@ -22,6 +22,25 @@
   .health.bad  { background:#3a0d0d; border-color:#a33; color:#f87171; }
   .admin-link { font-size:15px; text-decoration:none; color:var(--mut); line-height:1;
                 padding:5px 9px; border:1px solid var(--border); border-radius:999px; }
+  /* Audit banner: deliberately loud. Mistaking a dry run for a live robot (or
+     the reverse) is the one confusion this mode can cause. */
+  .auditbar { display:flex; align-items:center; gap:10px; margin:0 4px 16px;
+              padding:9px 14px; border-radius:10px; font-size:13px;
+              background:#3a2a00; border:1px solid #7a5a10; color:var(--warn); }
+  /* Must come after the display:flex above: an author `display` rule outranks
+     the UA stylesheet's [hidden]{display:none}, so without this the banner is
+     permanently visible. Same trap as .cart .warn[hidden] below. */
+  .auditbar[hidden] { display:none; }
+  .auditbar b { letter-spacing:.06em; }
+  .auditbar .det { color:#c8ab63; }
+  .auditbar button { margin-left:auto; color:var(--warn); font-weight:600;
+                     background:transparent; border:1px solid #7a5a10;
+                     border-radius:999px; padding:4px 12px; font-size:12px;
+                     cursor:pointer; white-space:nowrap; }
+  .auditbar button:hover { background:#4a3600; }
+  .audit-tog { margin-left:auto; }
+  .audit-tog.on { color:var(--warn); font-weight:600; }
+  .audit-tog ~ .toggle { margin-left:0; }   /* only the first toggle claims the gap */
   .admin-link:hover { color:var(--fg); background:rgba(255,255,255,.04); }
 
   .app { max-width:1500px; }
@@ -262,6 +281,13 @@
     <a class="admin-link" href="/admin" title="Admin settings">⚙</a>
   </div>
 
+  <div class="auditbar" id="auditBar" hidden>
+    <b>AUDIT MODE</b>
+    <span class="det">Dry run — no audio out, no servo motion, cart held.
+      Readouts show what FRED <i>would</i> do.</span>
+    <button type="button" onclick="onAudit(false)">Turn off</button>
+  </div>
+
   <div class="wrap">
     <section class="panel cam" id="camPanel">
       <div class="phead">Live camera
@@ -318,6 +344,9 @@
         <button onclick="rest()">↺ Reset</button>
         <button onclick="relax()">◌ Relax</button>
         <button id="saveBtn" class="primary hidden" onclick="save()">💾 Save config</button>
+        <label class="toggle audit-tog" id="auditTog"
+               title="Dry run — interact normally, but no audio out, no servo motion, no cart">
+          <input type="checkbox" id="auditChk" onchange="onAudit(this.checked)"> Audit</label>
         <label class="toggle"><input type="checkbox" id="calib" onchange="setCalib()"> Calibration</label>
       </div>
       <p class="hint">Drag the sliders to move the eyes left/right and up/down, and open the jaw.
@@ -396,6 +425,25 @@ function toast(msg) {
   clearTimeout(t._t); t._t = setTimeout(() => t.classList.remove('show'), 1600);
 }
 
+// ---- audit (dry run) mode ----------------------------------------------
+// One place that paints the state, so the checkbox and the banner can never
+// disagree about whether the robot is live.
+let AUDIT = null;                 // last painted state; null until first load
+function reflectAudit(on) {
+  on = !!on;
+  AUDIT = on;
+  document.getElementById('auditChk').checked = on;
+  document.getElementById('auditTog').classList.toggle('on', on);
+  document.getElementById('auditBar').hidden = !on;
+}
+async function onAudit(checked) {
+  reflectAudit(checked);                       // optimistic: the switch feels instant
+  const s = await api('/api/audit', { audit: !!checked });
+  reflectAudit(!!(s || {}).audit);             // then settle on what the server did
+  toast(AUDIT ? 'Audit mode ON — no sound, no motion'
+              : 'Audit mode OFF — FRED is live again');
+}
+
 async function load() {
   STATE = await api('/api/state');
   const m = document.getElementById('mode');
@@ -403,6 +451,7 @@ async function load() {
   m.className = 'badge ' + (STATE.mock ? 'mock' : 'live');
   const s = STATE.settings || {};
   if (s.iris_color) document.documentElement.style.setProperty('--iris-color', s.iris_color);
+  reflectAudit(!!(STATE.audit || {}).audit);
   initCam();
   initLed();
   initVoice();
@@ -818,6 +867,9 @@ async function pollHead() {
   if (!STATE) return;
   const p = await api('/api/positions');
   if (!p || !p.pos) return;
+  // Repaint only on a real change: this poll runs at ~8 Hz, and the toggle is
+  // flipped by hand. Guarding also stops us fighting a click mid-flight.
+  if (typeof p.audit === 'boolean' && p.audit !== AUDIT) reflectAudit(p.audit);
   const now = performance.now();
   for (const [name, ang] of Object.entries(p.pos)) {
     if (ang == null || !STATE.servos[name]) continue;

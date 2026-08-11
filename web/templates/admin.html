@@ -110,6 +110,50 @@
   </section>
 
   <section class="panel">
+    <p class="phead">Brain backend</p>
+    <div class="row" style="margin-bottom:12px">
+      <div class="label"><b>Which A.I. answers open questions</b>
+        <span>known commands are always handled offline, for free</span></div>
+      <div class="grow"></div>
+      <select id="brainBackend" onchange="onBrainBackend(this.value)">
+        <option value="auto">Auto — Claude, fall back to local</option>
+        <option value="claude">Claude only (needs internet)</option>
+        <option value="local">Local only (never uses the network)</option>
+      </select>
+    </div>
+    <div class="row" style="margin-bottom:12px">
+      <div class="label"><b>Status</b><span>what a question would reach right now</span></div>
+      <div class="grow"></div>
+      <span id="brainStatus" class="badge">…</span>
+    </div>
+    <p class="hint">FRED is taken places without reliable WiFi, so <b>Auto</b> uses Claude when it can
+       reach it and silently falls back to the local model when it can't — a worse answer instead of
+       no answer. After a failure it stays local for a minute rather than paying a network timeout on
+       every sentence. The local model (<span id="brainLocalModel">…</span>) runs on this machine via
+       Ollama, on the Intel Arc iGPU. Live switch (no Save needed); persists across reboots.</p>
+  </section>
+
+  <section class="panel">
+    <p class="phead">Audit mode</p>
+    <div class="row" style="margin-bottom:12px">
+      <div class="label"><b>Dry run — no sound, no motion</b>
+        <span>interact normally; nothing physical happens</span></div>
+      <div class="grow"></div>
+      <label class="switch"><span id="auditLabel" style="color:var(--mut)">Live</span>
+        <input type="checkbox" id="audit" onchange="onAudit(this.checked)"></label>
+    </div>
+    <p class="hint">When ON, FRED stays fully interactive — the chat box, the wake word, the servo
+       sliders and face tracking all work, and the transcript and on-screen face behave exactly as
+       normal, lip-sync included. But no audio reaches the speaker, no pulse reaches a servo, and
+       the cart will not drive. The servo readouts keep tracking the commanded angles, so you can
+       watch what he <i>would</i> have done. Unlike the handoff above, nothing is disabled and the
+       hardware is not given away — the servos simply hold their pose rather than being relaxed,
+       so nothing sags. <b>Switching back off returns the servos to rest</b>, since the readouts
+       and the hardware will have drifted apart during the audit. Live switch (no Save needed);
+       persists across reboots.</p>
+  </section>
+
+  <section class="panel">
     <p class="phead">Appearance</p>
     <div class="row">
       <div class="label"><b>Iris colour</b><span>eye colour in the head animation</span></div>
@@ -446,6 +490,43 @@ async function onHandoff(checked) {
 function openMrl(e) { e.preventDefault();
   window.open(`http://${location.hostname}:8888`, '_blank', 'noopener'); }
 
+// ---- brain backend (cloud / local LLM) ---------------------------------
+function reflectBrain(s) {
+  s = s || {};
+  if (s.backend) document.getElementById('brainBackend').value = s.backend;
+  document.getElementById('brainLocalModel').textContent = s.local_model || 'not set';
+  const el = document.getElementById('brainStatus');
+  const active = s.active || 'none';
+  const label = { claude: 'Claude (online)', local: 'Local model', none: 'No brain available' }[active];
+  el.textContent = label || active;
+  // Local-only and cloud-down both still answer, so they're not failures — but
+  // "none" means an open question gets an apology, which is worth shouting about.
+  el.className = 'badge ' + (active === 'none' ? 'mock' : 'live');
+  el.title = `Claude ${s.claude_ready ? 'ready' : 'unavailable' + (s.claude_error ? ': ' + s.claude_error : '')}`
+           + ` · local ${s.local_ready ? 'ready (' + s.local_model + ')' : 'unavailable'}`;
+}
+async function loadBrain() { reflectBrain(await api('/api/brain')); }
+async function onBrainBackend(v) {
+  const s = await api('/api/brain', { backend: v });
+  reflectBrain(s);
+  toast(`Brain: ${v} — now using ${s.active}`);
+}
+
+// ---- audit (dry run) mode ----------------------------------------------
+function reflectAudit(on) {
+  document.getElementById('audit').checked = on;
+  const lbl = document.getElementById('auditLabel');
+  lbl.textContent = on ? 'Audit — dry run' : 'Live';
+  lbl.style.color = on ? '#f0a020' : 'var(--mut)';
+}
+async function loadAudit() { reflectAudit(!!(await api('/api/audit')).audit); }
+async function onAudit(checked) {
+  const s = await api('/api/audit', { audit: checked });
+  reflectAudit(!!s.audit);
+  toast(s.audit ? 'Audit mode ON — no sound, no motion'
+                : 'Audit mode OFF — FRED is live again');
+}
+
 // Open a browser terminal on whatever host served this page. All three ttyd
 // instances (7681 NUC / 7682 head / 7683 chest) run on the NUC, so the host is
 // always the one already serving this panel — which is what makes these work
@@ -514,6 +595,8 @@ function initDropzone() {
 initDropzone();
 loadClips();
 loadHandoff();
+loadAudit();
+loadBrain();
 load();
 refreshDisplay();
 </script>

@@ -34,6 +34,7 @@ from inmoov.camera import Camera  # noqa: E402
 from inmoov.face_tracker import FaceTracker, TUNABLE  # noqa: E402
 from inmoov.wide_spotter import WideSpotter  # noqa: E402
 from inmoov.assistant import Assistant  # noqa: E402
+from inmoov.brain import BACKENDS  # noqa: E402
 from inmoov import sysinfo  # noqa: E402
 from inmoov.convlog import ConversationLog  # noqa: E402
 from inmoov.led import Led  # noqa: E402
@@ -60,6 +61,10 @@ _settings = load_settings()                  # admin-editable UI/camera preferen
 # I2C/audio/camera. If we boot into that state, don't grab the servos (skip the
 # rest sweep); the objects are suspended just after construction, below.
 _boot_released = bool(_settings.get("hardware", {}).get("released", False))
+# Audit (dry run) mode, persisted like the handoff. Read here — before the servo
+# controller is built — because booting into an audit must skip the rest sweep
+# too: the whole promise is that nothing moves.
+_boot_audit = bool(_settings.get("audit", {}).get("enabled", False))
 _servo_cfg = _settings.get("servo", {})
 _servo_host = str(_servo_cfg.get("remote_host", "") or "").strip()
 if _servo_host:
@@ -69,11 +74,11 @@ if _servo_host:
                                   port=int(_servo_cfg.get("remote_port", 8082)),
                                   token=str(_servo_cfg.get("remote_token", "") or ""),
                                   config=_config)
-    if not _boot_released:
+    if not _boot_released and not _boot_audit:
         _ctrl.rest()                 # the local controller does this in its ctor
 else:
     _ctrl = ServoController(config=_config,  # auto mock when /dev/i2c-1 absent
-                            move_to_rest=not _boot_released)
+                            move_to_rest=not _boot_released and not _boot_audit)
 _led_cfg = _settings.get("led", {})
 _led_indicator = bool(_led_cfg.get("camera_indicator", True))
 _led_host = str(_led_cfg.get("remote_host", "") or "").strip()
@@ -100,7 +105,8 @@ _voice_cfg = _settings.get("voice", {})
 _sound = Sound(device=_snd_cfg.get("device", "default"),  # aplay-based, no-op if no audio
                enabled=bool(_snd_cfg.get("enabled", True)),
                lead_in=float(_snd_cfg.get("lead_in", 0.0)),  # pad opening words on slow-to-wake devices
-               sync_offset=float(_snd_cfg.get("sync_offset", 0.0)))  # lip-sync trim
+               sync_offset=float(_snd_cfg.get("sync_offset", 0.0)),  # lip-sync trim
+               audit=_boot_audit)           # dry run: render + time speech, play nothing
 # Load the piper voice now, off the request path: the first synthesis pays a
 # ~1.7s model load, and we'd rather spend it at boot than on FRED's first reply.
 threading.Thread(target=_sound.warm, name="tts-warm", daemon=True).start()
@@ -151,7 +157,8 @@ _assistant = Assistant(_ctrl, _status_led, _tracker, _sound,  # voice: wake word
                        device=_snd_cfg.get("device", "plughw:0,0"), log=_log,
                        mic_gain=float(_voice_cfg.get("gain", 1.0)),
                        model=_voice_cfg.get("model") or None,
-                       sensors=_sensors)
+                       sensors=_sensors,
+                       brain_cfg=_settings.get("brain", {}))   # cloud/local routing
 # Auto-greet: the first thing FRED does unprompted. Wired after the assistant
 # because it needs one, and attached to the hub afterwards because the hub was
 # needed to build the assistant — the dependency is genuinely circular.
@@ -234,6 +241,50 @@ def _handoff_state() -> dict:
             "camera_suspended": _camera.is_suspended()}
 
 
+# Audit (dry run) mode. Unlike the handoff, this blocks NOTHING at the API layer:
+# every control still works and still reports what it would have done. The
+# suppression happens one level down, inside the controller/sound/cart objects,
+# which is what lets the panel stay fully interactive while the robot sits still.
+_audit_mode = _boot_audit
+
+
+def _apply_audit(on: bool) -> None:
+    """Enter or leave audit mode. Idempotent; safe to call at boot.
+
+    Order matters on the way in: stop what is already in motion before the
+    objects stop accepting motion, so nothing is left mid-clip or rolling on a
+    watchdog nobody is feeding any more. The servos are NOT relaxed — they hold
+    their pose, because letting the head sag is exactly the motion we're here to
+    prevent.
+
+    On the way out the servos go to rest. During an audit the readouts track
+    commanded angles while the hardware sat still, so the two have diverged;
+    rest is the one pose both are known to agree on, and it's the same sweep the
+    app does at boot.
+    """
+    global _audit_mode
+    on = bool(on)
+    if on:
+        _sound.stop()              # cut any clip that is mid-play
+        _cart.set_audit(True)      # stops the cart for real on the way in
+        _ctrl.set_audit(True)      # hold position, accept no new motion
+        _sound.set_audit(True)     # render + time speech, but open no device
+    else:
+        _sound.set_audit(False)
+        _cart.set_audit(False)
+        _ctrl.set_audit(False)
+        if not _handoff_released:
+            _ctrl.rest()           # re-sync hardware and readout to a known pose
+    _audit_mode = on
+
+
+def _audit_state() -> dict:
+    return {"audit": _audit_mode,
+            "servo_audit": _ctrl.is_audit(),
+            "sound_audit": _sound.is_audit(),
+            "cart_audit": _cart.is_audit()}
+
+
 def _blocked_by_handoff():
     """A 409 response when the hardware is released to MyRobotLab, else None. Used
     to reject endpoints that would otherwise grab the shared hardware back."""
@@ -263,8 +314,9 @@ def _state() -> dict:
             "sound": sound, "led": _status_led.status(), "track": _tracker.status(),
             "spotter": _spotter.status(),
             "voice": _assistant.status(), "servos": servos, "settings": _settings,
-            "handoff": _handoff_state(), "sensors": _sensors.state(),
-            "greet": _greeter.state()}
+            "handoff": _handoff_state(), "audit": _audit_state(),
+            "brain": _assistant.brain.status(),
+            "sensors": _sensors.state(), "greet": _greeter.state()}
 
 
 @app.get("/")
@@ -446,6 +498,56 @@ def api_handoff():
         _settings.setdefault("hardware", {})["released"] = _handoff_released
         save_settings(_settings)
     return jsonify(_handoff_state())
+
+
+@app.get("/api/brain")
+def api_brain_status():
+    """Which LLM backend answers open questions, and what's actually reachable."""
+    return jsonify(_assistant.brain.status())
+
+
+@app.post("/api/brain")
+def api_brain():
+    """Switch the LLM backend: ``{"backend": "auto"|"claude"|"local"}``.
+
+    'auto' prefers Claude and falls back to the local model when the network is
+    down — which is the case FRED is taken to events for. Persists."""
+    data = request.get_json(force=True) or {}
+    if "backend" in data:
+        want = str(data["backend"])
+        if want not in BACKENDS:
+            return jsonify({"error": f"backend must be one of {list(BACKENDS)}"}), 400
+        _assistant.brain.set_backend(want)
+        _settings.setdefault("brain", {})["backend"] = _assistant.brain.backend
+        save_settings(_settings)
+        # Pull the model into RAM off the request path, so the first question
+        # after a switch to local isn't slow.
+        threading.Thread(target=_assistant.brain.warm_local,
+                         name="local-warm", daemon=True).start()
+    return jsonify(_assistant.brain.status())
+
+
+@app.get("/api/audit")
+def api_audit_status():
+    return jsonify(_audit_state())
+
+
+@app.post("/api/audit")
+def api_audit():
+    """Enter or leave audit (dry run) mode.
+
+    Body: ``{"audit": true|false}``. When on, the panel stays fully usable —
+    servo sliders, the chat box, the wake word, face tracking — but no audio
+    leaves the speaker, no pulse reaches a servo, and the cart will not drive.
+    Commanded angles are still tracked and reported, so the readouts show what
+    FRED would have done. The choice persists across reboots."""
+    data = request.get_json(force=True) or {}
+    if "audit" in data:
+        with _lock:
+            _apply_audit(bool(data["audit"]))
+        _settings.setdefault("audit", {})["enabled"] = _audit_mode
+        save_settings(_settings)
+    return jsonify(_audit_state())
 
 
 @app.get("/api/sensors")
@@ -718,7 +820,11 @@ def api_positions():
     pos = {name: _ctrl.get_angle(name) for name in _config["servos"]}
     return jsonify({"pos": pos, "speaking": _assistant.is_speaking(),
                     "mouth": _assistant.mouth_seq(),   # bumps per clip -> refetch /api/mouth
-                    "led": _status_led.is_on})
+                    "led": _status_led.is_on,
+                    # Rides along on the hot poll so the panel's audit banner stays
+                    # truthful even when the mode is flipped from the admin page,
+                    # another browser, or curl. It's one bool.
+                    "audit": _audit_mode})
 
 
 @app.get("/api/mouth")
@@ -1076,6 +1182,10 @@ if __name__ == "__main__":
     if _handoff_released:
         _apply_handoff(True)                     # boot straight into the released
         print("Hardware handoff: RELEASED to MyRobotLab (I2C/audio/camera held off).")
+    if _audit_mode:
+        # Sound already got it in its constructor; this arms the servos and cart.
+        _apply_audit(True)
+        print("AUDIT MODE: dry run — no audio out, no servo motion, cart held.")
     print(f"Serving InMoov control panel — mode: {'MOCK' if _ctrl.mock else 'LIVE'}")
     if _spot_cfg.get("enabled", True) and not _handoff_released:
         # Runs whether or not tracking is on: the bearing it produces is what
@@ -1085,6 +1195,11 @@ if __name__ == "__main__":
             print(f"Wide spotter: PanaCast {s['size']} @ {s['detect_hz']} Hz")
         else:
             print(f"Wide spotter: unavailable — {_spotter.last_error}")
+    # Load the local model into RAM now, off the conversation path: the first
+    # question would otherwise pay a multi-second model load on top of its answer.
+    if _assistant.brain.backend in ("auto", "local"):
+        threading.Thread(target=_assistant.brain.warm_local,
+                         name="local-warm", daemon=True).start()
     boot = _snd_cfg.get("boot_sound", "")
     if boot and _sound.available() and not _handoff_released:
         _sound.play(boot)                        # non-blocking chime on startup

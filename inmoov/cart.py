@@ -52,6 +52,9 @@ class CartClient:
         self._lock = threading.Lock()
         self._motion: threading.Thread | None = None
         self._cancel = threading.Event()
+        # Audit (dry run): drive commands are acknowledged but never sent. Stops
+        # are deliberately NOT suppressed — see stop().
+        self._audit = False
 
     def configure(self, host: str | None = None, port: int | None = None,
                   token: str | None = None) -> None:
@@ -87,6 +90,24 @@ class CartClient:
     def state(self) -> dict:
         return self._request("GET", "/api/cart")
 
+    # -- audit (dry run) ---------------------------------------------------
+    def is_audit(self) -> bool:
+        return self._audit
+
+    def set_audit(self, on: bool) -> None:
+        """Turn audit mode on/off. Any nudge in flight is cancelled and the cart
+        is really stopped on the way in, so nothing keeps rolling on a watchdog
+        the audit is no longer feeding. Idempotent."""
+        on = bool(on)
+        if on == self._audit:
+            return
+        if on and self.configured():
+            try:
+                self.stop()                 # real stop, before drives go quiet
+            except CartError:
+                pass                        # unreachable: the watchdog has it anyway
+        self._audit = on
+
     # -- motion ------------------------------------------------------------
     def drive(self, steer, speed) -> dict:
         """One command. Authority expires at the chest's watchdog unless repeated.
@@ -94,11 +115,20 @@ class CartClient:
         This is what the panel's joystick calls on every tick. Callers that are
         not a human holding a control should use nudge() instead.
         """
+        if self._audit:
+            # Acknowledge without sending: nudge() checks this reply for an error
+            # before it spawns, and the joystick expects a dict back every tick.
+            return {"audit": True, "steer": steer, "speed": speed}
         return self._request("POST", "/api/cart/drive",
                              {"steer": steer, "speed": speed})
 
     def stop(self, estop: bool = False) -> dict:
-        """Stop now, cancelling any nudge in flight."""
+        """Stop now, cancelling any nudge in flight.
+
+        Never suppressed by audit mode. A stop that doesn't reach the hardware is
+        the one failure this class must not have — and since audit never sends a
+        drive, a stop it doesn't need is harmless.
+        """
         self._cancel.set()
         return self._request("POST", "/api/cart/stop", {"estop": bool(estop)})
 
