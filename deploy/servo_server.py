@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import sys
 import threading
 from http import server
@@ -193,6 +194,23 @@ def _adopt_config(body: dict) -> dict:
             "outside_limits": outside, "saved": str(CONFIG_PATH)}
 
 
+
+def _hostname() -> str:
+    try:
+        return socket.gethostname()
+    except OSError:
+        return ""
+
+
+def _uptime_s() -> float | None:
+    """Seconds since this Pi booted, for the chest panel's INFO tab."""
+    try:
+        with open("/proc/uptime") as fh:
+            return round(float(fh.read().split()[0]), 1)
+    except (OSError, ValueError, IndexError):
+        return None
+
+
 class _Handler(server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"        # keep-alive: the tracker sends ~15 req/s
 
@@ -272,9 +290,14 @@ class _Handler(server.BaseHTTPRequestHandler):
         if self.path == "/api/health":
             # Answered without taking _lock so it stays truthful even while a
             # slow move (identify, rest sweep) is in flight.
+            # hostname/uptime ride along for the chest panel's INFO tab: two
+            # cheap reads, and it saves adding a second endpoint and a second
+            # request to a poll that already happens.
             return self._send(200, {"ok": True, "mock": _ctrl.mock,
                                     "suspended": _ctrl.is_suspended(),
-                                    "locked": sorted(LOCKED)})
+                                    "locked": sorted(LOCKED),
+                                    "hostname": _hostname(),
+                                    "uptime_s": _uptime_s()})
         if not self._authed():
             return None
         if self.path == "/api/servos":

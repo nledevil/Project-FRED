@@ -49,6 +49,7 @@ from inmoov.display import DisplayClient, DisplayError, VoicePusher  # noqa: E40
 from inmoov.greeter import Greeter  # noqa: E402
 from inmoov.settings import load_settings, save_settings  # noqa: E402
 from inmoov import auth  # noqa: E402
+from inmoov import whoami as whoami_mod  # noqa: E402
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 32 * 1024 * 1024   # cap clip uploads at 32 MB
@@ -815,6 +816,20 @@ def api_cart_drive():
         return jsonify(_cart.drive(data.get("steer", 0), data.get("speed", 0)))
     except CartError as e:
         return jsonify({"error": str(e)}), 502
+
+
+@app.get("/api/whoami")
+def api_whoami():
+    """Names, addresses, versions, and what the brain is inferring on.
+
+    Open, like /api/state and /api/health: it is identity, not control, and it
+    carries nothing that is not already discoverable by anyone who can reach
+    this port. The one genuinely useful fact is the inference device — the
+    answer to "is the local brain on the GPU or has it silently been on the CPU
+    since boot", which otherwise needs a journal grep over SSH.
+    """
+    return jsonify(whoami_mod.state(brain=_assistant.brain,
+                                    hotspot=hotspot_mod.state()))
 
 
 @app.get("/api/hotspot")

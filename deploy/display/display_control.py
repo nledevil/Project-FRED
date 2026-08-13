@@ -47,6 +47,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import socket
 import subprocess
 import sys
 import threading
@@ -300,6 +301,23 @@ class Supervisor:
             return self._state_locked()
 
 
+def _hostname() -> str:
+    try:
+        return socket.gethostname()
+    except OSError:
+        return ""
+
+
+def _uptime_s() -> float | None:
+    """Seconds since this Pi booted. /proc/uptime is two numbers in a file —
+    no dependency, and the same on the NUC."""
+    try:
+        with open("/proc/uptime") as fh:
+            return round(float(fh.read().split()[0]), 1)
+    except (OSError, ValueError, IndexError):
+        return None
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "InMoovDisplay/1.0"
     supervisor: Supervisor
@@ -340,8 +358,11 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path.startswith("/api/state"):
             # metrics rides along so the head's admin panel can reflect the
             # toggle from the same poll it already does for the animation.
+            # ...and so does this Pi's own name and uptime, for the INFO tab —
+            # it is two cheap reads and saves the menu a second request.
             self._send(200, {**self.supervisor.state(),
-                             "metrics": bool(self.metrics and self.metrics.enabled)})
+                             "metrics": bool(self.metrics and self.metrics.enabled),
+                             "hostname": _hostname(), "uptime_s": _uptime_s()})
         elif self.path.startswith("/api/cart"):
             self._send(200, self.cart.state() if self.cart
                        else {"enabled": False})

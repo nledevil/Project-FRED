@@ -60,6 +60,11 @@ OPEN = [
     # /api/auth/material guards itself by address rather than by session --
     # a session must never be able to fetch the digest.
     "/api/auth", "/api/auth/material",
+    # Identity, not control: hostnames, addresses, uptimes and the git
+    # revision, none of which is a secret and all of which is already
+    # implied by /api/state. Kept open so the chest panel can show it
+    # without a session it has no way to obtain.
+    "/api/whoami",
 ]
 
 
