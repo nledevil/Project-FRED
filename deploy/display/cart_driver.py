@@ -484,11 +484,33 @@ class CartDriver:
                     self._fd = -1
                     self._tel["connected"] = False
                     self._tel["ps2_active"] = False
+                    self._forget_readings()
                     self._steer = self._speed = 0
                     self._deadline = 0.0
                 os.close(fd)
             if not self._stop.is_set():
                 self._stop.wait(RECONNECT_DELAY)
+
+    def _forget_readings(self) -> None:
+        """Drop everything the Pico was telling us. Called under the lock.
+
+        A reading is only true while the thing reporting it is attached. Left
+        alone, the last battery voltage before the plug came out goes on being
+        served as the current one, and 38.1 V is a perfectly plausible number to
+        read off a panel — nothing about it says "from four hours ago".
+
+        Nothing displays it wrongly today, because every row that shows these
+        keys off ``connected`` first. That is the trap: the honesty lives in
+        each consumer rather than in the data, so the first one written without
+        that check inherits a bug from a module it never touched.
+
+        Deliberately not cleared: last_line, last_error, commands_sent and
+        watchdog_stops. Those are history rather than readings, and history is
+        exactly what you want when working out why the link dropped.
+        """
+        self._tel.update(battery_v=None, board_temp_c=None,
+                         speed_l=None, speed_r=None, source=None,
+                         mainboard_seen=False, last_telemetry=0.0)
 
     def _pump(self, fd: int) -> None:
         buf = bytearray()

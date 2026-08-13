@@ -352,6 +352,34 @@ def main() -> int:
         drv.set_controller_mode("off")
         drv.stop()
 
+        # --- telemetry does not outlive the Pico ------------------------------
+        # A reading is only true while the thing reporting it is attached.
+        pico.telemetry()
+        wait_until(lambda: drv.state()["battery_v"] is not None)
+        live = drv.state()
+        check("telemetry arrives while connected", live["battery_v"] is not None,
+              f"battery_v={live['battery_v']}, temp={live['board_temp_c']}")
+        check("...and the mainboard is seen", live["mainboard_seen"])
+
+        # Pull the plug for real rather than calling the reset by hand: closing
+        # the master end is what the driver sees when the Pico is unplugged, so
+        # this exercises the actual disconnect path and not just the helper.
+        pico.shutdown()
+        os.close(master)
+        check("the driver notices the Pico is gone",
+              wait_until(lambda: not drv.state()["connected"], timeout=5.0))
+        gone = drv.state()
+        for key in ("battery_v", "board_temp_c", "speed_l", "speed_r", "source"):
+            check(f"{key} is forgotten when the Pico goes",
+                  gone[key] is None, f"still {gone[key]!r}")
+        check("the mainboard is no longer 'seen'", not gone["mainboard_seen"])
+        check("telemetry_age is None rather than ever-growing",
+              gone["telemetry_age"] is None, f"{gone['telemetry_age']!r}")
+        check("...but the last line is kept, because that is history",
+              bool(gone["last_line"]), gone["last_line"][:40])
+        check("...and so are the counters", gone["commands_sent"] > 0,
+              f"commands_sent={gone['commands_sent']}")
+
         check("resolve_port refuses a MicroPython device",
               cart_driver.resolve_port(
                   "/dev/serial/by-id/usb-MicroPython_Board_in_FS_mode_x-if00") == "",
@@ -361,8 +389,13 @@ def main() -> int:
         drv.shutdown()
         pico.shutdown()
         time.sleep(0.2)
-        os.close(slave)
-        os.close(master)
+        # Both may already be shut: the disconnect test unplugs the Pico by
+        # closing the master, and the driver closes the slave when it gives up.
+        for fd in (slave, master):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
 
     print()
     if FAILURES:
