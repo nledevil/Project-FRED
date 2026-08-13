@@ -40,6 +40,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import menu_ui as ui                        # noqa: E402 — sibling module
 from fb import Framebuffer, hide_cursor     # noqa: E402
 from page_cart import CartPage              # noqa: E402
+from page_display import DisplayPage        # noqa: E402
 from page_wireless import WirelessPage      # noqa: E402
 from page_servos import ServosPage          # noqa: E402
 from page_status import StatusPage          # noqa: E402
@@ -49,6 +50,9 @@ import pin_gate                             # noqa: E402 — sibling module
 
 NUC = "http://10.0.0.1:8080"
 HEAD = "http://10.0.0.10:8082"
+# Fetched once (see _chest): the preset list is fixed for our lifetime.
+_ANIMATIONS: list = [None]
+
 LOCAL = "http://127.0.0.1:8081"             # our own daemon, for close + chest state
 
 POLL_EVERY = 2.0                            # seconds between refreshes
@@ -152,6 +156,17 @@ class Net:
         cart = _get(f"{LOCAL}/api/cart", timeout=1.0)
         if isinstance(cart, dict):
             out["cart"] = cart
+        state = _get(f"{LOCAL}/api/state", timeout=1.0)
+        if isinstance(state, dict):
+            out["display"] = state
+        # The preset list never changes while we are running, so it is fetched
+        # once and carried in the snapshot rather than re-asked every 2s.
+        if _ANIMATIONS[0] is None:
+            listing = _get(f"{LOCAL}/api/animations", timeout=1.0)
+            if isinstance(listing, dict) and isinstance(listing.get("animations"), list):
+                _ANIMATIONS[0] = listing["animations"]
+        if _ANIMATIONS[0]:
+            out["animations"] = _ANIMATIONS[0]
         sensors = _get(f"{LOCAL}/api/sensors", timeout=1.0)
         if isinstance(sensors, dict):
             out["sensors"] = {
@@ -178,6 +193,17 @@ class Net:
     def post_hotspot(self, on: bool) -> None:
         """The access point lives on the *brain* — it has the AP-capable radio."""
         self._fire(f"{NUC}/api/hotspot", {"enabled": bool(on)})
+
+    def post_hotspot_config(self, ssid: str, passphrase: str) -> None:
+        """Rename the AP or change its password. Brain-side, like the toggle —
+        the config and the radio are both there."""
+        self._fire(f"{NUC}/api/hotspot/config",
+                   {"ssid": str(ssid), "passphrase": str(passphrase)})
+
+    def post_animation(self, animation: str) -> None:
+        """Switch what the chest screen is showing. Local, like the cart mode:
+        the animation child is ours, so this works with the brain switched off."""
+        self._fire(f"{LOCAL}/api/animation", {"animation": str(animation)})
 
     def post_cart_controller(self, mode: str) -> None:
         """Set who may drive. Sent to our *own* daemon, not the brain: the chest
@@ -220,7 +246,7 @@ def main() -> int:
     touch = open_touch(width=fb.w, height=fb.h)
 
     pages = [StatusPage(), VoicePage(), ServosPage(), CartPage(),
-             WirelessPage()]
+             DisplayPage(), WirelessPage()]
     current = next((i for i, p in enumerate(pages)
                     if p.title.lower() == args.page.strip().lower()), 0)
     # Width is computed, not fixed: five tabs at the old 150px ran off the
