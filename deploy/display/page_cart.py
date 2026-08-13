@@ -195,19 +195,22 @@ class CartPage:
 
         Absent and stale are said in words rather than left as a number that
         looks current. A reading is only true while it is arriving.
-        """
-        ui.fill(frame, BTN_X0, TEL_Y0, BTN_X1, TEL_Y1, ui.PANEL)
-        ui.border(frame, BTN_X0, TEL_Y0, BTN_X1, TEL_Y1, ui.EDGE)
 
+        **Drawn bare, with no panel and no border.** Its first cut had both,
+        which is exactly how every button on this page is drawn — so it read as
+        a fourth control sitting under the three mode buttons, and invited a
+        thumb that would do nothing. On a touchscreen the box *is* the
+        affordance; a readout has to go without one.
+        """
         volts = cart.get("battery_v")
         temp = cart.get("board_temp_c")
         age = cart.get("telemetry_age")
         stale = age is not None and age > 5.0
 
         if volts is None:
-            ui.text(frame, "--.-V", BTN_X0 + 12, TEL_Y0 + 12, ui.DIM_INK, 4)
+            ui.text(frame, "--.-V", BTN_X0, TEL_Y0 + 8, ui.DIM_INK, 4)
             note = "NO MAINBOARD" if not cart.get("mainboard_seen") else "NO TELEMETRY"
-            ui.text(frame, note, BTN_X0 + 150, TEL_Y0 + 20, ui.DIM_INK, 2)
+            ui.text(frame, note, BTN_X0 + 138, TEL_Y0 + 15, ui.DIM_INK, 2)
             return
 
         volts = float(volts)
@@ -219,15 +222,15 @@ class CartPage:
             ink = ui.INK
         else:
             ink = ui.OK_INK
-        ui.text(frame, f"{volts:.1f}V", BTN_X0 + 12, TEL_Y0 + 12, ink, 4)
-        ui.text(frame, "BATTERY", BTN_X0 + 150, TEL_Y0 + 10, ui.DIM_INK, 1)
+        ui.text(frame, f"{volts:.1f}V", BTN_X0, TEL_Y0 + 8, ink, 4)
+        ui.text(frame, "BATTERY", BTN_X0 + 138, TEL_Y0 + 6, ui.DIM_INK, 1)
         if stale:
-            ui.text(frame, "STALE", BTN_X0 + 150, TEL_Y0 + 24, ui.WARN_INK, 2)
+            ui.text(frame, "STALE", BTN_X0 + 138, TEL_Y0 + 20, ui.WARN_INK, 2)
         elif temp is not None:
-            ui.text(frame, f"BOARD {round(float(temp))}C", BTN_X0 + 150,
-                    TEL_Y0 + 24, ui.INK, 2)
+            ui.text(frame, f"BOARD {round(float(temp))}C", BTN_X0 + 138,
+                    TEL_Y0 + 20, ui.INK, 2)
         else:
-            ui.text(frame, "NO BOARD TEMP", BTN_X0 + 150, TEL_Y0 + 24, ui.DIM_INK, 2)
+            ui.text(frame, "NO BOARD TEMP", BTN_X0 + 138, TEL_Y0 + 20, ui.DIM_INK, 2)
 
     def _draw_stop(self, frame) -> None:
         """The e-stop, drawn by hand rather than as a ui.Button.
