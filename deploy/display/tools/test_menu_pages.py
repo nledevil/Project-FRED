@@ -27,6 +27,7 @@ import numpy as np                                      # noqa: E402
 import keyboard as kbmod                                # noqa: E402
 from font5x7 import FONT                                # noqa: E402
 from page_display import DisplayPage                    # noqa: E402
+from page_info import InfoPage                          # noqa: E402
 from page_wireless import WirelessPage                  # noqa: E402
 
 FAILURES: list[str] = []
@@ -198,6 +199,47 @@ def main() -> int:
               f"{len(p2._buttons)}")
         check(f"...{n} stays on screen",
               all(b.rect[3] <= H for _a, b in p2._buttons))
+
+    print("the info page")
+    who = {"hostname": "fred", "uptime_s": 7800,
+           "addresses": [{"interface": "br0", "address": "10.0.0.1", "up": True}],
+           "revision": {"commit": "abc1234", "branch": "nuc-brain", "dirty": False},
+           "inference": {"library": "Vulkan", "name": "Vulkan0", "total": "22.7 GiB"},
+           "brain": {"active": "claude", "backend": "auto", "model": "qwen2.5:3b"}}
+    frame[:] = 0.0
+    InfoPage().draw(frame, {"whoami": who})
+    check("the info page draws", bool(np.isfinite(frame).all()))
+    check("...and paints something", float(frame.max()) > 0.0)
+
+    # The line the page exists for: a CPU fallback is the silent 25x slowdown,
+    # so it has to look different from a healthy GPU, not just say a word.
+    def band(w):
+        f = np.zeros((H, W, 3), dtype=np.float32)
+        InfoPage().draw(f, {"whoami": {**who, "inference": w}})
+        return f[130:150, 300:700].copy()
+    gpu = band({"library": "Vulkan", "name": "Vulkan0", "total": "22.7 GiB"})
+    cpu = band({"library": "cpu"})
+    check("a CPU fallback is drawn differently from the GPU",
+          not np.array_equal(gpu, cpu))
+    check("...and it is not the same colour",
+          not np.array_equal(gpu.reshape(-1, 3).max(axis=0),
+                             cpu.reshape(-1, 3).max(axis=0)),
+          f"{tuple(gpu.reshape(-1,3).max(axis=0))} vs {tuple(cpu.reshape(-1,3).max(axis=0))}")
+
+    frame[:] = 0.0
+    InfoPage().draw(frame, {})
+    check("with no brain it says so rather than drawing blanks",
+          bool(np.isfinite(frame).all()) and float(frame.max()) > 0.0)
+
+    print("the tab strip still fits")
+    # Seven tabs at 100px; the reason WIRELESS became WIFI. A label that
+    # overflows its box spills onto its neighbour, silently.
+    from font5x7 import text_width as tw
+    titles = ["STATUS", "VOICE", "SERVOS", "CART", "DISPLAY", "WIFI", "INFO"]
+    tab_w = (776 - 24 - 8 * (len(titles) - 1)) // len(titles)
+    for t in titles:
+        check(f"tab {t!r} fits its box", tw(t, 2) <= tab_w - 8,
+              f"{tw(t, 2)} <= {tab_w - 8}px")
 
     print("drawing")
     for name, page_, snap_ in (

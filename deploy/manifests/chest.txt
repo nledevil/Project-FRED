@@ -38,6 +38,7 @@ deploy/display/page_voice.py
 deploy/display/page_servos.py
 deploy/display/page_cart.py
 deploy/display/page_display.py
+deploy/display/page_info.py
 deploy/display/page_wireless.py
 
 # --- voice HUD, both renderers ----------------------------------------------

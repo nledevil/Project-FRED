@@ -53,7 +53,9 @@ def _fit(s: str, width_px: int, scale: int = 2) -> str:
 
 
 class WirelessPage:
-    title = "WIRELESS"
+    # "WIFI", not "WIRELESS": seven tabs leaves 100px each, and WIRELESS
+    # needed 94 of them. The short name is also the one people say.
+    title = "WIFI"
 
     def __init__(self):
         self._ap = ui.Button(*AP_BTN, "", scale=4)

@@ -38,9 +38,11 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import menu_ui as ui                        # noqa: E402 — sibling module
+from font5x7 import text_width              # noqa: E402
 from fb import Framebuffer, hide_cursor     # noqa: E402
 from page_cart import CartPage              # noqa: E402
 from page_display import DisplayPage        # noqa: E402
+from page_info import InfoPage              # noqa: E402
 from page_wireless import WirelessPage      # noqa: E402
 from page_servos import ServosPage          # noqa: E402
 from page_status import StatusPage          # noqa: E402
@@ -133,6 +135,9 @@ class Net:
                 # switched off in settings, and then nothing drives it.
                 snap["nuc_cart"] = _get(f"{NUC}/api/cart", timeout=1.5)
                 snap["hotspot"] = _get(f"{NUC}/api/hotspot", timeout=1.5)
+                # Names, addresses, versions and the inference device,
+                # for the INFO tab. Brain-side because only it knows.
+                snap["whoami"] = _get(f"{NUC}/api/whoami", timeout=1.5)
 
             head = _get(f"{HEAD}/api/health", timeout=1.5)
             snap["head"] = head
@@ -246,16 +251,24 @@ def main() -> int:
     touch = open_touch(width=fb.w, height=fb.h)
 
     pages = [StatusPage(), VoicePage(), ServosPage(), CartPage(),
-             DisplayPage(), WirelessPage()]
+             DisplayPage(), WirelessPage(), InfoPage()]
     current = next((i for i, p in enumerate(pages)
                     if p.title.lower() == args.page.strip().lower()), 0)
     # Width is computed, not fixed: five tabs at the old 150px ran off the
     # panel, and the next page added would have done it again silently.
     span = TAB_X1 - TAB_X0
     tab_w = (span - TAB_GAP * (len(pages) - 1)) // len(pages)
+    # Scale is picked to fit, not fixed. The width already shrinks with each
+    # page added (five tabs at the old fixed 150px ran off the panel); the
+    # labels did not, so the next tab would have overflowed its box onto its
+    # neighbour instead — visibly wrong, and silently so in a test that only
+    # checked geometry.
+    tab_scale = max(1, min(2, *(next((sc for sc in (2, 1)
+                                      if text_width(p.title, sc) <= tab_w - 8), 1)
+                                for p in pages)))
     tabs = [ui.Button(TAB_X0 + i * (tab_w + TAB_GAP), TAB_Y,
                       TAB_X0 + i * (tab_w + TAB_GAP) + tab_w, TAB_Y + TAB_H,
-                      p.title, scale=2)
+                      p.title, scale=tab_scale)
             for i, p in enumerate(pages)]
     close = ui.Button(*CLOSE, "X", scale=3)
 
