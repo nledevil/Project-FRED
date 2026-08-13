@@ -270,6 +270,23 @@
   body.theater #pip .controls .hint { display:none; }
   body.theater #pip .ctl { margin-bottom:15px; }
 
+  /* ---- mic level meter -------------------------------------------------- */
+  /* Six seconds of what the microphone actually heard. It exists because no
+     number here can honestly be turned into "muted" -- this hardware gates a
+     quiet room to exact zeros too -- but a person watching this while they
+     talk settles it instantly. */
+  .mic { margin-top:10px; }
+  .micbars { display:flex; align-items:flex-end; gap:1px; height:34px;
+             padding:3px 4px; background:#101013; border:1px solid var(--border);
+             border-radius:8px; overflow:hidden; }
+  .micbars i { flex:1 1 0; min-width:0; background:var(--ok); border-radius:1px;
+               height:2px; transition:height .1s linear; opacity:.85; }
+  .micbars i.zero { background:#33343a; }        /* digital silence, not a low level */
+  .micbars.idle i { background:#33343a; }
+  .micfoot { display:flex; justify-content:space-between; gap:10px;
+             margin-top:4px; font-size:11px; color:var(--mut); }
+  .micfoot .warn { color:#e0b05f; }
+
   #toast { position:fixed; left:50%; bottom:24px; transform:translateX(-50%);
            background:#04310f; color:var(--ok); border:1px solid #0a5; padding:10px 18px;
            border-radius:10px; opacity:0; transition:opacity .25s; pointer-events:none; font-weight:600; }
@@ -370,6 +387,10 @@
           <input type="text" id="cmdBox" placeholder="Message FRED…"
                  onkeydown="if(event.key==='Enter')sendCmd()">
           <button class="vbtn" onclick="sendCmd()">Send</button>
+        </div>
+        <div class="mic" id="micMeter" hidden>
+          <div class="micbars" id="micBars" title="What the microphone has heard in the last six seconds"></div>
+          <div class="micfoot"><span id="micRead">—</span><span id="micNote"></span></div>
         </div>
         <p class="hint" id="voiceHint">Say “Hey FRED, open your mouth”, or type above.</p>
       </div>
@@ -486,6 +507,64 @@ function applyVoice(v) {
   document.getElementById('voiceHint').textContent = v.ai_available
     ? 'Say “Hey FRED, open your mouth”, or type above.'
     : 'Built-in commands work now — add an API key for open questions (see SERVICE.md).';
+  drawMic(v.mic);
+}
+
+// ---- mic level meter ---------------------------------------------------
+// Deliberately shows, and does not judge. The panel used to be able to say only
+// "no signal for N seconds", because on this hardware a run of exact zeros is
+// what a muted mic AND a quiet room both look like — so any threshold turned
+// into a red "MUTED" would be wrong every quiet evening, and a status panel
+// that cries wolf stops being read. A meter sidesteps the whole problem: talk,
+// and either the bars move or they do not.
+const MIC_FLOOR_DB = -60;                 // quietest level the meter bothers to draw
+
+function drawMic(mic) {
+  const box = document.getElementById('micMeter');
+  if (!mic || !mic.running) { box.hidden = true; return; }
+  box.hidden = false;
+
+  const bars = document.getElementById('micBars');
+  const levels = mic.levels || [];
+  const scale = mic.full_scale || 32767;
+  // Build the bar elements once, then only move them: this redraws every 1.2 s
+  // and rebuilding the DOM each time would throw away the CSS transition that
+  // makes it read as a meter rather than a flicker.
+  if (bars.childElementCount !== levels.length) {
+    bars.innerHTML = '';
+    for (let i = 0; i < levels.length; i++) bars.appendChild(document.createElement('i'));
+  }
+  bars.classList.toggle('idle', !mic.capturing);
+  levels.forEach((raw, i) => {
+    const el = bars.children[i];
+    el.classList.toggle('zero', raw === 0);
+    el.style.height = Math.max(2, Math.round(dbFraction(raw, scale) * 100)) + '%';
+  });
+
+  const peak = mic.peak_recent || 0;
+  const read = document.getElementById('micRead');
+  read.textContent = peak > 0
+    ? `peak ${(20 * Math.log10(peak / scale)).toFixed(0)} dBFS`
+    : 'digital silence';
+  const note = document.getElementById('micNote');
+  if (!mic.capturing) {
+    note.className = ''; note.textContent = 'mic paused while FRED speaks';
+  } else if (mic.silent_for != null && mic.silent_for >= 20) {
+    // The same fact the chest status row reports, and the same refusal to call
+    // it a mute — but here you can look at the bars and decide for yourself.
+    note.className = 'warn';
+    note.textContent = `nothing heard for ${Math.round(mic.silent_for)}s — check the mute button`;
+  } else {
+    note.className = ''; note.textContent = '';
+  }
+}
+
+// Peaks are linear, hearing is not: speech sits around -20 dBFS and a linear
+// bar would render it as a sliver against a full-scale ceiling nothing reaches.
+function dbFraction(raw, scale) {
+  if (!raw) return 0;
+  const db = 20 * Math.log10(raw / scale);
+  return Math.max(0, Math.min(1, (db - MIC_FLOOR_DB) / -MIC_FLOOR_DB));
 }
 function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 function appendMsg(item) {

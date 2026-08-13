@@ -14,6 +14,7 @@ so he doesn't hear and transcribe his own voice.
 """
 from __future__ import annotations
 
+import collections
 import json
 import subprocess
 import threading
@@ -34,6 +35,18 @@ MODEL_PATH = Path(__file__).resolve().parent.parent / "models" / "vosk-model-sma
 
 # Vosk's small model hears the name a few different ways — accept the near ones,
 # but keep the set tight (no "red"/"ed") so ordinary speech doesn't false-trigger.
+FULL_SCALE = 32767              # int16, so a peak is a fraction of this
+
+# How much level history to keep for the panel's meter. Capture is 4000-byte
+# chunks of 16 kHz mono int16, i.e. 125 ms each, so 48 of them is six seconds.
+#
+# It has to be a history rather than a single number because of the rates
+# involved: the panel polls voice status every 1.2 s and would otherwise be
+# shown one 125 ms chunk out of every ten, sampling a syllable at random. You
+# would talk and watch a meter twitch. Six seconds is enough to say a sentence
+# and see the whole of it.
+LEVEL_HISTORY = 48
+
 WAKE_WORDS = ("fred", "friend", "fread", "frayed")
 _ARM_WINDOW = 6.0    # seconds to wait for the command after a bare "Hey FRED"
 
@@ -78,6 +91,7 @@ class Listener:
         # Signal level, so "FRED can't hear me" is answerable without guessing.
         # See _note_level() for why digital silence is worth its own flag.
         self._peak = 0                        # loudest sample in the last chunk
+        self._levels = collections.deque(maxlen=LEVEL_HISTORY)   # recent chunk peaks
         self._heard_at = 0.0                  # monotonic, last chunk that wasn't silence
         self._captured_at = 0.0               # monotonic, last chunk of any kind
         # When the current unbroken run of digital silence began. Tracked as its
@@ -142,6 +156,7 @@ class Listener:
         now = time.monotonic()
         with self._lock:
             self._peak = peak
+            self._levels.append(peak)
             self._captured_at = now
             if peak > 0:
                 self._heard_at = now
@@ -155,12 +170,26 @@ class Listener:
         ``silent_for`` is seconds of unbroken digital silence while capturing —
         None when we aren't capturing, so a paused or stopped listener is never
         mistaken for a muted one.
+
+        ``levels`` is the recent run of per-chunk peaks, oldest first, so the
+        panel can draw what the microphone has actually been doing instead of
+        being handed a threshold and a verdict. That is the whole point: this
+        hardware gates a quiet room to exact zeros, so no number here can be
+        turned into "muted" honestly — but a person watching a meter while they
+        talk can settle it in one second.
+
+        Raw sample values rather than anything pre-scaled: ``full_scale`` says
+        what they are out of, and how to draw them is the panel's business.
+        Levels keep flowing while paused, so the meter shows the last six
+        seconds rather than blanking every time FRED speaks; ``capturing`` is
+        there for the panel to dim it.
         """
         with self._lock:
             running = self._thread is not None and self._thread.is_alive()
             paused = self._paused.is_set()
             peak, captured_at = self._peak, self._captured_at
             silent_since = self._silent_since
+            levels = list(self._levels)
         now = time.monotonic()
         capturing = running and not paused
         silent_for = None
@@ -168,6 +197,8 @@ class Listener:
             silent_for = round(now - silent_since, 1) if silent_since else 0.0
         return {"device": self.device, "running": running, "paused": paused,
                 "capturing": capturing, "peak": peak, "silent_for": silent_for,
+                "levels": levels, "peak_recent": max(levels) if levels else 0,
+                "full_scale": FULL_SCALE,
                 "capture_age": round(now - captured_at, 1) if captured_at else None}
 
     def start(self) -> bool:
