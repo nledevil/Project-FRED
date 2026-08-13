@@ -36,6 +36,105 @@ Nothing. The two items that were here — driving the cart from the hand
 controller, and what releasing the deadman should do — are settled; see the note
 above.
 
+## Where to go next (proposed 2026-08-12)
+
+Ideas, not commitments — nothing here has been agreed. Ordered by what would
+change the most for the least work. The STEM list further down still stands;
+this is what is *not* already on it.
+
+### The one that reframes the rest
+
+1. **FRED cannot see.** Claude has ten tools (`CLAUDE_TOOLS` in `commands.py`)
+   and not one of them looks through the camera — yet the system prompt already
+   tells him the NUC runs "your speech, **your vision** and this conversation".
+   So today he will claim to see and then cannot, which is the worst of both.
+   Everything needed is already built: `Camera.snapshot()` returns JPEG bytes and
+   `/camera/snapshot` already serves them; the brain's model takes images.
+   A `look_at_what_you_see` tool turns "what am I looking at?", "how many people
+   are in front of me?", "what colour is my shirt?" into things he answers — and
+   at a fair, a robot that can *see you* is a different demo, not a better one.
+   Roughly $0.0016 a look at the current model's input price (~1600 tokens for a
+   1568px frame); gate it behind event mode and a rate limit rather than letting
+   it fire on every turn, and downscale before sending.
+
+### Hearing kids in a loud room
+
+2. **The speech model is the small one.** `vosk-model-small-en-us-0.15`, on a NUC
+   with 22 GB usable and an iGPU that is already earning its keep. Children's
+   voices are measurably harder for ASR than adults', and a fair is the worst
+   acoustic case there is — this is the likeliest reason a kid walks away
+   thinking he ignored them. A larger Vosk model is a download and a path change.
+   Worth measuring before building anything else on this list.
+
+3. **He is deaf while he talks, and a kid cannot interrupt.** The mic is paused
+   during playback because the USB codec wedges if capture and playback overlap
+   (see `listener.pause`). So a long answer cannot be cut short by voice, only by
+   a button. Cap answer length in event mode rather than relying on the person
+   giving up.
+
+4. **Say who is talking, on the screen at kid height.** The chest panel is at a
+   child's eyeline and currently shows an animation. A large LISTENING /
+   THINKING / SPEAKING state there would do more for turn-taking in a crowd than
+   anything in the web panel — the planned kiosk view is a *laptop* screen, which
+   is not where the queue is looking.
+
+### Driving him when you are not next to him
+
+5. **An operator page shaped like a phone.** The panel is a desktop layout and at
+   an event you are holding a phone one-handed: stop speaking, mute the mic,
+   reset the conversation, volume, and the live transcript. Distinct from the
+   kiosk view below, which faces outward at visitors.
+
+6. **A deck of one-tap things to say.** `/api/say` already exists. "Ask me about
+   my servos", "Let me think about that one", "Who is next?" — for when he
+   misfires and the queue needs managing. Cheap, and the most useful thing on
+   this list during an actual event.
+
+### Things worth handing him
+
+7. **His own vitals as a tool.** `/api/whoami` and the cart's telemetry now exist
+   but Claude cannot read either. "How are you feeling?" answering with uptime,
+   CPU temperature and battery is nearly free and is exactly the kind of question
+   children ask.
+
+8. **Expression as an action.** He can already set his mouth and switch to
+   terminator mode; letting him pick the chest animation or play a sound as part
+   of an answer costs one tool each over APIs that already exist.
+
+### The touchscreen menu
+
+Ryan's read, and it holds up under inspection — the menu grew a page at a time
+and it shows:
+
+9. **No shared page frame.** `_fit()` is written out in three pages, and five
+   pages each declare their own margins that happen to agree. A small
+   `page_frame` helper (margins, heading, truncation, empty state) would make the
+   next page consistent by construction rather than by copying.
+
+10. **Nothing acknowledges a tap.** There is no pressed state anywhere; the only
+    feedback is the optimistic "lit" behaviour on the cart and display pages. On
+    a resistive-feeling panel that is the difference between confident and
+    hesitant tapping.
+
+11. **The affordance rule is real but unwritten** — a filled box with a border
+    means tappable. It was broken once already (the cart telemetry read as a
+    fourth mode button) and nothing but care prevents the next one. Worth stating
+    in `menu_ui` and auditing the other pages against.
+
+12. **Long lists have nowhere to go.** Every page assumes its content fits one
+    screen. The display picker already computes its grid from the preset list; a
+    ninth preset would shrink the buttons rather than paginate.
+
+### Other
+
+13. **Which questions he failed to understand.** Logging the transcriptions that
+    matched nothing turns a fair into a tuning set for item 2 — the real
+    vocabulary of real children, rather than guesses.
+
+14. **A crowd speed cap for the cart.** `SPEED_LIMIT` is 300 and the same in a
+    workshop as in a hall full of children. An event mode that caps it far lower
+    is a small change to a machine that weighs 350 lb.
+
 ## STEM event readiness (planned 2026-07-08)
 
 FRED will be shown at STEM events with students walking up and asking questions.
