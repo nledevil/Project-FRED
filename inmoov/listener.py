@@ -75,6 +75,16 @@ class Listener:
         self._lock = threading.Lock()
         self._proc_lock = threading.Lock()    # guards the _proc claim/release swap
         self._model = None                    # loaded lazily on first start()
+        # Signal level, so "FRED can't hear me" is answerable without guessing.
+        # See _note_level() for why digital silence is worth its own flag.
+        self._peak = 0                        # loudest sample in the last chunk
+        self._heard_at = 0.0                  # monotonic, last chunk that wasn't silence
+        self._captured_at = 0.0               # monotonic, last chunk of any kind
+        # When the current unbroken run of digital silence began. Tracked as its
+        # own clock rather than derived from _heard_at, because the case that
+        # matters most is a mic that has been muted since before we started and
+        # so has *never* set _heard_at at all.
+        self._silent_since = 0.0
 
     def pause(self) -> None:
         """Suspend mic capture so playback runs alone, and *block until the card
@@ -104,6 +114,61 @@ class Listener:
     def is_running(self) -> bool:
         with self._lock:
             return self._thread is not None and self._thread.is_alive()
+
+    def _note_level(self, data: bytes) -> None:
+        """Record how loud the last chunk was, and when we last heard anything.
+
+        This exists because of a failure that is invisible from every other
+        angle: the USB speakerphone has its own mute button, and when it is on
+        the host sees nothing wrong. ALSA still reports the capture control at
+        100% and unmuted, arecord still runs and still returns data — the data
+        is just *exact zeros*. FRED sits there looking like he is listening and
+        never hears a word, and nothing in any log says so.
+
+        **A zero run is not proof of a mute, on this hardware.** The PowerConf
+        does its own noise suppression and gates a quiet room to exact zeros
+        too: measured here, 30 s of unbroken zeros with the mic live and
+        unmuted, then a peak of 2 when someone moved. A cheap analogue capture
+        would give a noise floor to read; this one does not, so silence is
+        reported as the fact it is — no signal for N seconds — and the *reason*
+        is left to whoever is standing there. Calling it "muted" would be a
+        guess, and a guess in red trains people to ignore the panel.
+        """
+        try:
+            samples = np.frombuffer(data, dtype=np.int16)
+            peak = int(np.abs(samples).max()) if samples.size else 0
+        except ValueError:                    # odd-length chunk; skip this one
+            return
+        now = time.monotonic()
+        with self._lock:
+            self._peak = peak
+            self._captured_at = now
+            if peak > 0:
+                self._heard_at = now
+                self._silent_since = 0.0      # the run of silence ends here
+            elif not self._silent_since:
+                self._silent_since = now      # ...and this is where it began
+
+    def status(self) -> dict:
+        """What the microphone is actually doing, for the panels.
+
+        ``silent_for`` is seconds of unbroken digital silence while capturing —
+        None when we aren't capturing, so a paused or stopped listener is never
+        mistaken for a muted one.
+        """
+        with self._lock:
+            running = self._thread is not None and self._thread.is_alive()
+            paused = self._paused.is_set()
+            peak, captured_at = self._peak, self._captured_at
+            silent_since = self._silent_since
+        now = time.monotonic()
+        capturing = running and not paused
+        silent_for = None
+        if capturing and captured_at:
+            silent_for = round(now - silent_since, 1) if silent_since else 0.0
+        return {"device": self.device, "running": running, "paused": paused,
+                "capturing": capturing, "peak": peak, "silent_for": silent_for,
+                "capture_age": round(now - captured_at, 1) if captured_at else None}
 
     def start(self) -> bool:
         if not self.available():
@@ -154,6 +219,10 @@ class Listener:
                         _reap(proc)
                         continue
                     rec = KaldiRecognizer(self._model, 16000)   # fresh recogniser after a gap
+                    with self._lock:
+                        # Silence is measured per capture session: the gap while
+                        # FRED was speaking is not the microphone's fault.
+                        self._silent_since = 0.0
                 try:
                     data = proc.stdout.read(4000)
                 except (ValueError, OSError):  # pause() closed the pipe under us
@@ -161,6 +230,9 @@ class Listener:
                 if not data:                   # arecord ended (killed by pause, or died)
                     self._close_proc()
                     continue
+                # Measured *before* gain: this is a question about the hardware,
+                # and scaling silence by 8 is still silence.
+                self._note_level(data)
                 if self.gain > 1.0:
                     data = _amplify(data, self.gain)
                 if not rec.AcceptWaveform(data):

@@ -119,6 +119,7 @@ class Assistant:
             "last_heard": self._last_heard,
             "last_reply": self._last_reply,
             "last_source": self._last_source,
+            "mic": self.listener.status(),     # is the microphone actually hearing?
         }
 
     # ---- lifecycle --------------------------------------------------------
