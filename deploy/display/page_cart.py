@@ -32,9 +32,13 @@ Stopping and un-stopping are deliberately asymmetric:
   which is not something a stray thumb on a screen you are carrying should be
   able to do. The second tap must land within CONFIRM_S or the arming lapses.
 
-Below both: whether a controller is actually connected and whether the deadman
-is held right now. "I selected the mode and nothing happens" is then answerable
-on the same screen.
+Under the modes: battery voltage and board temperature. They were only on the
+STATUS page, which is the wrong tab to be reading while a 350 lb base is moving
+— this is where your eyes already are.
+
+Below all of it: whether a controller is actually connected and whether the
+deadman is held right now. "I selected the mode and nothing happens" is then
+answerable on the same screen.
 """
 from __future__ import annotations
 
@@ -49,10 +53,17 @@ MODES = (
 )
 
 BTN_X0, BTN_X1 = 24, 470            # the mode column; the stop button owns the rest
-BTN_Y0, BTN_H, BTN_GAP = 104, 64, 12
+BTN_Y0, BTN_H, BTN_GAP = 104, 56, 10
+TEL_Y0, TEL_Y1 = 302, 356           # battery and board temperature, under the modes
 STOP_X0, STOP_X1 = 490, 776
-STOP_Y0, STOP_Y1 = 104, 320
-STATUS_Y = 330
+STOP_Y0, STOP_Y1 = 104, 356
+STATUS_Y = 370
+LINE_H = 26
+
+# The pack, from Project-FRED-Cart's README: 10S Li-ion, ~36 V nominal, 42 V
+# charged. LOW_V is 3.3 V/cell, the conventional point to stop drawing from
+# Li-ion — not a firmware constant, so it is a hint and coloured like one.
+FULL_V, NOMINAL_V, LOW_V = 42.0, 36.0, 33.0
 
 CONFIRM_S = 4.0                     # how long a "tap again to clear" stays armed
 
@@ -126,24 +137,26 @@ class CartPage:
             self._armed_at = 0.0            # cleared, by us or by anyone else
         self._draw_stop(frame)
 
+        self._draw_telemetry(frame, cart)
+
         hint = next((h for m, _l, h in MODES if m == shown), "")
         if hint:
             ui.text(frame, hint, BTN_X0, STATUS_Y, ui.DIM_INK, 2)
 
         if not reachable:
-            ui.text(frame, "NO CART DRIVER ON THIS PI", BTN_X0, STATUS_Y + 30,
+            ui.text(frame, "NO CART DRIVER ON THIS PI", BTN_X0, STATUS_Y + LINE_H,
                     ui.BAD_INK, 2)
             return
         if self._pending:
-            ui.text(frame, "SAVING...", BTN_X0, STATUS_Y + 30, ui.DIM_INK, 2)
+            ui.text(frame, "SAVING...", BTN_X0, STATUS_Y + LINE_H, ui.DIM_INK, 2)
 
         pad = cart.get("controller") or {}
         if not pad.get("connected"):
             line, ink = "CONTROLLER NOT CONNECTED", ui.DIM_INK
         elif pad.get("deadman"):
-            # Words, not signed numbers: the font has no "+" glyph (it would
-            # render as a blank and read as a lost character), and "FWD / LEFT"
-            # is what you actually want to read while watching the base move.
+            # Words, not signed numbers. The font has a "+" now, but "FWD" and
+            # "LEFT" are still what you want to read at a glance while watching
+            # the base move — a sign is something you decode.
             speed, steer = pad.get("speed", 0.0), pad.get("steer", 0.0)
             way = "FWD" if speed > 0 else ("REV" if speed < 0 else "IDLE")
             turn = "RIGHT" if steer > 0 else ("LEFT" if steer < 0 else "STRAIGHT")
@@ -151,21 +164,70 @@ class CartPage:
                          ui.OK_INK)
         else:
             line, ink = "CONTROLLER CONNECTED - R1 NOT HELD", ui.INK
-        ui.text(frame, line, BTN_X0, STATUS_Y + 60, ink, 2)
+        ui.text(frame, line, BTN_X0, STATUS_Y + LINE_H * 2, ink, 2)
 
         if self._latched:
             ui.text(frame, "E-STOP LATCHED - NOTHING WILL MOVE", BTN_X0,
-                    STATUS_Y + 90, ui.BAD_INK, 2)
+                    STATUS_Y + LINE_H * 3, ui.BAD_INK, 2)
         elif cart.get("host_locked"):
             # The deadman was released while the panel or Claude was still
             # commanding, so the host is locked out until it asks again. Said
             # here because the alternative is watching the cart refuse a panel
             # that looks like it is driving.
             ui.text(frame, "DEADMAN RELEASED - HOST MUST COMMAND AGAIN", BTN_X0,
-                    STATUS_Y + 90, ui.WARN_INK, 2)
+                    STATUS_Y + LINE_H * 3, ui.WARN_INK, 2)
         elif not cart.get("connected"):
-            ui.text(frame, "CART PICO NOT PLUGGED IN", BTN_X0, STATUS_Y + 90,
+            ui.text(frame, "CART PICO NOT PLUGGED IN", BTN_X0, STATUS_Y + LINE_H * 3,
                     ui.DIM_INK, 2)
+
+    def _draw_telemetry(self, frame, cart: dict) -> None:
+        """Battery and board temperature, next to the controls that spend them.
+
+        Both were only on the STATUS page, which is the wrong tab to be reading
+        while a 350 lb base is moving — this is where your eyes already are.
+
+        **The voltage is shown, not judged, below the top of its band.** This
+        pack has read 23% low before (a miscalibration that masqueraded as a
+        dead battery, see Project-FRED-Cart's README), so a red "flat" here
+        would eventually be a lie, and a panel that cries wolf stops being read.
+        Amber at 3.3 V/cell is as far as it goes. Temperature is not coloured at
+        all: there is no figure for this board worth calling hot.
+
+        Absent and stale are said in words rather than left as a number that
+        looks current. A reading is only true while it is arriving.
+        """
+        ui.fill(frame, BTN_X0, TEL_Y0, BTN_X1, TEL_Y1, ui.PANEL)
+        ui.border(frame, BTN_X0, TEL_Y0, BTN_X1, TEL_Y1, ui.EDGE)
+
+        volts = cart.get("battery_v")
+        temp = cart.get("board_temp_c")
+        age = cart.get("telemetry_age")
+        stale = age is not None and age > 5.0
+
+        if volts is None:
+            ui.text(frame, "--.-V", BTN_X0 + 12, TEL_Y0 + 12, ui.DIM_INK, 4)
+            note = "NO MAINBOARD" if not cart.get("mainboard_seen") else "NO TELEMETRY"
+            ui.text(frame, note, BTN_X0 + 150, TEL_Y0 + 20, ui.DIM_INK, 2)
+            return
+
+        volts = float(volts)
+        if stale:
+            ink = ui.DIM_INK
+        elif volts < LOW_V:
+            ink = ui.WARN_INK
+        elif volts < NOMINAL_V:
+            ink = ui.INK
+        else:
+            ink = ui.OK_INK
+        ui.text(frame, f"{volts:.1f}V", BTN_X0 + 12, TEL_Y0 + 12, ink, 4)
+        ui.text(frame, "BATTERY", BTN_X0 + 150, TEL_Y0 + 10, ui.DIM_INK, 1)
+        if stale:
+            ui.text(frame, "STALE", BTN_X0 + 150, TEL_Y0 + 24, ui.WARN_INK, 2)
+        elif temp is not None:
+            ui.text(frame, f"BOARD {round(float(temp))}C", BTN_X0 + 150,
+                    TEL_Y0 + 24, ui.INK, 2)
+        else:
+            ui.text(frame, "NO BOARD TEMP", BTN_X0 + 150, TEL_Y0 + 24, ui.DIM_INK, 2)
 
     def _draw_stop(self, frame) -> None:
         """The e-stop, drawn by hand rather than as a ui.Button.

@@ -112,6 +112,15 @@ def main() -> int:
     for _mode, b in page._buttons:
         check("mode button stays clear of the stop column", b.rect[2] <= sx0,
               f"mode right edge {b.rect[2]} <= stop left edge {sx0}")
+    # The telemetry strip went in under the modes; it must not have landed on
+    # top of them, or on the stop button.
+    tel = (page_cart.BTN_X0, page_cart.TEL_Y0, page_cart.BTN_X1, page_cart.TEL_Y1)
+    check("telemetry sits below every mode button",
+          all(b.rect[3] <= tel[1] for _m, b in page._buttons),
+          f"lowest mode edge {max(b.rect[3] for _m, b in page._buttons)} <= {tel[1]}")
+    check("telemetry stays clear of the stop column", tel[2] <= sx0,
+          f"{tel[2]} <= {sx0}")
+    check("telemetry is on screen", 0 <= tel[1] < tel[3] <= H, str(tel))
 
     print("stop fires on the first tap")
     # --- unreachable cart: still stops ------------------------------------
@@ -191,6 +200,19 @@ def main() -> int:
         "driving": snap(controller_mode="takeover", estop=False, connected=True,
                         controller={"connected": True, "deadman": True,
                                     "speed": -0.5, "steer": 0.25}),
+        # Telemetry: present, absent, stale, and low enough to colour.
+        "live telemetry": snap(controller_mode="off", estop=False, connected=True,
+                               battery_v=38.4, board_temp_c=27.0,
+                               mainboard_seen=True, telemetry_age=0.4),
+        "flat battery": snap(controller_mode="off", estop=False, connected=True,
+                             battery_v=31.2, board_temp_c=41.0,
+                             mainboard_seen=True, telemetry_age=0.6),
+        "stale telemetry": snap(controller_mode="off", estop=False, connected=True,
+                                battery_v=38.4, board_temp_c=27.0,
+                                mainboard_seen=True, telemetry_age=42.0),
+        "no mainboard": snap(controller_mode="off", estop=False, connected=True,
+                             battery_v=None, board_temp_c=None,
+                             mainboard_seen=False),
     }
     for name, s in states.items():
         frame[:] = 0.0
