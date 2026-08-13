@@ -641,6 +641,22 @@ def api_cart_drive():
         return jsonify({"error": str(e)}), 502
 
 
+@app.post("/api/cart/controller")
+def api_cart_controller():
+    """Who may drive the cart: off | takeover | only.
+
+    A standing decision about the robot rather than a per-session one, so the
+    chest persists it. Answered even when the cart is disabled — knowing the
+    setting is useful before you switch the base on."""
+    if not _cart_enabled():
+        return jsonify({"error": "cart is disabled"}), 409
+    mode = (request.get_json(force=True) or {}).get("mode", "")
+    try:
+        return jsonify(_cart.set_controller_mode(mode))
+    except CartError as e:
+        return jsonify({"error": str(e)}), 502
+
+
 @app.post("/api/cart/stop")
 def api_cart_stop():
     """Stop the cart. ``{"estop": true}`` latches until explicitly cleared.

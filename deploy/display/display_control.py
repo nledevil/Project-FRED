@@ -18,6 +18,7 @@ Switching is just "kill the child, spawn the next one", so it lands in ~100ms.
     POST /api/cart/drive -> {"steer": 0, "speed": 150}; must be repeated or the
                             watchdog stops the cart (see cart_driver.py)
     POST /api/cart/stop  -> {"estop": false}; stop now, optionally latching
+    POST /api/cart/controller -> {"mode": "off"|"takeover"|"only"}; who may drive
 
 It also carries the **sensor relay**: the Pico in FRED's stomach plugs into this
 Pi, and sensor_relay.py reads its USB-serial stream and forwards it to the brain
@@ -56,6 +57,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import cart_driver                          # noqa: E402 — sibling module
 import cog_hud                              # noqa: E402 — sibling module
+import gamepad as gamepad_mod               # noqa: E402 — sibling module
 import metrics_hud                          # noqa: E402 — sibling module
 import sensor_relay                         # noqa: E402 — sibling module
 import touch                                # noqa: E402 — sibling module
@@ -415,6 +417,15 @@ class Handler(BaseHTTPRequestHandler):
             return {"error": "cart driver disabled on this Pi"}
         if self.path.startswith("/api/cart/drive"):
             return self.cart.drive(data.get("steer", 0), data.get("speed", 0))
+        if self.path.startswith("/api/cart/controller"):
+            # Who may drive: off / takeover / only. Persisted, because this is a
+            # standing decision about the robot, not a per-session one.
+            try:
+                mode = self.cart.set_controller_mode(str(data.get("mode", "")))
+            except ValueError as exc:
+                return {"error": str(exc)}
+            write_state(controller_mode=mode)
+            return {"ok": True, "controller_mode": mode}
         return {"error": "unknown cart action"}
 
     def _voice(self, data: dict) -> dict:
@@ -552,11 +563,20 @@ def main() -> None:
     Handler.relay = relay
     Handler.metrics = metrics
 
-    cart = None
+    cart = pad = None
     if not args.no_cart:
+        # The hand controller is read here rather than by the firmware: the PS2
+        # receiver that used to arbitrate in the Pico stopped answering, and its
+        # USB replacement lives on this Pi. Started even in "off" mode so the
+        # panel can say whether a controller is present before you enable it.
+        pad = gamepad_mod.Gamepad(log=lambda m: print(m, flush=True))
+        pad.start()
         cart = cart_driver.CartDriver(port=args.cart_port,
                                       watchdog=args.cart_watchdog,
-                                      log=lambda m: print(m, flush=True))
+                                      log=lambda m: print(m, flush=True),
+                                      gamepad=pad,
+                                      controller_mode=str(read_state().get(
+                                          "controller_mode", "off")))
         cart.start()
     Handler.cart = cart
 
@@ -573,6 +593,10 @@ def main() -> None:
             cart.shutdown()
         if relay:
             relay.shutdown()
+        if pad:
+            pad.shutdown()
+        if cog:
+            cog.stop()
         sup.shutdown()
         srv.server_close()
 

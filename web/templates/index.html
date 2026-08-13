@@ -141,6 +141,11 @@
       font-size:12.5px; color:var(--mut); }
   .cart .tel b { color:var(--fg); font-weight:600; justify-self:end;
       font-variant-numeric:tabular-nums; }
+  .cart .ctrlmode { display:flex; align-items:center; justify-content:space-between;
+                    gap:10px; font-size:13px; color:var(--muted); }
+  .cart .ctrlmode select { font:inherit; padding:6px 8px; border-radius:8px;
+                    background:var(--panel2); color:var(--fg);
+                    border:1px solid var(--line); }
   .cart .warn { background:#3a2a00; color:var(--warn); border-radius:9px;
       padding:9px 12px; font-size:12.5px; }
   .cart .warn[hidden] { display:none; }
@@ -379,7 +384,15 @@
         </div>
         <div class="side">
           <button class="estop" onclick="cartStop(true)">■ EMERGENCY STOP</button>
+          <label class="ctrlmode">Hand controller
+            <select id="cartCtrlMode" onchange="setCartController(this.value)">
+              <option value="off">Disabled</option>
+              <option value="takeover">May take over</option>
+              <option value="only">Controller only</option>
+            </select>
+          </label>
           <div class="tel">
+            <span>Controller</span><b id="cartPad2">—</b>
             <span>Battery</span><b id="cartBat">—</b>
             <span>Board temp</span><b id="cartTemp">—</b>
             <span>Wheels L/R</span><b id="cartWheels">—</b>
@@ -389,7 +402,9 @@
       </div>
       <p class="hint">Drag the pad: up/down is speed, left/right is steering. It only
          moves while you hold it — let go, close this tab, or lose signal and the chest
-         Pi stops it within half a second. A plugged-in PS2 controller always wins.</p>
+         Pi stops it within half a second. <b>May take over</b> lets the hand controller
+         seize the cart whenever R1 is held, the way the old PS2 pad did;
+         <b>Controller only</b> refuses this pad entirely.</p>
     </section>
   </div>
 
@@ -1129,6 +1144,14 @@ async function cartTick() {
   } catch (e) { /* the watchdog stops it; the status poll will report why */ }
 }
 
+async function setCartController(mode) {
+  const r = await api('/api/cart/controller', {mode});
+  if (r.error) { toast('⚠ ' + r.error); return; }
+  toast(mode === 'off' ? 'Hand controller disabled'
+        : mode === 'only' ? 'Hand controller only — the panel pad is refused'
+        : 'Hand controller may take over');
+}
+
 function cartWarn(msg) {
   const w = document.getElementById('cartWarn');
   w.textContent = msg || '';
@@ -1188,16 +1211,28 @@ async function pollCart() {
   if (!c.online) { label = 'unreachable'; }
   else if (!c.connected) { label = 'no Pico'; }
   else if (c.estop) { label = 'E-STOP'; }
-  else if (c.ps2_active) { label = 'controller has it'; }
+  else if (c.ps2_active || c.controller_driving) { label = 'controller has it'; }
+  else if (c.controller_mode === 'only') { label = 'controller only'; }
   else { label = c.moving ? 'driving' : 'ready'; cls = 'live'; }
   badge.textContent = label;
   badge.className = 'badge ' + cls;
 
   if (c.estop) cartWarn('Emergency stop latched — press EMERGENCY STOP again to clear.');
   else if (c.ps2_active) cartWarn('A PS2 controller is connected; it has priority over the panel.');
+  else if (c.controller_driving) cartWarn('The hand controller has the deadman held; it has priority over this pad.');
+  else if (c.controller_mode === 'only') cartWarn('Controller-only mode — this pad is refused. Hold R1 on the hand controller to drive.');
   else if (c.online && !c.connected) cartWarn('The cart Pico is not plugged into the chest Pi.');
   else if (!c.online) cartWarn(c.error || 'Cannot reach the chest Pi.');
   else if (!_cartHeld) cartWarn('');
+
+  const gp = c.controller || {};
+  document.getElementById('cartPad2').textContent =
+    !gp.connected ? 'not connected'
+      : (gp.deadman ? 'driving (R1 held)' : 'connected, idle');
+  const sel = document.getElementById('cartCtrlMode');
+  // Don't yank the dropdown while it has focus — the user may be mid-choice.
+  if (c.controller_mode && sel.value !== c.controller_mode && document.activeElement !== sel)
+    sel.value = c.controller_mode;
 
   document.getElementById('cartBat').textContent =
     c.battery_v != null ? `${c.battery_v.toFixed(1)} V` : '—';

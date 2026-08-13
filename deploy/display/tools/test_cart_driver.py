@@ -125,6 +125,25 @@ class FakePico:
 FAILURES: list[str] = []
 
 
+class FakePad:
+    """Stands in for gamepad.Gamepad — same state() contract, no hardware.
+
+    The real one reads evdev on the chest Pi; what cart_driver cares about is
+    only ever the four keys below, so the seam is small enough to fake honestly.
+    """
+
+    def __init__(self):
+        self.connected = True
+        self.deadman = False
+        self.speed = 0.0
+        self.steer = 0.0
+
+    def state(self):
+        return {"connected": self.connected, "deadman": self.deadman,
+                "speed": self.speed, "steer": self.steer,
+                "boost": False, "raw": {}, "idle_for": 0.0}
+
+
 def check(label: str, ok: bool, detail: str = ""):
     print(f"  {'PASS' if ok else 'FAIL'}  {label}" + (f"  ({detail})" if detail else ""))
     if not ok:
@@ -146,7 +165,9 @@ def main() -> int:
     pico = FakePico(master)
     pico.start()
 
-    drv = cart_driver.CartDriver(port=port, watchdog=0.5, log=lambda m: None)
+    pad = FakePad()
+    drv = cart_driver.CartDriver(port=port, watchdog=0.5, log=lambda m: None,
+                                 gamepad=pad, controller_mode="off")
     drv.start()
 
     print("cart_driver against a simulated Pico\n")
@@ -227,6 +248,68 @@ def main() -> int:
         drv.stop()
 
         # --- refuses the MicroPython sensor node ---
+        # --- hand controller arbitration (off / takeover / only) -------------
+        # The PS2 receiver used to settle this in firmware. It is software now,
+        # so it needs testing like the watchdog does.
+        drv.set_controller_mode("off")
+        pad.deadman, pad.speed, pad.steer = True, 1.0, 0.0
+        drv.drive(0, 120)
+        wait_until(lambda: pico.speed == 120)
+        check("mode=off ignores the controller entirely", pico.speed == 120,
+              f"host still driving (pico speed={pico.speed})")
+
+        drv.set_controller_mode("takeover")
+        wait_until(lambda: pico.speed == cart_driver.SPEED_LIMIT)
+        check("mode=takeover: deadman held gives the controller the cart",
+              pico.speed == cart_driver.SPEED_LIMIT,
+              f"pico speed={pico.speed} (full stick = {cart_driver.SPEED_LIMIT})")
+        check("host is told its command is being ignored",
+              "ignored" in drv.drive(0, 50),
+              drv.drive(0, 50).get("ignored", "NOT REPORTED"))
+
+        pad.deadman = False
+        drv.drive(0, 90)
+        wait_until(lambda: pico.speed == 90)
+        check("releasing the deadman hands control back to the host",
+              pico.speed == 90, f"pico speed={pico.speed}")
+
+        pad.deadman, pad.speed = True, -1.0
+        wait_until(lambda: pico.speed == -cart_driver.SPEED_LIMIT)
+        check("controller drives in reverse too",
+              pico.speed == -cart_driver.SPEED_LIMIT, f"pico speed={pico.speed}")
+
+        pad.deadman = False
+        drv.set_controller_mode("only")
+        drv.drive(0, 200)
+        time.sleep(0.3)
+        check("mode=only refuses host drive commands", pico.speed == 0,
+              f"pico speed={pico.speed} (must stay 0 with no deadman held)")
+        check("and says so", "ignored" in drv.drive(0, 200),
+              drv.drive(0, 200).get("ignored", "NOT REPORTED"))
+
+        pad.deadman, pad.speed = True, 0.5
+        wait_until(lambda: pico.speed == int(round(0.5 * cart_driver.SPEED_LIMIT)))
+        check("mode=only still drives from the controller",
+              pico.speed == int(round(0.5 * cart_driver.SPEED_LIMIT)),
+              f"pico speed={pico.speed}")
+
+        # Changing mode while the controller is pushing must not leave the last
+        # stick position latched into the host's target.
+        drv.set_controller_mode("off")
+        time.sleep(0.3)
+        check("switching mode mid-push stops the cart", pico.speed == 0,
+              f"pico speed={pico.speed}")
+
+        pad.deadman = False
+        pad.connected = False
+        drv.set_controller_mode("takeover")
+        drv.drive(0, 80)
+        wait_until(lambda: pico.speed == 80)
+        check("a disconnected controller never takes the cart", pico.speed == 80,
+              f"host still driving (pico speed={pico.speed})")
+        drv.set_controller_mode("off")
+        drv.stop()
+
         check("resolve_port refuses a MicroPython device",
               cart_driver.resolve_port(
                   "/dev/serial/by-id/usb-MicroPython_Board_in_FS_mode_x-if00") == "",

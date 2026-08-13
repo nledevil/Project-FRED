@@ -149,12 +149,21 @@ class CartDriver:
     heartbeat always stops the cart.
     """
 
+    # How the hand controller and the host share the cart. The PS2 receiver used
+    # to settle this in firmware; its replacement is a USB dongle on this Pi, so
+    # the decision moved here — to the process that already owns the watchdog and
+    # the e-stop, which is the right place for it.
+    CONTROLLER_MODES = ("off", "takeover", "only")
+
     def __init__(self, port: str = "auto", baud: int = 115200,
-                 watchdog: float = WATCHDOG_S, log=print):
+                 watchdog: float = WATCHDOG_S, log=print,
+                 gamepad=None, controller_mode: str = "off"):
         self._port_spec = port
         self._baud = int(baud)
         self._watchdog = float(watchdog)
         self._log = log
+        self._gamepad = gamepad
+        self._mode = controller_mode if controller_mode in self.CONTROLLER_MODES else "off"
 
         self._stop = threading.Event()
         self._threads: list[threading.Thread] = []
@@ -170,6 +179,7 @@ class CartDriver:
 
         self._tel = {
             "connected": False, "port": "", "ps2_active": False,
+            "controller_driving": False,
             "battery_v": None, "board_temp_c": None,
             "speed_l": None, "speed_r": None, "source": None,
             "last_telemetry": 0.0, "last_line": "",
@@ -196,6 +206,44 @@ class CartDriver:
             pass
         self._stop.set()
 
+    # -- controller arbitration --------------------------------------------
+    def set_controller_mode(self, mode: str) -> str:
+        """Choose who may drive. Returns the mode actually in force.
+
+        Changing mode never leaves the cart moving: whatever was commanded is
+        zeroed here, so switching away from the controller mid-push stops rather
+        than freezing the last stick position into the host's target.
+        """
+        if mode not in self.CONTROLLER_MODES:
+            raise ValueError(f"mode must be one of {self.CONTROLLER_MODES}")
+        with self._lock:
+            if mode != self._mode:
+                self._mode = mode
+                self._steer = self._speed = 0
+                self._deadline = 0.0
+                self._log(f"cart: controller mode -> {mode}")
+            return self._mode
+
+    @property
+    def controller_mode(self) -> str:
+        with self._lock:
+            return self._mode
+
+    def _controller_command(self) -> tuple[int, int] | None:
+        """The controller's demand right now, or None if it isn't driving.
+
+        The deadman must be *held*. That is the whole safety contract inherited
+        from the PS2 scheme: a controller on a bench with a drifting stick does
+        not take the robot away from the panel, and letting go is the stop.
+        """
+        if self._mode == "off" or self._gamepad is None:
+            return None
+        state = self._gamepad.state()
+        if not (state.get("connected") and state.get("deadman")):
+            return None
+        return (int(round(state.get("steer", 0.0) * STEER_LIMIT)),
+                int(round(state.get("speed", 0.0) * SPEED_LIMIT)))
+
     # -- command surface ---------------------------------------------------
     def drive(self, steer, speed) -> dict:
         """Set the drive target and refresh the caller's authority for WATCHDOG_S.
@@ -210,10 +258,12 @@ class CartDriver:
         except (TypeError, ValueError):
             return {"error": "steer and speed must be numbers"}
 
+        hand = self._controller_command()
         with self._lock:
             if self._estop:
                 return {"error": "emergency stop latched; clear it first",
                         "estop": True}
+            mode = self._mode
             cs, cv = clamp(steer, -STEER_LIMIT, STEER_LIMIT), clamp(speed, -SPEED_LIMIT, SPEED_LIMIT)
             self._steer, self._speed = cs, cv
             self._deadline = time.monotonic() + self._watchdog
@@ -221,10 +271,16 @@ class CartDriver:
         out = {"ok": True, "steer": cs, "speed": cv,
                "clamped": (cs != steer or cv != speed),
                "expires_in": self._watchdog}
+        # The target is still recorded above, so releasing the deadman hands
+        # control back to whatever the host last asked for rather than to a
+        # stale zero. But say plainly that it is not being acted on — "I sent a
+        # command and nothing moved" must never be a mystery.
         if ps2:
-            # Not an error — the firmware is doing exactly what it should. But
-            # the caller needs to know its command went nowhere.
             out["ignored"] = "PS2 controller connected; it has priority"
+        elif hand is not None:
+            out["ignored"] = "hand controller has the deadman held; it has priority"
+        elif mode == "only":
+            out["ignored"] = "controller-only mode; host drive commands are refused"
         return out
 
     def stop(self, estop: bool = False) -> dict:
@@ -254,6 +310,9 @@ class CartDriver:
         s["authority_s"] = round(remaining, 2) if remaining > 0 else 0.0
         s["moving"] = bool(s["speed"] or s["steer"])
         s["limits"] = {"steer": STEER_LIMIT, "speed": SPEED_LIMIT}
+        s["controller_mode"] = self.controller_mode
+        s["controller_modes"] = list(self.CONTROLLER_MODES)
+        s["controller"] = self._gamepad.state() if self._gamepad else {"connected": False}
         return s
 
     # -- internals ---------------------------------------------------------
@@ -290,6 +349,9 @@ class CartDriver:
         period = 1.0 / SEND_HZ
         while not self._stop.wait(period):
             now = time.monotonic()
+            # Asked outside the lock: reading the gamepad takes its own lock, and
+            # holding both invites a deadlock for no benefit.
+            hand = self._controller_command()
             with self._lock:
                 expired = self._deadline and now > self._deadline
                 if expired:
@@ -300,7 +362,21 @@ class CartDriver:
                                    f"{self._watchdog:.1f}s - stopping")
                     self._steer = self._speed = 0
                     self._deadline = 0.0
-                steer, speed, estop = self._steer, self._speed, self._estop
+
+                if hand is not None:
+                    # The controller is driving. Its authority is the deadman
+                    # button, not the host's deadline — the button is local and
+                    # re-read every pass, so there is nothing to expire.
+                    steer, speed = hand
+                    self._tel["controller_driving"] = True
+                else:
+                    steer, speed = self._steer, self._speed
+                    if self._mode == "only":
+                        # Nobody is holding the deadman and the host is not
+                        # allowed to drive: the cart stays still.
+                        steer = speed = 0
+                    self._tel["controller_driving"] = False
+                estop = self._estop
                 connected = self._tel["connected"]
             if not connected:
                 continue

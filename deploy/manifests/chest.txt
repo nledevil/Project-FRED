@@ -34,6 +34,7 @@ deploy/display/menu_ui.py
 deploy/display/page_status.py
 deploy/display/page_voice.py
 deploy/display/page_servos.py
+deploy/display/page_cart.py
 
 # --- voice HUD, both renderers ----------------------------------------------
 # The native one is what actually runs. The binary is built ON this Pi (`make`)
@@ -46,6 +47,7 @@ deploy/display/tools/verify_voice_hud.py
 # --- sensor relay + drive base ----------------------------------------------
 deploy/display/sensor_relay.py
 deploy/display/cart_driver.py
+deploy/display/gamepad.py
 
 # --- the tool that flashes the sensor node ----------------------------------
 # push.py is a stdlib stand-in for `mpremote cp` — it exists precisely because

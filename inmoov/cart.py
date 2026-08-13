@@ -135,6 +135,15 @@ class CartClient:
     def clear_estop(self) -> dict:
         return self._request("POST", "/api/cart/stop", {"clear_estop": True})
 
+    def set_controller_mode(self, mode: str) -> dict:
+        """Choose who may drive: ``off``, ``takeover`` or ``only``.
+
+        Not suppressed by audit mode: this decides who is *allowed* to move the
+        cart, it does not move it. Refusing to record that during a dry run
+        would leave the panel showing a mode the chest never adopted.
+        """
+        return self._request("POST", "/api/cart/controller", {"mode": str(mode)})
+
     def nudge(self, steer, speed, seconds: float) -> dict:
         """Move for ``seconds``, then stop. The only programmatic way to move.
 
