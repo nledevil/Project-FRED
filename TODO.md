@@ -38,66 +38,46 @@ above.
 
 ### Recommended
 
-1. **Decide the access point's boot behaviour.** `fred-hotspot.service` is installed
-   but deliberately **not enabled** — it parks the Intel radio in AP mode, which is
-   wasted at home. For events either `systemctl enable` it, or port the head Pi's
-   old auto-hotspot idea: bring the AP up automatically when no known WiFi is in
-   range (`deploy/hotspot/inmoov-autohotspot` is the prior art).
-
-2. **The AP has no route to the internet.** Joining `fred` reaches the robot and
-   nothing else — deliberate (`no-resolv`, no NAT), but a phone on it loses the
-   internet, which surprises people at events. One `MASQUERADE` rule out of the
-   USB card would fix it if that is wanted.
-
-3. **The local model holds ~2 GB resident forever** (`_KEEP_ALIVE = -1` in
+1. **The local model holds ~2 GB resident forever** (`_KEEP_ALIVE = -1` in
    `local_brain.py`). That is the right trade on a dedicated robot brain — it
    keeps the prompt cache warm, which is the difference between a 1.5 s answer
    and a 10 s one — but it is a deliberate choice worth revisiting if the NUC
    ever needs the memory.
 
-4. **Mic silence cannot be distinguished from a muted mic on this hardware.** The
+2. **Mic silence cannot be distinguished from a muted mic on this hardware.** The
    PowerConf gates a quiet room to *exact zeros* (measured: 30 s of them with the
    mic live), so the status page reports "no signal for N" in amber rather than
    claiming a mute. Do not be tempted to make that red — it would cry wolf every
    quiet evening. A level meter in the web panel would make the same data useful
    without a threshold.
 
-5. **Two pronunciations are wrong and left for a ruling:** "Schultz" reads as
+3. **Two pronunciations are wrong and left for a ruling:** "Schultz" reads as
    SHULTS (`ʃˈʌlts`) and "ASUS" as AY-sus. Both are one line each in `_SAY_AS`
    in `sound.py`, verified against piper's own phonemizer. Nobody should respell
    a person's name on a guess.
 
-6. **The chest Pi is no longer dependency-light.** ~53 MB of build toolchain
-   (`dkms`, `gcc`, `make`, `git`, kernel headers) went on for xpadneo and stayed
-   after it was removed. The *Python* constraint still holds — nothing there
-   imports anything new — but if that Pi is meant to stay bare, purge them.
-
-7. **Small bug:** `cart_driver` keeps the last `battery_v`/`board_temp_c` after the
-   Pico disconnects, so stale telemetry reads as current. The rows that matter
-   key off `connected`, so nothing displays it wrongly today, but it is a trap.
-
 ### New features worth considering
 
-8. **Display picker on the touchscreen.** Dropped from the settings menu's first
+4. **Display picker on the touchscreen.** Dropped from the settings menu's first
    version; the animation list is already local to the chest daemon, so it works
    with the brain switched off. One page file plus a list entry — the pattern is
    `page_cart.py`.
 
-9. **Access point settings from the touchscreen** — SSID and password. Today both
+5. **Access point settings from the touchscreen** — SSID and password. Today both
    mean editing `/etc/hostapd/fred.conf` over SSH, which is exactly the situation
    the Wireless tab exists to avoid.
 
-10. **Cart telemetry on the CART page.** Battery and board temperature are on the
-    STATUS page but not next to the drive controls, which is where you want them
-    while driving.
+6. **Cart telemetry on the CART page.** Battery and board temperature are on the
+   STATUS page but not next to the drive controls, which is where you want them
+   while driving.
 
-11. **A "who am I" page** — the brain now knows it is three computers and who built
-    it. The same facts (hostnames, addresses, versions, uptime) on a touchscreen
-    page would replace a lot of SSH.
+7. **A "who am I" page** — the brain now knows it is three computers and who built
+   it. The same facts (hostnames, addresses, versions, uptime) on a touchscreen
+   page would replace a lot of SSH.
 
-12. **Auto-enable the AP at venues** — see item 1; listed separately because the
-    trigger logic (no known SSID in range for N seconds) is the interesting part
-    and the head Pi already solved it once.
+8. **Auto-enable the AP at venues** — listed separately from the AP work above because the
+   trigger logic (no known SSID in range for N seconds) is the interesting part
+   and the head Pi already solved it once.
 
 ## STEM event readiness (planned 2026-07-08)
 
@@ -155,9 +135,9 @@ If venue WiFi dies, every open question becomes "my AI brain isn't connected."
 - **Event persona / audience awareness:** system prompt knows it's talking to
   students; age-appropriate, deflect mischief with humor. Settings toggle
   ("event mode") so home personality is unchanged.
-- **Panel auth:** zero auth today — anyone on venue WiFi can `POST /api/say`
-  (make him say anything to children) or `/api/move`. Shared PIN/token on
-  operator endpoints; or run the Pi as its own hotspot at events.
+- ~~**Panel auth**~~ — done 2026-08-12: a 4-digit PIN gates the settings and
+  everything that moves him; `/api/say` is deliberately still open, and the
+  cart's STOP always is. See the note at the top of this file.
 - **Big STOP + volume control:** `/api/sound/stop` exists but isn't prominent;
   voice-"stop" mid-speech is impossible (half-duplex card — mic is off while he
   talks). No volume control exists anywhere (card pinned at 100% via amixer) —
