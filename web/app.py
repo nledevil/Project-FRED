@@ -835,6 +835,24 @@ def api_hotspot_set():
     return jsonify(out), (500 if out.get("error") else 200)
 
 
+@app.post("/api/hotspot/config")
+@protected
+def api_hotspot_config():
+    """Set the AP's network name and password. Body: {"ssid", "passphrase"}.
+
+    Gated like everything else that changes settings, and worth being gated: the
+    AP password is the outermost credential on this robot now that the access
+    point comes up at boot with a route to the internet behind it.
+
+    The reply never contains the passphrase. It was just typed in; echoing it
+    back would put a second copy on the wire for nobody's benefit.
+    """
+    data = request.get_json(force=True) or {}
+    out = hotspot_mod.configure(str(data.get("ssid", "")),
+                                str(data.get("passphrase", "")))
+    return jsonify(out), (400 if out.get("error") else 200)
+
+
 @app.post("/api/cart/controller")
 @protected
 def api_cart_controller():

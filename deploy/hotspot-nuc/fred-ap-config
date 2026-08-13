@@ -1,0 +1,142 @@
+#!/usr/bin/env python3
+"""Set the "fred" access point's SSID and passphrase, and restart it if it is up.
+
+Installed as /usr/local/sbin/fred-ap-config and reached through one sudoers line,
+because the panel runs as an unprivileged user and /etc/hostapd/fred.conf is
+root's. It exists so the chest touchscreen can change these without an SSH
+session, which is the whole point of the Wireless tab.
+
+**The passphrase arrives on stdin, never in argv.** /proc/<pid>/cmdline is world
+readable, so a passphrase passed as an argument is visible to every user on the
+box for as long as the process lives — and to anything sampling `ps`. Two lines
+on stdin: SSID, then passphrase.
+
+Narrow on purpose, like the sudoers rule for start/stop: it edits exactly two
+keys in exactly one file. It does not take a path, so it cannot be talked into
+rewriting a different config, and it validates both values against what WPA2
+actually permits rather than trusting the caller — the caller is a web panel.
+
+Exit codes: 0 fine, 2 bad input, 1 anything else.
+"""
+from __future__ import annotations
+
+import os
+import re
+import subprocess
+import sys
+import tempfile
+
+CONF = "/etc/hostapd/fred.conf"
+# The SSID, on its own, world readable. CONF is 0600 because it holds the
+# passphrase, and the panel runs unprivileged and still has to be able to say
+# which network it is offering -- including while the AP is switched off, when
+# asking the radio would return nothing. A network name is not a secret; the
+# thing next to it in that file is.
+SSID_FILE = "/etc/hostapd/fred.ssid"
+UNIT = "fred-hotspot.service"
+
+SSID_MAX = 32           # bytes, per 802.11
+PSK_MIN, PSK_MAX = 8, 63    # per WPA2-PSK; 64 would be a raw hex key, not a passphrase
+
+
+def bad(msg: str) -> None:
+    print(msg, file=sys.stderr)
+    raise SystemExit(2)
+
+
+def validate(ssid: str, psk: str) -> None:
+    if not 1 <= len(ssid.encode()) <= SSID_MAX:
+        bad(f"ssid must be 1..{SSID_MAX} bytes")
+    if not PSK_MIN <= len(psk) <= PSK_MAX:
+        bad(f"passphrase must be {PSK_MIN}..{PSK_MAX} characters")
+    # Printable ASCII only. hostapd.conf is a flat key=value file with no
+    # quoting or escapes, so a newline in either value would not "break out"
+    # into a new directive so much as silently truncate the file's meaning.
+    for name, value in (("ssid", ssid), ("passphrase", psk)):
+        if any(ord(c) < 0x20 or ord(c) > 0x7E for c in value):
+            bad(f"{name} must be printable ASCII with no control characters")
+
+
+def rewrite(ssid: str, psk: str) -> None:
+    """Replace the two keys, leave every other line exactly as it was.
+
+    Rewritten in place rather than regenerated from a template so the comments
+    explaining why this AP is on the Intel radio survive an edit from a
+    touchscreen.
+    """
+    try:
+        with open(CONF) as fh:
+            lines = fh.read().splitlines()
+    except OSError as exc:
+        print(f"cannot read {CONF}: {exc}", file=sys.stderr)
+        raise SystemExit(1)
+
+    seen = {"ssid": False, "wpa_passphrase": False}
+    out = []
+    for line in lines:
+        if re.match(r"\s*ssid\s*=", line):
+            out.append(f"ssid={ssid}")
+            seen["ssid"] = True
+        elif re.match(r"\s*wpa_passphrase\s*=", line):
+            out.append(f"wpa_passphrase={psk}")
+            seen["wpa_passphrase"] = True
+        else:
+            out.append(line)
+    for key, found in seen.items():
+        if not found:
+            out.append(f"{key}={ssid if key == 'ssid' else psk}")
+
+    # Atomic, and 0600: this file holds the passphrase and was shipped 0644,
+    # which made it readable by every account on the machine.
+    d = os.path.dirname(CONF)
+    fd, tmp = tempfile.mkstemp(dir=d, prefix=".fred-ap-")
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write("\n".join(out) + "\n")
+        os.chmod(tmp, 0o600)
+        os.chown(tmp, 0, 0)
+        os.replace(tmp, CONF)
+    except OSError as exc:
+        os.unlink(tmp)
+        print(f"cannot write {CONF}: {exc}", file=sys.stderr)
+        raise SystemExit(1)
+
+    fd, tmp = tempfile.mkstemp(dir=d, prefix=".fred-ssid-")
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(ssid + "\n")
+        os.chmod(tmp, 0o644)
+        os.chown(tmp, 0, 0)
+        os.replace(tmp, SSID_FILE)
+    except OSError as exc:
+        os.unlink(tmp)
+        print(f"cannot write {SSID_FILE}: {exc}", file=sys.stderr)
+        raise SystemExit(1)
+
+
+def main() -> int:
+    if os.geteuid() != 0:
+        print("must run as root", file=sys.stderr)
+        return 1
+    data = sys.stdin.read().split("\n")
+    if len(data) < 2:
+        bad("expected two lines on stdin: ssid, passphrase")
+    ssid, psk = data[0].strip(), data[1].strip()
+    validate(ssid, psk)
+    rewrite(ssid, psk)
+
+    # Only restart what was already running. Turning the AP on as a side effect
+    # of an edit would be a surprise, and turning it off would strand whoever is
+    # holding the touchscreen over the very network they are editing.
+    active = subprocess.run(["systemctl", "is-active", "--quiet", UNIT]).returncode == 0
+    if active:
+        r = subprocess.run(["systemctl", "restart", UNIT], capture_output=True, text=True)
+        if r.returncode != 0:
+            print(r.stderr.strip() or "restart failed", file=sys.stderr)
+            return 1
+    print("restarted" if active else "saved")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

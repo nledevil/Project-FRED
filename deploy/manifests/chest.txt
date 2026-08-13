@@ -32,10 +32,12 @@ deploy/display/touch.py
 deploy/display/settings_menu.py
 deploy/display/menu_ui.py
 deploy/display/pin_gate.py
+deploy/display/keyboard.py
 deploy/display/page_status.py
 deploy/display/page_voice.py
 deploy/display/page_servos.py
 deploy/display/page_cart.py
+deploy/display/page_display.py
 deploy/display/page_wireless.py
 
 # --- voice HUD, both renderers ----------------------------------------------

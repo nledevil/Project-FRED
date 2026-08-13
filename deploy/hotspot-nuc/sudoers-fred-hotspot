@@ -3,3 +3,9 @@
 # else, no shell. The panel is reachable from the LAN, so a broad NOPASSWD rule
 # here would be a much bigger door than the feature is worth.
 nledevil ALL=(root) NOPASSWD: /usr/bin/systemctl start fred-hotspot.service, /usr/bin/systemctl stop fred-hotspot.service, /usr/bin/systemctl restart fred-hotspot.service
+
+# ...and to change the SSID and passphrase from the touchscreen, which means
+# writing a root-owned file. Same reasoning: one fixed helper that takes no path
+# and edits exactly two keys, rather than a rule that can write anywhere. The
+# passphrase goes in on stdin, so it never appears in argv or in `ps`.
+nledevil ALL=(root) NOPASSWD: /usr/local/sbin/fred-ap-config

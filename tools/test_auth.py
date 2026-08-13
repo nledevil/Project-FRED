@@ -44,6 +44,9 @@ GATED = [
     "/api/relax", "/api/record", "/api/channel", "/api/identify", "/api/save",
     "/api/camera", "/api/sounds/terminator/upload", "/api/sounds/terminator/delete",
     "/api/auth/pin", "/api/auth/pin/clear",
+    # The AP password is the outermost credential on the robot now that
+    # the access point comes up at boot with a route to the internet.
+    "/api/hotspot/config",
 ]
 OPEN = [
     "/api/cart/stop",       # never, ever gated

@@ -25,6 +25,7 @@ import subprocess
 
 UNIT = "fred-hotspot.service"
 CONF = "/etc/hostapd/fred.conf"
+SSID_FILE = "/etc/hostapd/fred.ssid"   # the name only; see ssid()
 INTERFACE = "wlo1"
 ADDRESS = "192.168.50.1"
 
@@ -44,13 +45,32 @@ def configured() -> bool:
 
 
 def ssid() -> str:
-    try:
-        with open(CONF) as fh:
-            for line in fh:
-                if line.startswith("ssid="):
-                    return line.split("=", 1)[1].strip()
-    except OSError:
-        pass
+    """The AP's network name, without needing root.
+
+    Three sources, in order of how much they can be trusted to answer:
+
+    * ``fred.ssid``, which fred-ap-config writes alongside the real config for
+      exactly this purpose. The config itself is 0600 — it holds the passphrase
+      — and the panel does not run as root.
+    * the config, for a machine set up before that file existed, or when this
+      happens to be running privileged.
+    * the radio, which knows only while the AP is actually up.
+    """
+    for path in (SSID_FILE, CONF):
+        try:
+            with open(path) as fh:
+                for line in fh:
+                    if path == SSID_FILE:
+                        return line.strip()
+                    if line.startswith("ssid="):
+                        return line.split("=", 1)[1].strip()
+        except OSError:
+            continue
+    code, out = _run(["/usr/sbin/iw", "dev", INTERFACE, "info"], timeout=5.0)
+    if code == 0:
+        for line in out.splitlines():
+            if line.strip().startswith("ssid "):
+                return line.strip().split(None, 1)[1]
     return ""
 
 
@@ -94,3 +114,51 @@ def set_enabled(on: bool) -> dict:
         # rather than returning a bare non-zero.
         return {"error": f"could not {verb} the hotspot: {out.strip()[:120]}"}
     return state()
+
+
+HELPER = "/usr/local/sbin/fred-ap-config"
+SSID_MAX = 32
+PSK_MIN, PSK_MAX = 8, 63
+
+
+def check_config(new_ssid: str, passphrase: str) -> str:
+    """"" if these are usable, else why not. Same rules the helper enforces.
+
+    Checked twice on purpose. Here so the panel and the touchscreen can say
+    "that is too short" without a round trip through sudo, and again in the
+    helper because the helper runs as root and must not trust its caller.
+    """
+    if not 1 <= len(new_ssid.encode()) <= SSID_MAX:
+        return f"the network name must be 1 to {SSID_MAX} characters"
+    if not PSK_MIN <= len(passphrase) <= PSK_MAX:
+        return f"the password must be {PSK_MIN} to {PSK_MAX} characters"
+    for name, value in (("network name", new_ssid), ("password", passphrase)):
+        if any(ord(c) < 0x20 or ord(c) > 0x7E for c in value):
+            return f"the {name} must be plain printable characters"
+    return ""
+
+
+def configure(new_ssid: str, passphrase: str) -> dict:
+    """Set the AP's SSID and passphrase; restart it only if it is already up.
+
+    The passphrase goes to the helper on stdin, never in argv — /proc/<pid>/cmdline
+    is world readable, so an argument would expose it to every account on the box
+    for the life of the call.
+    """
+    if not configured():
+        return {"error": "hotspot not installed on this machine"}
+    why = check_config(new_ssid, passphrase)
+    if why:
+        return {"error": why}
+    try:
+        p = subprocess.run(["sudo", "-n", HELPER],
+                           input=f"{new_ssid}\n{passphrase}\n",
+                           capture_output=True, text=True, timeout=30.0)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {"error": f"could not run the hotspot helper: {exc}"}
+    if p.returncode != 0:
+        detail = (p.stderr or p.stdout or "").strip()[:160]
+        return {"error": f"could not save the hotspot settings: {detail}"}
+    # Never echo the passphrase back. The caller just typed it and the panel is
+    # reachable over the network; a reply carrying it is a copy nobody asked for.
+    return {**state(), "saved": True, "restarted": "restarted" in (p.stdout or "")}
