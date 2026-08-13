@@ -36,34 +36,26 @@ Nothing. The two items that were here — driving the cart from the hand
 controller, and what releasing the deadman should do — are settled; see the note
 above.
 
-### Recommended
-
-1. **The local model holds ~2 GB resident forever** (`_KEEP_ALIVE = -1` in
-   `local_brain.py`). That is the right trade on a dedicated robot brain — it
-   keeps the prompt cache warm, which is the difference between a 1.5 s answer
-   and a 10 s one — but it is a deliberate choice worth revisiting if the NUC
-   ever needs the memory.
-
 ### New features worth considering
 
-2. **Display picker on the touchscreen.** Dropped from the settings menu's first
+1. **Display picker on the touchscreen.** Dropped from the settings menu's first
    version; the animation list is already local to the chest daemon, so it works
    with the brain switched off. One page file plus a list entry — the pattern is
    `page_cart.py`.
 
-3. **Access point settings from the touchscreen** — SSID and password. Today both
+2. **Access point settings from the touchscreen** — SSID and password. Today both
    mean editing `/etc/hostapd/fred.conf` over SSH, which is exactly the situation
    the Wireless tab exists to avoid.
 
-4. **Cart telemetry on the CART page.** Battery and board temperature are on the
+3. **Cart telemetry on the CART page.** Battery and board temperature are on the
    STATUS page but not next to the drive controls, which is where you want them
    while driving.
 
-5. **A "who am I" page** — the brain now knows it is three computers and who built
+4. **A "who am I" page** — the brain now knows it is three computers and who built
    it. The same facts (hostnames, addresses, versions, uptime) on a touchscreen
    page would replace a lot of SSH.
 
-6. **Auto-enable the AP at venues** — listed separately from the AP work above because the
+5. **Auto-enable the AP at venues** — listed separately from the AP work above, because the
    trigger logic (no known SSID in range for N seconds) is the interesting part
    and the head Pi already solved it once.
 
