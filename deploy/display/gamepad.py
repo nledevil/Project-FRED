@@ -17,18 +17,25 @@ is switched on, which reads like a driver problem and isn't one.
 **Controllers differ, so nothing about the axes is hardcoded.** Two things vary
 between pads and both are read rather than assumed:
 
-* *Range.* The 8BitDo in DInput reports 8-bit axes (0..255, centre 127); an Xbox
-  pad reports 16-bit sticks. The kernel knows the real range for every axis, so
-  ``EVIOCGABS`` is asked at open time and everything normalises from that. A
-  hardcoded 127 would read an Xbox stick as pinned hard over.
+* *Range.* The 8BitDo in DInput reports 8-bit axes (0..255, centre 127); plenty
+  of pads report 16-bit sticks instead. The kernel knows the real range for
+  every axis, so ``EVIOCGABS`` is asked at open time and everything normalises
+  from that. A hardcoded 127 would read a 16-bit stick as pinned hard over.
 * *Role.* Which axis is "right stick X" is a property of the pad, not a
   standard: DInput puts it on ``ABS_Z``, XInput on ``ABS_RX`` (where DInput
   keeps a trigger). That is what PROFILES below is for.
 
-Mapping captured from the real 8BitDo Ultimate 2C on 2026-08-12; the Xbox
-profile follows the kernel's standard XInput layout. Both keep the same scheme
-as the retired PS2 pad — hold R1, left stick speed, right stick steer — so the
-muscle memory carries over.
+Mapping captured from the real 8BitDo Ultimate 2C on 2026-08-12, keeping the
+same scheme as the retired PS2 pad — hold R1, left stick speed, right stick
+steer — so the muscle memory carries over.
+
+It is the only profile. An Xbox one lived here for a while, written from the
+kernel's documented XInput layout rather than from the pad: the real controller
+reported its steer axis as the ioctl-failure fallback with steer frozen at
+centre, so the entry was never right. It was removed with the controller itself
+(2026-08-12) after the Bluetooth link proved unstable — the pairing UI is gone
+and xpadneo is uninstalled; the findings are in SERVICE.md. Nothing is lost by
+its absence: an unknown pad already falls back to the same XInput layout.
 
 Everything is best-effort: an absent dongle is a controller nobody is holding,
 not an error, and it must never take the display daemon down with it.
@@ -84,11 +91,11 @@ class Profile:
 PROFILES = (
     # DInput: right stick X lands on ABS_Z. Verified against the real hardware.
     Profile("8bitdo-dinput", ("8bitdo",), speed_axis=ABS_Y, steer_axis=ABS_Z),
-    # XInput: right stick is RX/RY, and ABS_Z/RZ become the analogue triggers —
-    # so an 8BitDo profile applied to an Xbox pad would steer with a trigger.
-    Profile("xbox", ("xbox", "x-box", "microsoft"), speed_axis=ABS_Y, steer_axis=ABS_RX),
 )
-# Anything else: assume the XInput layout, which is what most pads speak.
+# Anything else: assume the XInput layout, which is what most pads speak. Note
+# it is genuinely different, not a superset — XInput's right stick is RX/RY and
+# ABS_Z/RZ are the analogue triggers, so the 8BitDo profile applied to an XInput
+# pad would steer with a trigger. Hence the match rather than one shared default.
 FALLBACK = Profile("generic", (), speed_axis=ABS_Y, steer_axis=ABS_RX)
 
 
@@ -129,8 +136,10 @@ def find_device() -> str:
       *USB* pad gets. Preferred, because event numbers move with plug order.
     * failing that, every ``event*`` node, asking each whether it has gamepad
       buttons. A **Bluetooth** pad has no by-id symlink at all — udev builds
-      those from USB serial numbers — so the paired Xbox appears only here, and
-      matching by-id alone would never find it.
+      those from USB serial numbers — so it can appear only here, and matching
+      by-id alone would never find it. Nothing on this Pi pairs over Bluetooth
+      today; the scan is kept because it costs one pass over /dev/input and is
+      the difference between "no controller" and a controller that is present.
 
     The capability check is what keeps this safe: the touchscreen is also an
     absolute-axis device on an adjacent event number.
@@ -297,7 +306,7 @@ class Gamepad:
 
         Deadzone is the driver's own ``flat`` where it gives one, else a
         fraction of half-range — so it scales with the pad rather than being an
-        8-bit constant that would be invisible on a 16-bit Xbox stick.
+        8-bit constant that would be invisible on a 16-bit stick.
 
         The remainder is restretched to the full 0..1. Without that the stick
         jumps to deadzone/half-range of full speed the moment it leaves the

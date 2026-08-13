@@ -14,7 +14,8 @@ This tab briefly also did Bluetooth pairing, for an Xbox controller. That was
 removed on 2026-08-12 once the 8BitDo's 2.4 GHz dongle was settled on as the
 drive controller: the Bluetooth link flapped badly (hundreds of connect cycles),
 and a pairing UI for hardware nobody uses is a surface to maintain and a thing
-to explain. The adapter and xpadneo are still installed if it is ever revisited.
+to explain. xpadneo is uninstalled and the controller's gamepad.py profile went
+with it; reviving any of this means starting from the notes in SERVICE.md.
 """
 from __future__ import annotations
 
