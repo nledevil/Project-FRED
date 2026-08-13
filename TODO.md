@@ -38,17 +38,9 @@ above.
 
 ### New features worth considering
 
-1. **Cart telemetry on the CART page.** Battery and board temperature are on the
-   STATUS page but not next to the drive controls, which is where you want them
-   while driving.
-
-2. **A "who am I" page** — the brain now knows it is three computers and who built
+1. **A "who am I" page** — the brain now knows it is three computers and who built
    it. The same facts (hostnames, addresses, versions, uptime) on a touchscreen
    page would replace a lot of SSH.
-
-3. **Auto-enable the AP at venues** — listed separately from the AP work above, because the
-   trigger logic (no known SSID in range for N seconds) is the interesting part
-   and the head Pi already solved it once.
 
 ## STEM event readiness (planned 2026-07-08)
 
