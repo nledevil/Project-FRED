@@ -36,12 +36,6 @@ Nothing. The two items that were here — driving the cart from the hand
 controller, and what releasing the deadman should do — are settled; see the note
 above.
 
-### New features worth considering
-
-1. **A "who am I" page** — the brain now knows it is three computers and who built
-   it. The same facts (hostnames, addresses, versions, uptime) on a touchscreen
-   page would replace a lot of SSH.
-
 ## STEM event readiness (planned 2026-07-08)
 
 FRED will be shown at STEM events with students walking up and asking questions.
