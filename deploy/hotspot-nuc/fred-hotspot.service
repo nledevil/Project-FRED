@@ -1,8 +1,14 @@
 [Unit]
 Description=FRED access point "fred" (hostapd on the NUC's Intel radio)
-# Not enabled at boot on purpose: the AP is a thing you switch on when you need
-# it, from the panel or the chest touchscreen. Leaving it on permanently would
-# park the Intel radio in AP mode for no reason.
+# Enabled at boot: FRED is taken to venues, and an access point you have to
+# reach the panel to switch on is no use when the panel is what you cannot
+# reach. It was off by default at first, on the reasoning that parking the Intel
+# radio in AP mode at home earns nothing -- true, and worth less than turning up
+# somewhere with no way in. The panel and the touchscreen still stop it.
+#
+# Nothing contends for the radio: wlo1 is unmanaged by systemd-networkd (netplan
+# describes it as this AP, not a client), so hostapd is the only thing that
+# configures it.
 After=network.target
 Wants=fred-hotspot-dns.service
 Before=fred-hotspot-dns.service

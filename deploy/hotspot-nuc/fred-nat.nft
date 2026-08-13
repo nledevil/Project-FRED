@@ -1,0 +1,52 @@
+#!/usr/sbin/nft -f
+#
+# Give clients on the "fred" access point a way out to the internet, and nothing
+# else. Installed as /etc/nftables.conf and applied by nftables.service at boot.
+#
+# Joining "fred" used to reach the robot and stop there. That is fine at a bench
+# and surprising at a venue: a phone joins to drive FRED, loses the internet
+# entirely, and Android quietly hands the data connection back, at which point
+# the panel stops loading. So the NUC now routes for them, out whichever card
+# has the uplink.
+#
+# **AP clients must not reach the robot LAN.** That is the rule this file exists
+# to enforce, and it is why forwarding could not simply be switched on. 10.0.0/24
+# carries the servo bus, the chest daemon and the cart's Pico, several of which
+# answer without a token; the panel's PIN also treats that subnet as the robot's
+# own machines and lets it past without asking. A route from the guest WiFi into
+# that would undo both. Guests get the uplink and a wall.
+#
+# Forwarding was off entirely before this (net.ipv4.ip_forward=0), so a default
+# policy of drop takes nothing away that used to work — see 99-fred-nat.conf,
+# which turns it on.
+#
+# The uplink is matched as "not one of ours" rather than by name. It is
+# wlx34e894c8315c today, a name derived from that USB card's MAC, so naming it
+# here would mean a silent loss of internet the day the card is replaced or the
+# uplink moves to a cable.
+
+flush ruleset
+
+table inet fred {
+  chain forward {
+    type filter hook forward priority filter; policy drop;
+
+    ct state established,related accept
+    ct state invalid drop
+
+    # The wall. Explicit and first, so it cannot be reached past the accept
+    # below, and counted so "can the AP see the Pis?" has an answer rather than
+    # an opinion: nft list ruleset should show this at zero.
+    iifname "wlo1" oifname "br0" counter drop comment "AP guests: no robot LAN"
+
+    # ...and the way out, to anything that is not ours.
+    iifname "wlo1" oifname != { "wlo1", "br0" } counter accept comment "AP guests: uplink only"
+  }
+}
+
+table ip fred-nat {
+  chain postrouting {
+    type nat hook postrouting priority srcnat; policy accept;
+    ip saddr 192.168.50.0/24 oifname != { "wlo1", "br0" } counter masquerade
+  }
+}
