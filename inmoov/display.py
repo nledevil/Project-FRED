@@ -93,6 +93,15 @@ class DisplayClient:
         """Send FRED's voice state (and, on a new clip, the whole envelope)."""
         return self._request("POST", "/api/voice", payload)
 
+    def push_pin(self, material: dict) -> dict:
+        """Hand the chest the panel PIN's salt and digest, or {} to clear it.
+
+        So the touchscreen's own gate keeps working with the brain switched off:
+        the chest caches this and checks against the cache when it cannot reach
+        us. Only ever sent over the wired robot LAN.
+        """
+        return self._request("POST", "/api/pin", {"pin": dict(material or {})})
+
 
 class VoicePusher(threading.Thread):
     """Feeds the chest display FRED's voice state and speech envelope.

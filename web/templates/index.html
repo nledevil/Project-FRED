@@ -276,6 +276,8 @@
   #toast.show { opacity:1; }
   @media (prefers-reduced-motion: reduce) { #head { transition:none; } }
 </style>
+<link rel="stylesheet" href="/static/pin.css">
+<script src="/static/pin.js"></script>
 </head>
 <body>
 <div class="app">
@@ -427,12 +429,8 @@ const LABELS = { eye_x:'Look Left / Right', eye_y:'Look Up / Down',
                  jaw:'Jaw Open / Close', neck:'Head Turn',
                  head_tilt_lr:'Head Tilt L / R', head_tilt_fb:'Head Tilt Fwd / Back' };
 
-async function api(path, body) {
-  const opt = { method: body ? 'POST' : 'GET' };
-  if (body) { opt.headers = {'Content-Type':'application/json'}; opt.body = JSON.stringify(body); }
-  const r = await fetch(path, opt);
-  return r.json();
-}
+// api() comes from /static/pin.js — it raises the PIN keypad on a 401
+// and retries the call once the PIN lands.
 
 function toast(msg) {
   const t = document.getElementById('toast');

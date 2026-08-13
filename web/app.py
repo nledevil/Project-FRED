@@ -20,6 +20,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+from functools import wraps
 from pathlib import Path
 
 # make the project root importable when run as `python web/app.py`
@@ -47,6 +48,7 @@ from inmoov.cart import CartClient, CartError  # noqa: E402
 from inmoov.display import DisplayClient, DisplayError, VoicePusher  # noqa: E402
 from inmoov.greeter import Greeter  # noqa: E402
 from inmoov.settings import load_settings, save_settings  # noqa: E402
+from inmoov import auth  # noqa: E402
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 32 * 1024 * 1024   # cap clip uploads at 32 MB
@@ -286,6 +288,45 @@ def _audit_state() -> dict:
             "cart_audit": _cart.is_audit()}
 
 
+SESSION_COOKIE = "fred_pin"
+
+
+def _authed() -> bool:
+    """May this request touch the settings, or anything that moves him?
+
+    Three ways to be allowed, in the order they are cheapest to answer: no PIN
+    has been set (nothing is gated until one is), the caller is one of the
+    robot's own machines on the wired LAN, or it holds a live session.
+    """
+    if not auth.is_set(_settings):
+        return True
+    if auth.is_trusted(request.remote_addr or "", _settings):
+        return True
+    return auth.valid_session(request.cookies.get(SESSION_COOKIE, ""))
+
+
+def _needs_pin():
+    """A 401 when this request has not unlocked, else None.
+
+    Same shape as _blocked_by_handoff: guards read as one line at the top of the
+    handler, and the reason comes back as JSON the panel can act on.
+    """
+    if _authed():
+        return None
+    return jsonify({"error": "locked; enter the panel PIN", "locked": True}), 401
+
+
+def protected(fn):
+    """Require the PIN for this route. Ordering matters — see api_cart_stop for
+    the one thing that must never carry this."""
+    @wraps(fn)
+    def wrapper(*a, **kw):
+        if (locked := _needs_pin()):
+            return locked
+        return fn(*a, **kw)
+    return wrapper
+
+
 def _blocked_by_handoff():
     """A 409 response when the hardware is released to MyRobotLab, else None. Used
     to reject endpoints that would otherwise grab the shared hardware back."""
@@ -332,6 +373,10 @@ def index():
 
 @app.get("/admin")
 def admin():
+    """Not @protected, deliberately: gating the *page* would answer a browser
+    with raw JSON. The markup is a shell — every value in it arrives from
+    /api/settings, which is gated, so an unlocked visitor gets an empty form and
+    the keypad, which is the behaviour we wanted anyway."""
     return render_template("admin.html")
 
 
@@ -340,12 +385,138 @@ _HEX_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 _HOST_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9.\-]*[A-Za-z0-9])?$")
 
 
+@app.get("/api/auth")
+def api_auth_state():
+    """Whether a PIN exists, and whether this caller is past it.
+
+    Deliberately open: the panel has to be able to ask "should I show a keypad?"
+    before it has anything to show one with. It leaks only that the robot has a
+    PIN, which anyone can discover by trying a gated endpoint anyway.
+    """
+    return jsonify({
+        "pin_set": auth.is_set(_settings),
+        "unlocked": _authed(),
+        "trusted": auth.is_trusted(request.remote_addr or "", _settings),
+        "locked_for": round(auth.locked_for(request.remote_addr or ""), 1),
+    })
+
+
+@app.post("/api/auth/login")
+def api_auth_login():
+    """Trade a correct PIN for a session cookie.
+
+    The wait is checked before the digest, so a locked-out caller costs nothing
+    to refuse and cannot use the timing to learn anything.
+    """
+    addr = request.remote_addr or ""
+    if (wait := auth.locked_for(addr)) > 0:
+        return jsonify({"error": f"too many wrong tries; wait {wait:.0f}s",
+                        "locked_for": round(wait, 1)}), 429
+    if not auth.is_set(_settings):
+        return jsonify({"error": "no PIN is set on this panel"}), 400
+    pin = (request.get_json(force=True) or {}).get("pin", "")
+    if not auth.check_pin(_settings, pin):
+        wait = auth.note_failure(addr)
+        return jsonify({"error": "wrong PIN", "locked_for": round(wait, 1)}), 403
+    auth.note_success(addr)
+    resp = jsonify({"unlocked": True})
+    resp.set_cookie(SESSION_COOKIE, auth.open_session(), httponly=True,
+                    samesite="Lax", max_age=auth.SESSION_S)
+    return resp
+
+
+@app.post("/api/auth/logout")
+def api_auth_logout():
+    auth.close_session(request.cookies.get(SESSION_COOKIE, ""))
+    resp = jsonify({"unlocked": False})
+    resp.delete_cookie(SESSION_COOKIE)
+    return resp
+
+
+@app.post("/api/auth/pin")
+@protected
+def api_auth_set_pin():
+    """Set or change the PIN. Protected, so only someone already in may do it —
+    and when no PIN is set, everyone is already in, which is how the first one
+    gets chosen.
+
+    Changing it closes every open session, including the caller's own. Anything
+    else would leave whoever knew the old PIN still holding the panel.
+    """
+    data = request.get_json(force=True) or {}
+    new = auth.normalise(data.get("pin", ""))
+    if not new:
+        return jsonify({"error": f"the PIN must be {auth.PIN_LENGTH} digits"}), 400
+    # A change needs the old one even from an unlocked session: the session may
+    # be a laptop someone walked away from, and the LAN is trusted wholesale.
+    if auth.is_set(_settings) and not auth.check_pin(_settings, data.get("current", "")):
+        return jsonify({"error": "the current PIN is wrong"}), 403
+    _settings.setdefault("auth", {})["pin"] = auth.make_material(new)
+    save_settings(_settings)
+    auth.close_all_sessions()
+    pushed, why = _push_pin_to_chest()
+    resp = jsonify({"pin_set": True, "chest_synced": pushed, "chest_error": why})
+    resp.delete_cookie(SESSION_COOKIE)
+    return resp
+
+
+@app.post("/api/auth/pin/clear")
+@protected
+def api_auth_clear_pin():
+    """Remove the PIN, reopening the panel. Needs the current one."""
+    data = request.get_json(force=True) or {}
+    if auth.is_set(_settings) and not auth.check_pin(_settings, data.get("current", "")):
+        return jsonify({"error": "the current PIN is wrong"}), 403
+    _settings.setdefault("auth", {}).pop("pin", None)
+    save_settings(_settings)
+    auth.close_all_sessions()
+    _push_pin_to_chest()
+    resp = jsonify({"pin_set": False})
+    resp.delete_cookie(SESSION_COOKIE)
+    return resp
+
+
+@app.get("/api/auth/material")
+def api_auth_material():
+    """The salt and digest, for the chest touchscreen to check a PIN itself.
+
+    **Robot LAN only, never a session.** A digest handed to the access point is
+    ten thousand offline guesses, which is an afternoon — the whole reason the
+    PIN is worth anything is that this never leaves the wired network.
+
+    The chest asks for this rather than being pushed it because its menu must
+    keep working with the brain switched off: it caches the answer and falls
+    back to that cache. See deploy/display/pin_gate.py.
+    """
+    if not auth.is_trusted(request.remote_addr or "", _settings):
+        return jsonify({"error": "robot LAN only"}), 403
+    return jsonify({"pin_set": auth.is_set(_settings),
+                    "pin": auth.material(_settings)})
+
+
+def _push_pin_to_chest() -> tuple[bool, str]:
+    """Tell the chest the PIN changed, so its screen does not lag behind.
+
+    Best effort by design: the chest pulls this itself when its menu opens, so a
+    failure here costs freshness rather than correctness. The admin page reports
+    it anyway — "I changed the PIN and the touchscreen still wants the old one"
+    should be answerable without guessing.
+    """
+    try:
+        return (bool(_display.push_pin(auth.material(_settings)
+                                       if auth.is_set(_settings) else {})), "")
+    except (DisplayError, OSError) as exc:
+        return False, str(exc)
+
+
 @app.get("/api/settings")
+@protected
 def api_get_settings():
     return jsonify(_settings)
 
 
 @app.post("/api/settings")
+@protected
 def api_set_settings():
     """Validate + persist admin settings, and apply the camera ones live.
 
@@ -490,6 +661,7 @@ def api_handoff_status():
 
 
 @app.post("/api/handoff")
+@protected
 def api_handoff():
     """Release the shared hardware to MyRobotLab, or take it back.
 
@@ -513,6 +685,7 @@ def api_brain_status():
 
 
 @app.post("/api/brain")
+@protected
 def api_brain():
     """Switch the LLM backend: ``{"backend": "auto"|"claude"|"local"}``.
 
@@ -539,6 +712,7 @@ def api_audit_status():
 
 
 @app.post("/api/audit")
+@protected
 def api_audit():
     """Enter or leave audit (dry run) mode.
 
@@ -625,6 +799,7 @@ def api_cart_status():
 
 
 @app.post("/api/cart/drive")
+@protected
 def api_cart_drive():
     """One drive command from the joystick. Body: ``{"steer": 0, "speed": 150}``.
 
@@ -649,6 +824,7 @@ def api_hotspot_status():
 
 
 @app.post("/api/hotspot")
+@protected
 def api_hotspot_set():
     """Switch the access point on or off. Body: {"enabled": bool}.
 
@@ -660,6 +836,7 @@ def api_hotspot_set():
 
 
 @app.post("/api/cart/controller")
+@protected
 def api_cart_controller():
     """Who may drive the cart: off | takeover | only.
 
@@ -681,7 +858,12 @@ def api_cart_stop():
 
     Answers 200 even when the cart is disabled or unreachable: a stop button
     that reports failure invites a second, more panicked press, and the honest
-    news is that an unreachable cart is already stopping itself."""
+    news is that an unreachable cart is already stopping itself.
+
+    **Carries no @protected, and must not.** Driving is gated; stopping never
+    is. Someone watching a 350 lb base head for a wall should not be typing a
+    PIN, and there is no harm a stranger can do with this endpoint that is worse
+    than the harm of the owner being unable to reach it."""
     data = request.get_json(force=True) or {}
     if not _cart_enabled():
         return jsonify({"ok": True, "stopped": True, "note": "cart is disabled"})
@@ -705,6 +887,7 @@ def api_display_animations():
 
 
 @app.post("/api/display")
+@protected
 def api_display_select():
     """Switch the chest animation. Body: ``{"animation": "reactor-copper"}``.
 
@@ -726,6 +909,7 @@ def api_display_select():
 
 
 @app.post("/api/display/metrics")
+@protected
 def api_display_metrics():
     """Show/hide the sensor readout on the chest panel. Body: ``{"enabled": true}``.
 
@@ -743,6 +927,7 @@ def api_display_metrics():
 
 
 @app.post("/api/led")
+@protected
 def api_led():
     """Manually turn the BCM16 red status LED on/off.
 
@@ -764,6 +949,7 @@ def api_track_status():
 
 
 @app.post("/api/track")
+@protected
 def api_track():
     """Start/stop face tracking and/or live-tune it.
 
@@ -793,6 +979,7 @@ def api_voice_status():
 
 
 @app.post("/api/voice")
+@protected
 def api_voice():
     """Start/stop the 'Hey FRED' wake-word listener. Body: {"on": bool}."""
     if (blocked := _blocked_by_handoff()):
@@ -809,6 +996,7 @@ def api_voice():
 
 
 @app.post("/api/command")
+@protected
 def api_command():
     """Send FRED a text command/question (types what you'd say). Runs the hybrid
     brain — local match or Claude — executes any action, and speaks the reply."""
@@ -846,6 +1034,7 @@ def api_log():
 
 
 @app.post("/api/log/clear")
+@protected
 def api_log_clear():
     _log.clear()
     return jsonify({"cleared": True})
@@ -943,6 +1132,7 @@ def api_health():
 
 
 @app.post("/api/move")
+@protected
 def api_move():
     if (blocked := _blocked_by_handoff()):
         return blocked
@@ -956,6 +1146,7 @@ def api_move():
 
 
 @app.post("/api/rest")
+@protected
 def api_rest():
     if (blocked := _blocked_by_handoff()):
         return blocked
@@ -965,6 +1156,7 @@ def api_rest():
 
 
 @app.post("/api/relax")
+@protected
 def api_relax():
     if (blocked := _blocked_by_handoff()):
         return blocked
@@ -975,6 +1167,7 @@ def api_relax():
 
 
 @app.post("/api/record")
+@protected
 def api_record():
     """Record the given angle as a servo's min/max/rest limit (in memory)."""
     data = request.get_json(force=True)
@@ -989,6 +1182,7 @@ def api_record():
 
 
 @app.post("/api/channel")
+@protected
 def api_channel():
     """Reassign which PCA9685 port drives a servo (in memory; persist via /api/save)."""
     data = request.get_json(force=True)
@@ -1013,6 +1207,7 @@ def api_channel():
 
 
 @app.post("/api/identify")
+@protected
 def api_identify():
     """Wiggle one servo so the operator can see which physical port it's on."""
     if (blocked := _blocked_by_handoff()):
@@ -1027,6 +1222,7 @@ def api_identify():
 
 
 @app.post("/api/save")
+@protected
 def api_save():
     """Persist the current (possibly re-recorded) config to disk, and push it to
     the head Pi when the servos live there.
@@ -1057,6 +1253,7 @@ def api_save():
 
 
 @app.post("/api/camera")
+@protected
 def api_camera():
     """Adjust live camera settings: focus (af_mode/lens_position) and 180 flip."""
     if (blocked := _blocked_by_handoff()):
@@ -1124,6 +1321,7 @@ def api_term_list():
 
 
 @app.post("/api/sounds/terminator/upload")
+@protected
 def api_term_upload():
     """Accept an audio upload, convert to 22 kHz mono WAV, save under
     sounds/terminator/. Plays at random when terminator mode engages."""
@@ -1181,6 +1379,7 @@ def api_term_play():
 
 
 @app.post("/api/sounds/terminator/delete")
+@protected
 def api_term_delete():
     """Delete a terminator clip."""
     p = _term_clip_path((request.get_json(force=True) or {}).get("name", ""))

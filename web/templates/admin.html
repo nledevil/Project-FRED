@@ -84,6 +84,8 @@
   #toast.show { opacity:1; }
   #toast.err { background:#3a0d0d; color:#f87171; border-color:#a33; }
 </style>
+<link rel="stylesheet" href="/static/pin.css">
+<script src="/static/pin.js"></script>
 </head>
 <body>
 <div class="app">
@@ -92,6 +94,38 @@
     <span class="sub">App &amp; camera defaults</span>
     <a class="back" href="/">← Control panel</a>
   </div>
+
+  <section class="panel">
+    <p class="phead">Panel PIN</p>
+    <div class="row" style="margin-bottom:12px">
+      <div class="label"><b>Status</b><span>who can reach the controls right now</span></div>
+      <div class="grow"></div>
+      <span id="pinStatus" class="badge">…</span>
+    </div>
+    <div class="row" style="margin-bottom:12px">
+      <div class="label"><b id="pinFormLabel">Set a PIN</b>
+        <span>4 digits — the panel asks for it once per browser, per day</span></div>
+      <div class="grow"></div>
+      <input type="password" id="pinCurrent" inputmode="numeric" maxlength="4"
+             placeholder="current" style="width:88px; display:none">
+      <input type="password" id="pinNew" inputmode="numeric" maxlength="4"
+             placeholder="new PIN" style="width:88px">
+      <button onclick="savePin()">Save</button>
+      <button id="pinClear" onclick="clearPin()" style="display:none">Remove</button>
+    </div>
+    <p class="hint">Gates the settings on this page and everything that <b>moves him</b> — servos,
+       rest/relax, calibration, the cart's drive controls and who may drive it. Deliberately left
+       open: the live status, the camera, the sound board, and making him <b>speak</b>. The cart's
+       <b>STOP</b> is never gated — you should not be typing a PIN while a 350 lb base rolls at a
+       wall. The robot's own machines on the wired LAN (10.0.0.x) are exempt, because the Pis call
+       these endpoints constantly and cannot type. The chest touchscreen asks for the same PIN, and
+       keeps working with this machine switched off.
+       <br><br><b>Know what four digits is worth.</b> The panel speaks plain HTTP, so the PIN
+       crosses the network in the clear, and ten thousand combinations is not many — wrong guesses
+       are rate-limited to make that slow, but this is a barrier against a curious stranger on the
+       access point, not a secret. The AP password and physical access are still the real perimeter.
+       Changing or removing the PIN signs out every browser, including this one.</p>
+  </section>
 
   <section class="panel">
     <p class="phead">MyRobotLab handoff</p>
@@ -324,12 +358,9 @@ const DEFAULTS = { iris_color:'#143a97', camera:{ flip:false, af_mode:0, lens_po
                    sound:{ lead_in:0.0, sync_offset:0.0 },
                    display:{ host:'', port:8081, token:'' } };
 
-async function api(path, body) {
-  const opt = { method: body ? 'POST' : 'GET' };
-  if (body) { opt.headers = {'Content-Type':'application/json'}; opt.body = JSON.stringify(body); }
-  const r = await fetch(path, opt);
-  return r.json();
-}
+// api() comes from /static/pin.js — it raises the PIN keypad on a 401
+// and retries the call once the PIN lands.
+
 function toast(msg, err) {
   const t = document.getElementById('toast');
   t.textContent = msg; t.className = 'show' + (err ? ' err' : '');
@@ -385,7 +416,50 @@ function fill(s) {
   onSync(sound.sync_offset ?? 0.0);
 }
 
-async function load() { fill(await api('/api/settings')); }
+async function load() { fill(await api('/api/settings')); loadPin(); }
+
+// ---- panel PIN ---------------------------------------------------------
+// Read through plain fetch, not api(): /api/auth is open by design, and going
+// through api() would be one more thing that can raise a keypad on page load.
+let PIN_SET = false;
+async function loadPin() {
+  let s = {};
+  try { s = await (await fetch('/api/auth')).json(); } catch (e) { return; }
+  PIN_SET = !!s.pin_set;
+  const badge = document.getElementById('pinStatus');
+  badge.textContent = PIN_SET
+    ? (s.trusted ? 'Set — this machine is on the robot LAN, so it is exempt' : 'Set')
+    : 'No PIN — anyone who reaches this panel can drive him';
+  badge.style.color = PIN_SET ? 'var(--ok)' : '#e07a5f';
+  document.getElementById('pinFormLabel').textContent = PIN_SET ? 'Change the PIN' : 'Set a PIN';
+  document.getElementById('pinCurrent').style.display = PIN_SET ? '' : 'none';
+  document.getElementById('pinClear').style.display = PIN_SET ? '' : 'none';
+}
+
+async function savePin() {
+  const pin = document.getElementById('pinNew').value.trim();
+  const current = document.getElementById('pinCurrent').value.trim();
+  if (!/^\d{4}$/.test(pin)) { toast('The PIN must be 4 digits', true); return; }
+  const r = await api('/api/auth/pin', PIN_SET ? {pin, current} : {pin});
+  if (r.error) { toast(r.error, true); return; }
+  document.getElementById('pinNew').value = '';
+  document.getElementById('pinCurrent').value = '';
+  // Reported rather than buried: "I changed the PIN and the touchscreen still
+  // wants the old one" should not be a mystery.
+  toast(r.chest_synced ? 'PIN saved — the chest screen has it too'
+                       : 'PIN saved — the chest was unreachable; it will pick it up on its own');
+  loadPin();
+}
+
+async function clearPin() {
+  const current = document.getElementById('pinCurrent').value.trim();
+  if (!/^\d{4}$/.test(current)) { toast('Enter the current PIN to remove it', true); return; }
+  const r = await api('/api/auth/pin/clear', {current});
+  if (r.error) { toast(r.error, true); return; }
+  document.getElementById('pinCurrent').value = '';
+  toast('PIN removed — the panel is open again');
+  loadPin();
+}
 
 async function save() {
   const hex = document.getElementById('irisHex').value.trim();
