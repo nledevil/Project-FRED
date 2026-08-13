@@ -9,92 +9,91 @@ knowing before someone changes it.
 Verified means "watched it work on the hardware", not "should work".
 
 **Cleared on 2026-08-12**, and removed from the list rather than left to rot:
-the whole session's work is committed and pushed in both repos; the Ollama iGPU
+the whole session's work is committed in both repos; the Ollama iGPU
 fix survived its first real cold boot (`library=Vulkan`, 163 ms prompt-eval);
 the chest cart page has a stop button; and the unverified Xbox profile is gone
 from `gamepad.py` along with the controller itself.
 
+**Also cleared:** the cart has been driven from the hand controller (confirmed by
+Ryan). And releasing the deadman now **stops the cart and revokes the host's
+authority** rather than handing control back — the host regains it by going quiet
+for a watchdog period and commanding again. Reasoning is in `cart_driver.py`'s
+module docstring; the release path is covered in `tools/test_cart_driver.py`, but
+has not yet been watched on the real base with a real thumb on R1.
+
 ### Finish first
 
-1. **The cart has never been driven from the hand controller.** The arbitration is
-   built and unit-tested against a simulated Pico (24 checks, `tools/test_cart_driver.py`),
-   and the 8BitDo reads correctly end to end — but no wheel has turned under
-   controller command. Test with the base **on blocks**: set mode to `takeover`,
-   hold R1, confirm it drives and that releasing R1 stops it.
-
-2. **Decide what releasing the deadman should do.** Today it hands control back to
-   whatever the host last commanded, mirroring the old PS2 behaviour — so letting
-   go can resume a panel-commanded motion rather than stopping. The alternative
-   is "release always stops". One line in `cart_driver._send_loop`; it is a
-   safety-shaped choice, so it should be made deliberately.
+Nothing. The two items that were here — driving the cart from the hand
+controller, and what releasing the deadman should do — are settled; see the note
+above.
 
 ### Recommended
 
-3. **Panel auth is now materially more urgent.** It has always been zero-auth (noted
+1. **Panel auth is now materially more urgent.** It has always been zero-auth (noted
    under STEM readiness below), but the `fred` access point makes it worse: anyone
    who joins the SSID reaches `POST /api/say`, `/api/move` and `/api/cart/drive`
    with no credential at all. The AP password is the only gate, and it is the
    published default `inmoov-robot`. Either change it (`/etc/hostapd/fred.conf`
    and `deploy/hotspot-nuc/`) or put a token on the operator endpoints.
 
-4. **Decide the access point's boot behaviour.** `fred-hotspot.service` is installed
+2. **Decide the access point's boot behaviour.** `fred-hotspot.service` is installed
    but deliberately **not enabled** — it parks the Intel radio in AP mode, which is
    wasted at home. For events either `systemctl enable` it, or port the head Pi's
    old auto-hotspot idea: bring the AP up automatically when no known WiFi is in
    range (`deploy/hotspot/inmoov-autohotspot` is the prior art).
 
-5. **The AP has no route to the internet.** Joining `fred` reaches the robot and
+3. **The AP has no route to the internet.** Joining `fred` reaches the robot and
    nothing else — deliberate (`no-resolv`, no NAT), but a phone on it loses the
    internet, which surprises people at events. One `MASQUERADE` rule out of the
    USB card would fix it if that is wanted.
 
-6. **The local model holds ~2 GB resident forever** (`_KEEP_ALIVE = -1` in
+4. **The local model holds ~2 GB resident forever** (`_KEEP_ALIVE = -1` in
    `local_brain.py`). That is the right trade on a dedicated robot brain — it
    keeps the prompt cache warm, which is the difference between a 1.5 s answer
    and a 10 s one — but it is a deliberate choice worth revisiting if the NUC
    ever needs the memory.
 
-7. **Mic silence cannot be distinguished from a muted mic on this hardware.** The
+5. **Mic silence cannot be distinguished from a muted mic on this hardware.** The
    PowerConf gates a quiet room to *exact zeros* (measured: 30 s of them with the
    mic live), so the status page reports "no signal for N" in amber rather than
    claiming a mute. Do not be tempted to make that red — it would cry wolf every
    quiet evening. A level meter in the web panel would make the same data useful
    without a threshold.
 
-8. **Two pronunciations are wrong and left for a ruling:** "Schultz" reads as
+6. **Two pronunciations are wrong and left for a ruling:** "Schultz" reads as
    SHULTS (`ʃˈʌlts`) and "ASUS" as AY-sus. Both are one line each in `_SAY_AS`
    in `sound.py`, verified against piper's own phonemizer. Nobody should respell
    a person's name on a guess.
 
-9. **The chest Pi is no longer dependency-light.** ~53 MB of build toolchain
+7. **The chest Pi is no longer dependency-light.** ~53 MB of build toolchain
    (`dkms`, `gcc`, `make`, `git`, kernel headers) went on for xpadneo and stayed
    after it was removed. The *Python* constraint still holds — nothing there
    imports anything new — but if that Pi is meant to stay bare, purge them.
 
-10. **Small bug:** `cart_driver` keeps the last `battery_v`/`board_temp_c` after the
-    Pico disconnects, so stale telemetry reads as current. The rows that matter
-    key off `connected`, so nothing displays it wrongly today, but it is a trap.
+8. **Small bug:** `cart_driver` keeps the last `battery_v`/`board_temp_c` after the
+   Pico disconnects, so stale telemetry reads as current. The rows that matter
+   key off `connected`, so nothing displays it wrongly today, but it is a trap.
 
 ### New features worth considering
 
-11. **Display picker on the touchscreen.** Dropped from the settings menu's first
-    version; the animation list is already local to the chest daemon, so it works
-    with the brain switched off. One page file plus a list entry — the pattern is
-    `page_cart.py`.
+9. **Display picker on the touchscreen.** Dropped from the settings menu's first
+   version; the animation list is already local to the chest daemon, so it works
+   with the brain switched off. One page file plus a list entry — the pattern is
+   `page_cart.py`.
 
-12. **Access point settings from the touchscreen** — SSID and password. Today both
+10. **Access point settings from the touchscreen** — SSID and password. Today both
     mean editing `/etc/hostapd/fred.conf` over SSH, which is exactly the situation
     the Wireless tab exists to avoid.
 
-13. **Cart telemetry on the CART page.** Battery and board temperature are on the
+11. **Cart telemetry on the CART page.** Battery and board temperature are on the
     STATUS page but not next to the drive controls, which is where you want them
     while driving.
 
-14. **A "who am I" page** — the brain now knows it is three computers and who built
+12. **A "who am I" page** — the brain now knows it is three computers and who built
     it. The same facts (hostnames, addresses, versions, uptime) on a touchscreen
     page would replace a lot of SSH.
 
-15. **Auto-enable the AP at venues** — see item 4; listed separately because the
+13. **Auto-enable the AP at venues** — see item 2; listed separately because the
     trigger logic (no known SSID in range for N seconds) is the interesting part
     and the head Pi already solved it once.
 
