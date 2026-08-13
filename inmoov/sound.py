@@ -18,6 +18,7 @@ from __future__ import annotations
 import atexit
 import hashlib
 import os
+import re
 import shutil
 import select
 import subprocess
@@ -48,6 +49,33 @@ PIPER_VOICE = "northern_english_male"
 # turns a ~0.8 s render into a file lookup. Long Claude replies never repeat,
 # but they age out harmlessly.
 _TTS_CACHE_MAX = 64
+
+
+# Respellings applied on the way into the synthesiser. Piper phonemises through
+# espeak-ng, which reads a few strings the way they're spelled rather than the
+# way they're said, and the only lever we have is the spelling we hand it.
+#
+# Applied in _synth() alone, so this changes how a line *sounds* and nothing
+# else: the transcript, the API replies and FRED's conversation memory all keep
+# the words he actually chose.
+#
+# Verified against piper's own bundled libespeak-ng with the voice this build
+# uses (en-gb-x-rp), rather than by ear — add to this list the same way:
+#
+#     "Pis"   -> pˈɪs      (i.e. "piss")
+#     "Pi's"  -> pˈaɪz     correct, and "Pi" on its own is already pˈaɪ
+_SAY_AS = (
+    # "I have two Raspberry Pis for..." landed as "two raspberry piss". Only the
+    # bare plural is wrong, so that is all this touches.
+    (re.compile(r"\bpis\b", re.I), "Pi's"),
+)
+
+
+def _say_as(text: str) -> str:
+    """Respell ``text`` so the synthesiser pronounces it correctly."""
+    for pattern, replacement in _SAY_AS:
+        text = pattern.sub(replacement, text)
+    return text
 
 
 def _silent_unlink(path: str | Path) -> None:
@@ -361,7 +389,11 @@ class Sound:
         Piper goes through the warm daemon when it's healthy (it renders into
         the cache dir, so we just move the file into place); a daemon failure
         falls back to a cold one-shot run, which is slow but always works.
+
+        Spelling is respelled for the synthesiser here (see ``_say_as``) — this
+        is the one place all three backends funnel through.
         """
+        text = _say_as(text)
         if self._daemon is not None:
             rendered = self._daemon.synth(text)
             if rendered is not None:
