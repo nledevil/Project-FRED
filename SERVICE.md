@@ -167,8 +167,10 @@ doesn't catch — no network, no API cost, nothing leaving the robot. Built
 
 Ollama ships a **Vulkan** backend (`/usr/local/lib/ollama/vulkan/`), but
 integrated GPUs are opt-in — out of the box it logs "No NVIDIA/AMD GPU detected"
-and runs CPU-only. The fix is one env var, in
-`/etc/systemd/system/ollama.service.d/igpu.conf`:
+and runs CPU-only. The fix is one env var. The drop-in is kept in the repo as
+`deploy/ollama-igpu.conf` and installed to
+`/etc/systemd/system/ollama.service.d/igpu.conf` (`sudo cp`, then
+`sudo systemctl daemon-reload && sudo systemctl restart ollama`):
 
 ```ini
 [Service]
@@ -177,9 +179,41 @@ Environment="OLLAMA_IGPU_ENABLE=1"
 
 It then reports `library=Vulkan … Intel(R) Graphics (PTL) … type=iGPU
 total=22.7 GiB` and offloads to the Arc B390. Measured on a 4B model:
-**11.9 tok/s CPU → 20.6 tok/s GPU** (1.7x). No oneAPI/SYCL or Level Zero install
-needed — Mesa's Vulkan driver is enough. The NPU at `/dev/accel0` is *not* used;
-that would need OpenVINO, which Ollama can't drive.
+**11.9 tok/s CPU → 20.6 tok/s GPU** (1.7x) generating, and **43 → 1075 tok/s**
+reading a prompt, which is the number that decides how long FRED stands there
+before answering. No oneAPI/SYCL or Level Zero install needed — Mesa's Vulkan
+driver is enough. The NPU at `/dev/accel0` is *not* used; that would need
+OpenVINO, which Ollama can't drive.
+
+**The env var alone is not enough — it has to win a race at boot.** Ollama probes
+for devices exactly once, at startup, and keeps that answer for the life of the
+process. On a cold boot on 2026-08-12 the `xe` driver was still loading GuC/HuC
+firmware at 00:48:33 while Ollama started at :31 and probed at :32; it found
+nothing, logged a single `library=cpu` line, and ran on the CPU for the whole
+uptime. Nothing looked broken — `OLLAMA_IGPU_ENABLE` was set, the driver worked,
+`vulkaninfo` listed the GPU, the model answered. It was just 25x slower at
+reading a prompt, which is how FRED came to take 28 seconds to answer a question.
+
+So the same drop-in waits for the GPU to be genuinely usable before Ollama looks:
+
+```ini
+ExecStartPre=/bin/sh -c 'for i in $(seq 1 60); do vulkaninfo --summary 2>/dev/null | grep -q "deviceType.*_GPU" && exit 0; sleep 1; done; exit 0'
+```
+
+`vulkaninfo` (from **vulkan-tools**, a real dependency of this unit now) is the
+honest test — `/dev/dri/renderD128` appears well before the GPU can be used, so
+waiting on the node would not have helped. `_GPU` matches
+`..._INTEGRATED_GPU`/`..._DISCRETE_GPU` but not the llvmpipe software device,
+which is always present and reports `..._CPU`. It gives up after 60 s rather than
+blocking boot, so a machine with no GPU still starts Ollama on the CPU. Costs
+0.1 s when the GPU is already up.
+
+**Check it after any reboot** — this is the failure that hides:
+
+```bash
+journalctl -u ollama -b | grep "inference compute"   # want library=Vulkan, NOT library=cpu
+curl -s localhost:11434/api/ps | grep -o '"size_vram":[0-9]*'   # want non-zero
+```
 
 ### Why this model (measured through FRED's own system prompt + 10 tools)
 
