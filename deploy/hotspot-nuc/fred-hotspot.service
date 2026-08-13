@@ -1,0 +1,24 @@
+[Unit]
+Description=FRED access point "fred" (hostapd on the NUC's Intel radio)
+# Not enabled at boot on purpose: the AP is a thing you switch on when you need
+# it, from the panel or the chest touchscreen. Leaving it on permanently would
+# park the Intel radio in AP mode for no reason.
+After=network.target
+Wants=fred-hotspot-dns.service
+Before=fred-hotspot-dns.service
+
+[Service]
+Type=simple
+# The address the panel is reached on while joined to this AP.
+ExecStartPre=-/usr/sbin/ip addr flush dev wlo1
+ExecStartPre=/usr/sbin/ip addr add 192.168.50.1/24 dev wlo1
+ExecStartPre=/usr/sbin/ip link set wlo1 up
+ExecStart=/usr/sbin/hostapd /etc/hostapd/fred.conf
+# Hand the radio back cleanly, or the next client join finds a half-configured
+# interface holding an address that no longer means anything.
+ExecStopPost=-/usr/sbin/ip addr flush dev wlo1
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

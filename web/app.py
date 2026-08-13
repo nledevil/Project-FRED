@@ -35,6 +35,7 @@ from inmoov.face_tracker import FaceTracker, TUNABLE  # noqa: E402
 from inmoov.wide_spotter import WideSpotter  # noqa: E402
 from inmoov.assistant import Assistant  # noqa: E402
 from inmoov.brain import BACKENDS  # noqa: E402
+from inmoov import hotspot as hotspot_mod  # noqa: E402
 from inmoov import sysinfo  # noqa: E402
 from inmoov.convlog import ConversationLog  # noqa: E402
 from inmoov.led import Led  # noqa: E402
@@ -639,6 +640,23 @@ def api_cart_drive():
         return jsonify(_cart.drive(data.get("steer", 0), data.get("speed", 0)))
     except CartError as e:
         return jsonify({"error": str(e)}), 502
+
+
+@app.get("/api/hotspot")
+def api_hotspot_status():
+    """The 'fred' access point: is it up, and who has joined."""
+    return jsonify(hotspot_mod.state())
+
+
+@app.post("/api/hotspot")
+def api_hotspot_set():
+    """Switch the access point on or off. Body: {"enabled": bool}.
+
+    Reported back as the state *after* the change rather than the request, so a
+    panel that asked for "on" and got a failure shows off, not a hopeful on."""
+    data = request.get_json(force=True) or {}
+    out = hotspot_mod.set_enabled(bool(data.get("enabled")))
+    return jsonify(out), (500 if out.get("error") else 200)
 
 
 @app.post("/api/cart/controller")

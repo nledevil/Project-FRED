@@ -35,6 +35,7 @@ deploy/display/page_status.py
 deploy/display/page_voice.py
 deploy/display/page_servos.py
 deploy/display/page_cart.py
+deploy/display/page_wireless.py
 
 # --- voice HUD, both renderers ----------------------------------------------
 # The native one is what actually runs. The binary is built ON this Pi (`make`)
@@ -43,6 +44,10 @@ deploy/display/voice_hud.py
 deploy/display/voice_hud.c
 deploy/display/Makefile
 deploy/display/tools/verify_voice_hud.py
+
+# --- cart bring-up: the real Pico, not the simulated one -----------------
+deploy/display/tools/ps2_probe.py
+deploy/display/tools/watch_cart.py
 
 # --- sensor relay + drive base ----------------------------------------------
 deploy/display/sensor_relay.py

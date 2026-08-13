@@ -1,0 +1,12 @@
+[Unit]
+Description=DHCP/DNS for the FRED access point
+# PartOf, so stopping the AP stops this too: a DHCP server on an interface with
+# no AP behind it is just a process waiting to confuse someone.
+PartOf=fred-hotspot.service
+After=fred-hotspot.service
+
+[Service]
+Type=simple
+ExecStart=/usr/sbin/dnsmasq --keep-in-foreground --conf-file=/etc/dnsmasq-fred-ap.conf
+Restart=on-failure
+RestartSec=3

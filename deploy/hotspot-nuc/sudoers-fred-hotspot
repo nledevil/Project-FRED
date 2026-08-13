@@ -1,0 +1,5 @@
+# The panel runs as nledevil and needs to switch the access point on and off.
+# Narrow on purpose: exactly these three verbs on exactly this unit, nothing
+# else, no shell. The panel is reachable from the LAN, so a broad NOPASSWD rule
+# here would be a much bigger door than the feature is worth.
+nledevil ALL=(root) NOPASSWD: /usr/bin/systemctl start fred-hotspot.service, /usr/bin/systemctl stop fred-hotspot.service, /usr/bin/systemctl restart fred-hotspot.service

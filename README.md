@@ -123,6 +123,10 @@ Everything else follows from that:
 - **The PS2 controller always wins.** The firmware ignores host drive commands whenever
   a controller is connected, so picking it up takes the robot away from autonomous
   control mid-drive. The panel and FRED both say so rather than appearing to ignore you.
+  **Currently moot: PS2 is disabled in the cart firmware** (`PS2_ENABLED 0`, 2026-08-12)
+  because the receiver stopped answering — see the cart repo's README. The arbitration
+  described above is still what the firmware does when it is switched back on, and the
+  panel's `PS2 REMOTE` state simply never fires meanwhile.
 
 Off by default. Enable it in the admin panel (or `cart.enabled` in
 `config/settings.json`) once the Pico is wired up; it reuses the chest Pi's address
@@ -439,6 +443,17 @@ MicroPython's raw REPL, standing in for `mpremote` (the chest Pi has no pip).
 - **Hotspot fallback** — when no known WiFi is in range the head becomes its own
   access point so you can still reach it at a venue. See
   [`HOTSPOT.md`](HOTSPOT.md).
+- **Access point `fred`** — the NUC serves its own WiFi so the panel is reachable
+  at a venue with no network: SSID `fred`, panel at `http://192.168.50.1:8080`.
+  Off by default; switch it on from the panel or the chest touchscreen's Wireless
+  tab. It runs on the **onboard Intel radio**, because the USB card added for the
+  job turned out not to be able to do it — `rtl8xxxu` advertises `managed` and
+  `monitor` only, no `AP`. So the two cards swapped roles on 2026-08-12: the USB
+  card is now the house-WiFi client (all a client needs is `managed`) and the
+  Intel hosts the AP. The NUC's house address moved to `192.168.68.71` with that
+  swap. Config in `deploy/hotspot-nuc/`; the AP gets its **own** dnsmasq instance
+  so toggling it can never disturb the one handing the Pis their addresses on br0.
+
 - **Bluetooth PAN (retired)** — the two Pis used to be joined at `10.0.0.1` and
   `10.0.0.2` over Bluetooth; `deploy/pan/` still installs it if you want the
   old two-Pi topology back. Note that `pan-server` on the head claims
