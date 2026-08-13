@@ -1200,8 +1200,9 @@ if __name__ == "__main__":
             print(f"Wide spotter: PanaCast {s['size']} @ {s['detect_hz']} Hz")
         else:
             print(f"Wide spotter: unavailable — {_spotter.last_error}")
-    # Load the local model into RAM now, off the conversation path: the first
-    # question would otherwise pay a multi-second model load on top of its answer.
+    # Load the local model AND read its prompt prefix now, off the conversation
+    # path. Skipping this doesn't save the work, it just bills it to whoever asks
+    # FRED the first question — as a ~10 s silence before he answers.
     if _assistant.brain.backend in ("auto", "local"):
         threading.Thread(target=_assistant.brain.warm_local,
                          name="local-warm", daemon=True).start()

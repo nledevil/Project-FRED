@@ -37,6 +37,7 @@ while its tool calls get lost. Don't use a reasoning model for a talking head.
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 import urllib.error
@@ -45,6 +46,19 @@ import urllib.request
 DEFAULT_HOST = "http://127.0.0.1:11434"
 # Benchmarked best of the small models for this job — see the module docstring.
 DEFAULT_MODEL = "qwen2.5:3b"
+
+# Ollama's default is to unload an idle model after five minutes. That drops the
+# cached prompt prefix with it, so the first question after a quiet spell pays
+# the whole prompt again — and a robot in a room is idle far more than it talks.
+# Keep it resident; the model is ~2 GB on a machine with 30.
+_KEEP_ALIVE = -1
+# Insurance for the CPU fallback, not the normal path. On the iGPU this makes no
+# odds (1075 vs 1095 tok/s), but when Ollama can't see the GPU llama.cpp is left
+# to guess its own thread count, and on this NUC it guessed 2 of 16 — it counts
+# performance cores and this Core Ultra part confuses that. That guess costs 43
+# tok/s where 12 threads gets 123. Three quarters of the cores, so the tracker
+# and TTS still get some while FRED thinks.
+_NUM_THREAD = max(2, ((os.cpu_count() or 4) * 3) // 4)
 
 # A local model is a fixed cost we control, unlike a network round trip, so the
 # timeout only has to cover a pathological generation, not congestion.
@@ -237,18 +251,28 @@ class LocalClient:
         except (urllib.error.URLError, OSError, ValueError):
             return []
 
-    def warm(self) -> None:
-        """Load the model into memory so the first real reply isn't slow.
+    def warm(self, system: str = "", tools: list | None = None) -> None:
+        """Load the model and pre-read the prompt prefix every turn will reuse.
 
-        Never raises — it runs on a boot thread nobody joins, and a failed
-        warm-up just means the first utterance pays the load.
+        Pass the *same* system prompt and tools the real turns use. Loading the
+        weights is the cheap half (~3 s); reading the system prompt and the tool
+        schemas is the expensive one (~11 s here), and skipping it just moves that
+        cost onto whoever asks FRED the first question. Warming with a bare "hi"
+        — which is what this used to do — loaded the weights and left the whole
+        prompt to be read live.
+
+        Never raises: it runs on a boot thread nobody joins, and a failed warm-up
+        only means the first utterance pays what it used to.
         """
+        msgs, conv_tools = _to_ollama(system, [{"role": "user", "content": "hi"}], tools)
+        payload = {"model": self.model, "stream": False, "keep_alive": _KEEP_ALIVE,
+                   "messages": msgs,
+                   "options": {"num_predict": 1, "num_thread": _NUM_THREAD}}
+        if conv_tools:
+            payload["tools"] = conv_tools
         try:
             req = urllib.request.Request(
-                f"{self.host}/api/chat",
-                data=json.dumps({"model": self.model, "stream": False,
-                                 "messages": [{"role": "user", "content": "hi"}],
-                                 "options": {"num_predict": 1}}).encode(),
+                f"{self.host}/api/chat", data=json.dumps(payload).encode(),
                 headers={"Content-Type": "application/json"})
             with urllib.request.urlopen(req, timeout=_TIMEOUT):
                 pass
@@ -268,9 +292,11 @@ class LocalClient:
                 "model": model or self._c.model,
                 "messages": msgs,
                 "stream": True,
+                "keep_alive": _KEEP_ALIVE,
                 # Low temperature: FRED answers factual questions and picks tools.
                 # Creativity here reads as unreliability.
-                "options": {"temperature": 0.3, "num_predict": int(max_tokens)},
+                "options": {"temperature": 0.3, "num_predict": int(max_tokens),
+                            "num_thread": _NUM_THREAD},
             }
             if conv_tools:
                 payload["tools"] = conv_tools

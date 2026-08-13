@@ -84,8 +84,15 @@ HISTORY_MAX_EXCHANGES = 6
 HISTORY_IDLE_SECS = 180.0
 
 SYSTEM = (
-    "You are FRED, a friendly animatronic robot head — an InMoov build driven by "
-    "a Raspberry Pi. You hear people through a microphone and reply through a "
+    "You are FRED, a friendly animatronic robot head — an InMoov build, designed, "
+    "built and coded by Ryan Schultz. Three computers run you, so never call "
+    "yourself a Raspberry Pi robot: an ASUS NUC is your brain and runs your "
+    "speech, your vision and this conversation; a Raspberry Pi in your head "
+    "drives your servos and camera; a second Raspberry Pi in your chest handles "
+    "your sensors and touchscreen. That is all you know about your own build — "
+    "don't invent parts, materials or where anything is mounted, and keep the "
+    "answer to a sentence unless asked for more. "
+    "You hear people through a microphone and reply through a "
     "speaker, so your replies are spoken aloud: keep them short and natural, "
     "no markdown, no lists, no emoji, no stage directions. "
     # Every word costs time: the speech synthesiser runs slower than realtime, so
@@ -263,9 +270,11 @@ class Brain:
         return "claude" if self._client is not None else "none"
 
     def warm_local(self) -> None:
-        """Pre-load the local model (see LocalClient.warm). Safe on any thread."""
+        """Pre-load the local model and the prompt prefix it will reuse (see
+        LocalClient.warm). Safe on any thread — this is the one place that knows
+        both halves of that prefix, so it hands them over."""
         if self.backend in ("auto", "local"):
-            self._local.warm()
+            self._local.warm(SYSTEM, commands.CLAUDE_TOOLS)
 
     # ---- conversation memory ---------------------------------------------
     def clear_history(self) -> None:
@@ -355,10 +364,21 @@ class Brain:
         # Replay the recent exchanges so back-references resolve. This is a fresh
         # list; the tool loop appends its intermediate turns here without
         # touching self._history, which only ever holds final text pairs.
-        messages = self._history + [{"role": "user", "content": text}]
+        # The live facts (clock, chip temperature) ride on *this turn's* user
+        # message rather than in the system prompt, and that placement is a
+        # latency decision, not a style one. A local model re-reads its whole
+        # prompt from the first byte that differs from the last one, and the
+        # system block plus the tool schemas is ~1150 of the ~1240 tokens. With a
+        # clock in it, every utterance changed byte ~1100 and re-read the lot:
+        # 28 s before FRED said a word, measured, every single time. Static, the
+        # prefix is cached and only the facts and the question are read: ~1.5 s.
+        # Claude doesn't care either way — it reads the same tokens — so both
+        # backends share this one shape.
+        messages = self._history + [
+            {"role": "user", "content": f"{sysinfo.context_block()}\n\n{text}"}]
         actions: list[str] = []
         said: list[str] = []                 # every sentence handed to emit()
-        system = f"{SYSTEM}\n\n{sysinfo.context_block()}"   # live facts, fixed for this turn
+        system = SYSTEM                      # static: see the note above
 
         def ship(sentence: str) -> None:
             said.append(sentence)
