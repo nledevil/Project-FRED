@@ -24,10 +24,11 @@ has not yet been watched on the real base with a real thumb on R1.
 **Also cleared:** the panel has a 4-digit PIN in front of the settings and
 everything that moves him, on the web panel and the chest touchscreen both.
 Status, the camera, the sound board, speech and — above all — the cart's STOP
-stay open. **No PIN is set out of the box**: set one on the admin page, or the
-panel is exactly as open as it was. What four digits over plain HTTP is
-actually worth is written down in `inmoov/auth.py`; the AP password and
-physical access are still the real perimeter.
+stay open. **A PIN is set on this robot** (2026-08-12); a fresh install has none
+until someone sets one on the admin page, and is exactly as open as it was until
+they do. What four digits over plain HTTP is actually worth is written down in
+`inmoov/auth.py`; the AP password and physical access are still the real
+perimeter — and that password is still the published default `inmoov-robot`.
 
 ### Finish first
 
