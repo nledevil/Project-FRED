@@ -33,6 +33,12 @@ PANEL = (18, 40, 54)           # a raised panel / button face
 PANEL_ON = (30, 78, 104)       # a button in its "on" state
 EDGE = (60, 120, 160)          # panel border
 
+# The stop control is deliberately outside the palette above: everything else on
+# this screen is one family of blue, so a red face is not "another button" at a
+# glance. Dark enough that BAD_INK/WARN_INK still add to something legible on it.
+STOP_PANEL = (60, 16, 12)      # the e-stop's face
+STOP_PANEL_ARM = (64, 44, 8)   # ...while it is waiting for a confirming tap
+
 
 def fill(frame: np.ndarray, x0: int, y0: int, x1: int, y1: int, rgb) -> None:
     """Set a rectangle to a flat colour (not additive — see the module docstring)."""

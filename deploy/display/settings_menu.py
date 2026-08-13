@@ -183,6 +183,15 @@ class Net:
         owns the arbitration, so this still works with the brain switched off."""
         self._fire(f"{LOCAL}/api/cart/controller", {"mode": str(mode)})
 
+    def post_cart_stop(self) -> None:
+        """Latch the e-stop. Local for the same reason the mode is, and more so:
+        this is the control you reach for when something is going wrong, which is
+        exactly when the brain or the wire to it may be part of what is wrong."""
+        self._fire(f"{LOCAL}/api/cart/stop", {"estop": True})
+
+    def post_cart_clear_estop(self) -> None:
+        self._fire(f"{LOCAL}/api/cart/stop", {"clear_estop": True})
+
     @staticmethod
     def _fire(url: str, payload: dict) -> None:
         """Send without waiting. A servo drag posts every 60ms and the reply
