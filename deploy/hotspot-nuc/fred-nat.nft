@@ -41,6 +41,13 @@ table inet fred {
 
     # ...and the way out, to anything that is not ours.
     iifname "wlo1" oifname != { "wlo1", "br0" } counter accept comment "AP guests: uplink only"
+
+    # Tailscale is the opposite case to the AP: these are Ryan's own devices,
+    # authenticated by the tailnet before a packet arrives, so they get the
+    # robot LAN — which is the entire point of advertising the route. Without
+    # this the subnet route resolves, hands out no error, and every packet dies
+    # on the policy below.
+    iifname "tailscale0" oifname "br0" counter accept comment "tailnet: robot LAN"
   }
 }
 
