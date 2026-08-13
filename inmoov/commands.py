@@ -55,7 +55,14 @@ def _look(ctx, direction: str) -> str:
         c.set_angle("eye_x", ex["min_angle"] if d == "left" else ex["max_angle"])
         return f"Looking {d}."
     if d in ("up", "down") and ey:
-        c.set_angle("eye_y", ey["max_angle"] if d == "up" else ey["min_angle"])
+        # Vertical is the other way round: on this build a *larger* eye_y angle
+        # points the eyes DOWN. That isn't a guess — FaceTracker._track_face has
+        # always relied on it. It signs its error as "+ ey = face low" and then
+        # adds that straight onto the current angle, so a face below the lens
+        # raises eye_y. Tracking has worked all along, which makes increasing =
+        # down the build's real convention; this preset was the odd one out, and
+        # "look up" duly looked down.
+        c.set_angle("eye_y", ey["min_angle"] if d == "up" else ey["max_angle"])
         return f"Looking {d}."
     return "I can look left, right, up, down, or center."
 
