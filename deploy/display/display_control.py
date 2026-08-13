@@ -59,6 +59,7 @@ import cart_driver                          # noqa: E402 — sibling module
 import cog_hud                              # noqa: E402 — sibling module
 import gamepad as gamepad_mod               # noqa: E402 — sibling module
 import metrics_hud                          # noqa: E402 — sibling module
+import pin_gate                             # noqa: E402 — sibling module
 import sensor_relay                         # noqa: E402 — sibling module
 import touch                                # noqa: E402 — sibling module
 import voice_state                          # noqa: E402 — sibling module
@@ -344,6 +345,10 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path.startswith("/api/cart"):
             self._send(200, self.cart.state() if self.cart
                        else {"enabled": False})
+        elif self.path.startswith("/api/pin"):
+            # Whether a PIN is cached, never the digest itself: this port is
+            # reachable from the robot LAN and the digest is worth guarding.
+            self._send(200, {"pin_set": pin_gate.is_set(pin_gate.load())})
         elif self.path.startswith("/api/sensors"):
             # Not the sensor data itself — that goes straight to the head. This
             # is the relay's own health, so you can tell "the Pico is unplugged"
@@ -359,6 +364,7 @@ class Handler(BaseHTTPRequestHandler):
         if not (self.path.startswith("/api/animation")
                 or self.path.startswith("/api/voice")
                 or self.path.startswith("/api/metrics")
+                or self.path.startswith("/api/pin")
                 or self.path.startswith("/api/cart")):
             self._send(404, {"error": "not found"})
             return
@@ -374,6 +380,14 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self.path.startswith("/api/metrics"):
             self._send(200, self._metrics(data))
+            return
+        if self.path.startswith("/api/pin"):
+            # The brain telling us its PIN changed, so the settings menu's gate
+            # does not lag behind it. Cached rather than consulted live: the
+            # menu has to work with the brain switched off.
+            ok = pin_gate.save(dict(data.get("pin") or {}))
+            self._send(200 if ok else 500,
+                       {"cached": ok, "pin_set": pin_gate.is_set(pin_gate.load())})
             return
         if self.path.startswith("/api/cart"):
             self._send(200, self._cart(data))

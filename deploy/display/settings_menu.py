@@ -45,6 +45,7 @@ from page_servos import ServosPage          # noqa: E402
 from page_status import StatusPage          # noqa: E402
 from page_voice import VoicePage            # noqa: E402
 from touch import open_touch                # noqa: E402
+import pin_gate                             # noqa: E402 — sibling module
 
 NUC = "http://10.0.0.1:8080"
 HEAD = "http://10.0.0.10:8082"
@@ -235,6 +236,13 @@ def main() -> int:
     net = Net()
     net.start()
 
+    # The gate, if there is one. Built before the loop so the brain is asked
+    # once, here, rather than on every frame — and so a slow answer costs the
+    # menu's opening beat instead of its frame rate.
+    gate = pin_gate.PinPad(pin_gate.material(NUC))
+    if not gate.unlocked:
+        print("menu: locked - PIN required")
+
     running = [True]
     signal.signal(signal.SIGTERM, lambda *a: running.__setitem__(0, False))
     signal.signal(signal.SIGINT, lambda *a: running.__setitem__(0, False))
@@ -256,20 +264,29 @@ def main() -> int:
                         leaving = True
                         running[0] = False
                         break
-                    if any(tab.hit(x, y) for tab in tabs):
+                    # X closes the menu while locked — being unable to leave a
+                    # screen you cannot get past would be its own trap — but the
+                    # tabs do not exist yet.
+                    if gate.unlocked and any(tab.hit(x, y) for tab in tabs):
                         current = next(i for i, t in enumerate(tabs) if t.hit(x, y))
                         continue
-                pages[current].on_touch(kind, x, y, net)
+                if gate.unlocked:
+                    pages[current].on_touch(kind, x, y, net)
+                else:
+                    gate.on_touch(kind, x, y, net)
 
             snap = net.snapshot()
             frame[:] = np.asarray(ui.BG, dtype=np.float32)
             ui.fill(frame, 0, 0, fb.w, TITLE_H, ui.PANEL)
             ui.text(frame, "FRED SETTINGS", 24, 16, ui.INK, 3)
             close.draw(frame, ink=ui.INK)
-            for i, tab in enumerate(tabs):
-                tab.draw(frame, on=(i == current),
-                         ink=ui.INK if i == current else ui.DIM_INK)
-            pages[current].draw(frame, snap)
+            if gate.unlocked:
+                for i, tab in enumerate(tabs):
+                    tab.draw(frame, on=(i == current),
+                             ink=ui.INK if i == current else ui.DIM_INK)
+                pages[current].draw(frame, snap)
+            else:
+                gate.draw(frame, snap)
             # Clip before the blit, exactly as every animation does. Text is
             # *added* into the frame, so ink on a panel background runs past 255
             # (120+18, 210+40, 255+54) and astype(uint8) wraps rather than

@@ -31,6 +31,7 @@ deploy/display/cog_hud.py
 deploy/display/touch.py
 deploy/display/settings_menu.py
 deploy/display/menu_ui.py
+deploy/display/pin_gate.py
 deploy/display/page_status.py
 deploy/display/page_voice.py
 deploy/display/page_servos.py
@@ -78,5 +79,8 @@ deploy/vcgencmd_power_report.sh
 # state.json: the animation pick, persisted across reboots.
 keep: voice_hud
 keep: state.json
+# The cached panel PIN (salt + digest), pushed by the brain when it
+# changes. Never deployed: it is per-robot state, not source.
+keep: pin.json
 keep: child-stderr.log
 keep: __pycache__
