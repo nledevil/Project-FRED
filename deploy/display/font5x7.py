@@ -1,11 +1,20 @@
 """A 5x7 bitmap font, drawn straight into a numpy RGB frame.
 
 There's no Pillow and no system fonts on the display Pi, and a chest panel needs
-a handful of short uppercase labels — not a text engine. So: 36 glyphs as bit
-rows, rendered by slicing. No dependencies beyond numpy, and reusable by any
-animation that wants a label (a boot/POST screen, a status readout).
+short labels — not a text engine. So: the glyphs below as bit rows, rendered by
+slicing. No dependencies beyond numpy, and reusable by any animation that wants
+a label (a boot/POST screen, a status readout).
 
     draw_text(frame, "SPEAKING", x, y, colour, scale=4)
+
+It was uppercase, digits and `. : - /` for a long time, which is all a status
+readout needs. Lowercase and the passphrase symbols arrived with the WiFi
+keyboard, where upper-casing the input would have been a way to store a password
+nobody typed. Everything still upper-cases by default; see draw_text.
+
+**Anything not in the table renders as a blank, silently.** That is deliberate —
+a long label must not crash an animation — but it means a caller showing
+arbitrary text should check FONT first, as keyboard.py does.
 """
 from __future__ import annotations
 
@@ -55,6 +64,60 @@ _GLYPHS = {
     ":": "00000 01100 01100 00000 01100 01100 00000",
     "-": "00000 00000 00000 11111 00000 00000 00000",
     "/": "00001 00010 00010 00100 01000 01000 10000",
+
+    # Lowercase, added for the WiFi keyboard. Until then every label here was a
+    # short uppercase one and draw_text simply upper-cased its input, which is
+    # fine for "SPEAKING" and a trap for a passphrase: it would show you MyPass
+    # while storing something you never typed. Callers opt in with
+    # preserve_case=True, so the existing labels are untouched.
+    #
+    # Descenders (g j p q y) use the bottom two rows, so they sit low against
+    # the baseline the uppercase glyphs share.
+    "a": "00000 00000 01110 00001 01111 10001 01111",
+    "b": "10000 10000 11110 10001 10001 10001 11110",
+    "c": "00000 00000 01111 10000 10000 10000 01111",
+    "d": "00001 00001 01111 10001 10001 10001 01111",
+    "e": "00000 00000 01110 10001 11111 10000 01110",
+    "f": "00110 01001 01000 11100 01000 01000 01000",
+    "g": "00000 00000 01111 10001 01111 00001 01110",
+    "h": "10000 10000 11110 10001 10001 10001 10001",
+    "i": "00100 00000 01100 00100 00100 00100 01110",
+    "j": "00010 00000 00110 00010 00010 10010 01100",
+    "k": "10000 10000 10010 10100 11000 10100 10010",
+    "l": "01100 00100 00100 00100 00100 00100 01110",
+    "m": "00000 00000 11010 10101 10101 10101 10101",
+    "n": "00000 00000 11110 10001 10001 10001 10001",
+    "o": "00000 00000 01110 10001 10001 10001 01110",
+    "p": "00000 00000 11110 10001 11110 10000 10000",
+    "q": "00000 00000 01111 10001 01111 00001 00001",
+    "r": "00000 00000 10110 11001 10000 10000 10000",
+    "s": "00000 00000 01111 10000 01110 00001 11110",
+    "t": "01000 01000 11110 01000 01000 01001 00110",
+    "u": "00000 00000 10001 10001 10001 10011 01101",
+    "v": "00000 00000 10001 10001 10001 01010 00100",
+    "w": "00000 00000 10001 10001 10101 10101 01010",
+    "x": "00000 00000 10001 01010 00100 01010 10001",
+    "y": "00000 00000 10001 10001 01111 00001 01110",
+    "z": "00000 00000 11111 00010 00100 01000 11111",
+
+    # The symbols a WPA passphrase is likely to contain. Not an exhaustive
+    # ASCII set: anything absent renders as a blank, so the keyboard only
+    # offers what is here — see keyboard.py, which is checked against FONT.
+    "_": "00000 00000 00000 00000 00000 00000 11111",
+    "!": "00100 00100 00100 00100 00100 00000 00100",
+    "?": "01110 10001 00001 00010 00100 00000 00100",
+    "@": "01110 10001 10111 10101 10111 10000 01110",
+    "#": "01010 01010 11111 01010 11111 01010 01010",
+    "$": "00100 01111 10100 01110 00101 11110 00100",
+    "%": "11001 11010 00010 00100 01011 10011 00000",
+    "&": "01100 10010 10100 01000 10101 10010 01101",
+    "*": "00000 10101 01110 11111 01110 10101 00000",
+    "+": "00000 00100 00100 11111 00100 00100 00000",
+    "=": "00000 00000 11111 00000 11111 00000 00000",
+    "(": "00010 00100 01000 01000 01000 00100 00010",
+    ")": "01000 00100 00010 00010 00010 00100 01000",
+    ",": "00000 00000 00000 00000 01100 01100 00100",
+    "'": "00100 00100 00000 00000 00000 00000 00000",
 }
 
 # Parsed once into (7, 5) bool arrays.
@@ -70,16 +133,22 @@ def text_width(text: str, scale: int = 1, spacing: int = 1) -> int:
 
 
 def draw_text(frame: np.ndarray, text: str, x: int, y: int,
-              colour, scale: int = 1, spacing: int = 1) -> None:
+              colour, scale: int = 1, spacing: int = 1,
+              preserve_case: bool = False) -> None:
     """Blit ``text`` at (x, y) top-left. Unknown characters render as blanks.
 
     Adds into the frame (it's a glow-composited image, not a canvas), and clips
     at the edges so a caller can't crash the animation with a long label.
+
+    Upper-cases by default, which is what every label on this panel wants and
+    what all of them relied on before lowercase glyphs existed. ``preserve_case``
+    turns that off for the one thing that cannot tolerate it: text the user typed
+    and has to be able to read back exactly, i.e. a WiFi passphrase.
     """
     H, W = frame.shape[:2]
     colour = np.asarray(colour, dtype=np.float32)
     step = (CHAR_W + spacing) * scale
-    for i, ch in enumerate(text.upper()):
+    for i, ch in enumerate(text if preserve_case else text.upper()):
         glyph = FONT.get(ch)
         if glyph is None or not glyph.any():
             continue

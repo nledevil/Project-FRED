@@ -6,9 +6,11 @@ panel, which already has a browser to draw it with.
 
 Two things worth knowing before adding a screen:
 
-**The font is uppercase, digits, and ``. : - /`` only** (see font5x7.py). Text is
-upper-cased on the way in, so lowercase is safe to pass, but a comma or a percent
-sign renders as a blank and there is no error. Keep labels inside that set.
+**Text is upper-cased on the way in** unless you pass ``preserve_case=True``, so
+lowercase is safe to pass and a label reads as a label. The font gained lowercase
+and the passphrase symbols with keyboard.py, but it is still not all of ASCII —
+anything missing renders as a blank with no error, so check ``FONT`` before
+drawing text you did not write yourself.
 
 **Drawing is additive, on a dark frame.** ``draw_text`` adds into the frame the
 way the animations composite glow, so a filled panel is drawn first and its text
@@ -59,19 +61,25 @@ def border(frame: np.ndarray, x0: int, y0: int, x1: int, y1: int, rgb,
     fill(frame, x1 - weight, y0, x1, y1, rgb)
 
 
-def text(frame: np.ndarray, s: str, x: int, y: int, rgb, scale: int = 2) -> None:
-    draw_text(frame, s, x, y, rgb, scale)
+# preserve_case rides through these to draw_text. Everything on this panel is an
+# uppercase label except text the user typed, which has to read back exactly —
+# see keyboard.py.
+def text(frame: np.ndarray, s: str, x: int, y: int, rgb, scale: int = 2,
+         preserve_case: bool = False) -> None:
+    draw_text(frame, s, x, y, rgb, scale, preserve_case=preserve_case)
 
 
 def text_right(frame: np.ndarray, s: str, x_right: int, y: int, rgb,
-               scale: int = 2) -> None:
+               scale: int = 2, preserve_case: bool = False) -> None:
     """Right-align ``s`` so its last pixel lands on ``x_right``."""
-    draw_text(frame, s, x_right - text_width(s, scale), y, rgb, scale)
+    draw_text(frame, s, x_right - text_width(s, scale), y, rgb, scale,
+              preserve_case=preserve_case)
 
 
 def text_centred(frame: np.ndarray, s: str, x0: int, x1: int, y: int, rgb,
-                 scale: int = 2) -> None:
-    draw_text(frame, s, x0 + (x1 - x0 - text_width(s, scale)) // 2, y, rgb, scale)
+                 scale: int = 2, preserve_case: bool = False) -> None:
+    draw_text(frame, s, x0 + (x1 - x0 - text_width(s, scale)) // 2, y, rgb, scale,
+              preserve_case=preserve_case)
 
 
 def line_height(scale: int = 2) -> int:
@@ -88,10 +96,11 @@ class Button:
     """
 
     def __init__(self, x0: int, y0: int, x1: int, y1: int, label: str = "",
-                 scale: int = 3):
+                 scale: int = 3, preserve_case: bool = False):
         self.rect = (x0, y0, x1, y1)
         self.label = label
         self.scale = scale
+        self.preserve_case = preserve_case
 
     def hit(self, x: int, y: int) -> bool:
         x0, y0, x1, y1 = self.rect
@@ -106,4 +115,5 @@ class Button:
         if s:
             text_centred(frame, s, x0, x1,
                          y0 + (y1 - y0 - line_height(self.scale)) // 2,
-                         ink or INK, self.scale)
+                         ink or INK, self.scale,
+                         preserve_case=self.preserve_case)
