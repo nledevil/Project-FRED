@@ -217,6 +217,115 @@ ollama list                                                          # installed
 journalctl -u ollama -n 50 | grep -i vulkan                          # confirm GPU offload
 ```
 
+## SSH between the three machines
+
+Every machine can reach every other by the **same three names** — `nuc`, `head`,
+`chest` — whichever box you are sitting on, with `nuc-wifi` / `head-wifi` /
+`chest-wifi` as the rescue path when the robot LAN is down. Set up 2026-08-12;
+before that only the NUC could reach the Pis, which is why `make install-chest`
+failed from the head.
+
+- Each machine has its own `~/.ssh/id_ed25519`; both Pis' public keys are in the
+  NUC's `authorized_keys`, labelled `dietpi@head-pi` / `dietpi@chest-pi`. Both
+  Pis call themselves `DietPi`, so the stock comments were identical and told you
+  nothing about which machine you were trusting — hence the relabel.
+- The Pis' `~/.ssh/config` mirrors the NUC's, including
+  `StrictHostKeyChecking accept-new`. Not `no`: a first connection is trusted
+  without a prompt (there is no human to answer one, and non-interactive
+  `scp`/`rsync` simply dies on it), while a key that *changes* later still stops
+  us — which is the case actually worth catching.
+- **The `-wifi` addresses drift.** They come from house DHCP, unlike the robot
+  LAN's pinned reservations. `chest-wifi` was already stale (`.63`, now `.74`)
+  when this was written. Treat them as a hint; `hostname -I` on the box is the
+  fact.
+
+This grants each Pi a shell on the brain, which is what makes `make
+install-chest` and any Pi-to-Pi copy work. It is a closed robot LAN; if that
+ever stops being true, these are the keys to pull.
+
+```bash
+ssh head 'ssh chest hostname'      # prove a Pi-to-Pi hop works
+ssh head 'cd ~/cogbuild && make install-chest'   # the case that motivated it
+```
+
+## Settings menu on the chest panel
+
+The 7" panel is a touchscreen, so it is also the quickest way to ask FRED
+whether he is healthy without finding a laptop. A cog sits in the bottom-right
+corner of every animation; tapping it opens a menu, and the X returns to
+whatever was showing. Built 2026-08-12.
+
+- **STATUS** — one row per part: NUC, head, chest, cart. The rows are about
+  *links*, not boxes: the interesting failure is almost never "a Pi is off", it
+  is "the Pi is fine and nobody can reach it". The HEAD row therefore reports two
+  different things — whether the *chest* can reach the head's servo server, and
+  whether the *brain* can (`servo_link` in `GET /api/state`, added for this).
+  Those come apart, and when they do it says `NO BRAIN LINK`: the head is up,
+  answering us, and FRED still will not move.
+  The CART row calls out **e-stop** and **PS2 remote** by name, because both look
+  exactly like a broken cart from the brain's side — commands accepted, nothing
+  moves — and neither is a fault. An *unattached* cart is dim, not red: it is
+  optional and spends most of its life off the robot, and a row that is
+  permanently red is a row you stop reading.
+- **VOICE** — the wake-word listener, on or off. It paints the state the brain
+  reports rather than the state you asked for, so a tap shows `PENDING` until
+  the brain confirms; an optimistic toggle would claim "listening" for a robot
+  that never started.
+- **SERVOS** — a slider per servo, plus REST. Deliberately the *same* behaviour
+  as the web panel's sliders rather than a second opinion, because the two get
+  used in one session on one robot and any difference reads as a fault: a 60 ms
+  trailing throttle per servo with the last value always sent (the number in
+  `move()` in index.html), and a slider you just touched ignores the 2 s poll
+  for a moment so it can't be yanked back mid-drag. Limits come from the brain's
+  calibration, so this page cannot ask for an angle calibration says is unsafe,
+  and there is no raw/ignore-limits mode on purpose — that belongs on the panel
+  where you can see what you are doing, not on a screen you are prodding while
+  leaning over the robot. The four states that stop a move (handoff, audit,
+  mock, no link) are shown rather than discovered by pressing.
+
+`settings_menu.py --page servos` opens straight onto a tab, for testing a page
+without a finger. The daemon never passes it.
+
+### How it is put together
+
+The animation child mmaps `/dev/fb0` **exclusively**, so nothing else can draw
+while one is alive. That single fact decides the whole design:
+
+| piece | where | why there |
+|---|---|---|
+| `cog_hud.py` | called by every animation | the daemon cannot draw over a child, so each animation paints the cog itself — one line, next to the sensor HUD's |
+| the cog in `voice_hud.c` | the native renderer | it is the default look; without it the cog is missing where you look most |
+| `touch.py` | daemon **and** menu | two readers of one evdev node each get their own queue, so neither steals events |
+| `CogWatcher` | `display_control.py` | the one process that is always running, already root, and root is what `/dev/input/event0` needs |
+| `settings_menu.py` | a supervised child | it takes the screen the way an animation does, and hands it back on close |
+
+The menu is a preset like any other, marked `"hidden": True` so it never appears
+in the head panel's dropdown, is never written to `state.json`, and is never the
+pick at boot. `POST /api/animation/restore` is how it leaves.
+
+The cog is a **bitmap, not geometry** — `tools/verify_voice_hud.py` proves the C
+renderer matches the Python one pixel for pixel, and matching floating-point trig
+across numpy and C is a promise neither wants to keep. Same 24 rows of data on
+both sides. Change one and you must change the other; `make verify` is what
+catches forgetting.
+
+```bash
+curl -sX POST -H 'Content-Type: application/json' \
+     -d '{"animation":"settings"}' http://10.0.0.11:8081/api/animation   # open it
+curl -sX POST -H 'Content-Type: application/json' \
+     -d '{}' http://10.0.0.11:8081/api/animation/restore                 # close it
+ssh chest 'sudo cat /dev/fb0' > fb.raw    # what is actually on the panel, 800x480 RGB565
+```
+
+That last one is worth knowing: the menu shipped green-and-magenta the first
+time because text is *added* into the frame and `astype(uint8)` wraps rather
+than saturates. It reads exactly like a channel-order bug and is not one — every
+animation clips before the blit for this reason, and so must anything new.
+
+Adding a page is one file (`page_*.py`, with `title`, `draw`, `on_tap`) plus one
+entry in `settings_menu.py`'s list. The display picker, servo sliders and access
+point controls all fit that shape.
+
 ## Audit mode (dry run)
 
 Talk to FRED through the web panel with **nothing physical happening**: no audio

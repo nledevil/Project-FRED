@@ -12,7 +12,7 @@ CC      ?= gcc
 CFLAGS  ?= -O3 -mcpu=cortex-a72 -Wall -Wextra
 LDLIBS  := -lm
 
-CHEST   ?= 10.0.0.2
+CHEST   ?= 10.0.0.11
 DEST    ?= /home/dietpi/display
 
 BINS    := voice_hud

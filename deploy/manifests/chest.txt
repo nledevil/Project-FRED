@@ -24,6 +24,17 @@ deploy/display/face.py
 deploy/display/voice_state.py
 deploy/display/metrics_hud.py
 
+# --- the settings menu, reached by tapping the cog --------------------------
+# cog_hud is drawn by every animation (and by voice_hud.c, which is compiled);
+# touch is read by the daemon, to open the menu, and by the menu itself.
+deploy/display/cog_hud.py
+deploy/display/touch.py
+deploy/display/settings_menu.py
+deploy/display/menu_ui.py
+deploy/display/page_status.py
+deploy/display/page_voice.py
+deploy/display/page_servos.py
+
 # --- voice HUD, both renderers ----------------------------------------------
 # The native one is what actually runs. The binary is built ON this Pi (`make`)
 # and is git-ignored, so it is a keep: below, not a deploy.

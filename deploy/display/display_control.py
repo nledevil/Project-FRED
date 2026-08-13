@@ -55,8 +55,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import cart_driver                          # noqa: E402 — sibling module
+import cog_hud                              # noqa: E402 — sibling module
 import metrics_hud                          # noqa: E402 — sibling module
 import sensor_relay                         # noqa: E402 — sibling module
+import touch                                # noqa: E402 — sibling module
 import voice_state                          # noqa: E402 — sibling module
 
 HERE = Path(__file__).resolve().parent
@@ -97,6 +99,12 @@ PRESETS = [
     {"id": "voice-hud-c",    "label": "Voice HUD (native)",   "argv": ["voice_hud"]},
     {"id": "face-talk",      "label": "Face (demo talk)",     "argv": ["face.py", "--talk"]},
     {"id": "off",            "label": "Off (blank screen)",   "argv": None},
+    # The settings menu is a child like any other — it owns the framebuffer and
+    # dies on SIGTERM — but it is not a *look*, so it is hidden from the head's
+    # dropdown. You reach it by tapping the cog, and it is entered and left by
+    # the two paths below (the touch watcher, and /api/animation/restore).
+    {"id": "settings",       "label": "Settings menu",        "argv": ["settings_menu.py"],
+     "hidden": True},
 ]
 PRESET_BY_ID = {p["id"]: p for p in PRESETS}
 DEFAULT_PRESET = "reactor"
@@ -137,6 +145,7 @@ class Supervisor:
         self._lock = threading.RLock()
         self._proc: subprocess.Popen | None = None
         self._preset = DEFAULT_PRESET
+        self._restore_to = DEFAULT_PRESET   # where the cog menu goes back to
         self._started_at = 0.0
         self._error = ""                    # last crash, surfaced in /api/state
         self._fails = 0                     # consecutive too-fast exits
@@ -207,6 +216,12 @@ class Supervisor:
         with self._lock:
             self._kill_child()
             self._preset = preset_id
+            # Track the last real *look*, so the menu always has somewhere to go
+            # back to. Recording it on the way in here (rather than remembering
+            # "the previous preset" on the way out) is what stops the menu ever
+            # becoming its own restore target and trapping you in it.
+            if not preset.get("hidden"):
+                self._restore_to = preset_id
             self._error = ""
             self._fails = 0                 # an explicit pick clears a latched crash
             if preset["argv"] is None:
@@ -214,9 +229,19 @@ class Supervisor:
                 _blank_screen()
             else:
                 self._spawn(preset)
-            if persist:
+            # A hidden preset is never the boot pick: the menu is somewhere you
+            # go, not something the panel should come up sitting in.
+            if persist and not preset.get("hidden"):
                 self._save_choice(preset_id)
             return self._state_locked()
+
+    def restore(self) -> dict:
+        """Leave a hidden preset for the look that was showing before it."""
+        with self._lock:
+            back = self._restore_to
+            if not PRESET_BY_ID[self._preset].get("hidden"):
+                return self._state_locked()     # nothing to leave
+        return self.select(back, persist=False)
 
     def _watchdog(self) -> None:
         """Respawn a child that dies on its own; give up only if it keeps failing."""
@@ -248,7 +273,9 @@ class Supervisor:
     # -- persistence -------------------------------------------------------
     def _load_choice(self) -> str:
         pid = read_state().get("animation")
-        return pid if pid in PRESET_BY_ID else DEFAULT_PRESET
+        if pid not in PRESET_BY_ID or PRESET_BY_ID[pid].get("hidden"):
+            return DEFAULT_PRESET           # never boot into the settings menu
+        return pid
 
     def _save_choice(self, preset_id: str) -> None:
         write_state(animation=preset_id)
@@ -305,7 +332,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self.path.startswith("/api/animations"):
             self._send(200, {"animations": [{"id": p["id"], "label": p["label"]}
-                                            for p in PRESETS]})
+                                            for p in PRESETS
+                                            if not p.get("hidden")]})
         elif self.path.startswith("/api/state"):
             # metrics rides along so the head's admin panel can reflect the
             # toggle from the same poll it already does for the animation.
@@ -347,6 +375,11 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self.path.startswith("/api/cart"):
             self._send(200, self._cart(data))
+            return
+        # Matched before the generic animation switch below, which would
+        # otherwise read "restore" as a body with no animation in it.
+        if self.path.startswith("/api/animation/restore"):
+            self._send(200, self.supervisor.restore())
             return
         try:
             self._send(200, self.supervisor.select(str(data.get("animation", ""))))
@@ -413,6 +446,53 @@ class Handler(BaseHTTPRequestHandler):
         return {"ok": True, "state": out["state"], "seq": out["seq"]}
 
 
+class CogWatcher:
+    """Opens the settings menu when the cog is tapped.
+
+    Lives in the daemon rather than in the animations for the obvious reason:
+    the animations are replaced constantly and half of them are a C binary. The
+    daemon is the one process that is always here, and it already runs as root,
+    which the input device requires.
+
+    It reads the touchscreen even while the menu itself has it open — two
+    processes reading one evdev node each get their own event queue, so neither
+    steals from the other. What stops them acting on the same tap is the guard
+    below: while a hidden preset is showing, this watcher does nothing at all.
+    """
+
+    def __init__(self, supervisor: Supervisor, target: str = "settings"):
+        self._sup = supervisor
+        self._target = target
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._loop, name="cog-watch",
+                                        daemon=True)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    def _loop(self) -> None:
+        dev = touch.open_touch()
+        if dev is None:
+            return                          # no touchscreen: no cog, no complaint
+        print("cog watcher: touchscreen ready", flush=True)
+        try:
+            while not self._stop.is_set():
+                for kind, x, y in dev.poll(timeout=0.2):
+                    if kind != "down" or not cog_hud.hit(x, y):
+                        continue
+                    if PRESET_BY_ID[self._sup.state()["animation"]].get("hidden"):
+                        continue            # the menu is up; it owns the screen
+                    try:
+                        self._sup.select(self._target, persist=False)
+                    except KeyError:
+                        pass
+        finally:
+            dev.close()
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--host", default="0.0.0.0")
@@ -438,12 +518,25 @@ def main() -> None:
                     help="seconds of head silence before the cart is stopped")
     ap.add_argument("--no-cart", action="store_true",
                     help="don't drive the hoverboard base at all")
+    ap.add_argument("--no-cog", action="store_true",
+                    help="don't watch the touchscreen for the settings cog")
     args = ap.parse_args()
+
+    # Children inherit this, which is how the settings menu authenticates its
+    # own restore call. Set here rather than only in the unit so --token works
+    # the same way as DISPLAY_TOKEN=.
+    if args.token:
+        os.environ["DISPLAY_TOKEN"] = args.token
 
     sup = Supervisor(Path(args.dir))
     sup.start()
     Handler.supervisor = sup
     Handler.token = args.token
+
+    cog = None
+    if not args.no_cog:
+        cog = CogWatcher(sup)
+        cog.start()
 
     relay = metrics = None
     if not args.no_sensor_relay:

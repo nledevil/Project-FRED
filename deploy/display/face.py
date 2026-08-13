@@ -28,6 +28,7 @@ import signal
 import argparse
 import numpy as np
 from fb import Framebuffer, hide_cursor
+from cog_hud import CogHud
 from metrics_hud import MetricsHud
 from voice_state import VoiceFeed
 
@@ -95,6 +96,7 @@ def main():
     A, B = build_hud(W, H)
     feed = VoiceFeed()          # what FRED is doing, published by display_control.py
     hud = MetricsHud()          # no-op unless the sensor overlay is switched on
+    cog = CogHud()              # the settings cog, bottom-right
 
     # The HUD art is baked cyan, so a state's colour is a channel rescale
     # (tint/CYAN) that keeps the ring's structure. Bake one A/B pair per state up
@@ -189,6 +191,7 @@ def main():
 
             np.clip(frame, 0, 255, out=frame)
             hud.draw(frame)
+            cog.draw(frame)
             fb.show(frame.astype(np.uint8))
 
             n += 1

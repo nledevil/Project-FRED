@@ -64,6 +64,16 @@
 #define M_STALE_AFTER 10.0
 #define M_NO_ECHO_CM 399.0
 
+/* cog_hud.py layout. Kept in the same shape and the same order of operations as
+ * that file, because tools/verify_voice_hud.py compares the two pixel for pixel
+ * and the cog is drawn on every frame. */
+#define COG_N      24                 /* the bitmap is 24x24 */
+#define COG_SCALE  2
+#define COG_PAD    8
+#define COG_MARGIN 12
+#define COG_DIM    0.25f
+#define COG_BOX    (COG_N * COG_SCALE + COG_PAD * 2)   /* 64 */
+
 typedef struct { float r, g, b; } rgb_t;
 
 static const rgb_t CYAN  = { 90.f, 210.f, 255.f };
@@ -624,6 +634,85 @@ static void metrics_draw(canvas_t *c, feed_t *mf, double now)
     }
 }
 
+/* --------------------------------------------------------------- the cog
+ * The twin of cog_hud.py. Same bitmap, same constants, same clip -> dim -> add
+ * -> clip order; change one file and you must change the other, which is what
+ * `make verify` is there to catch.                                          */
+
+static const char *COG_ROWS[COG_N] = {
+    "000000000000000000000000",
+    "000000000011110000000000",
+    "000000000111111000000000",
+    "000000110111111011000000",
+    "000011110111111011110000",
+    "000011111111111111110000",
+    "000111111111111111111000",
+    "000111111111111111111000",
+    "000001111111111111100000",
+    "001111111100001111111100",
+    "011111111000000111111110",
+    "011111111000000111111110",
+    "011111111000000111111110",
+    "011111111000000111111110",
+    "001111111100001111111100",
+    "000001111111111111100000",
+    "000111111111111111111000",
+    "000111111111111111111000",
+    "000011111111111111110000",
+    "000011110111111011110000",
+    "000000110111111011000000",
+    "000000000111111000000000",
+    "000000000011110000000000",
+    "000000000000000000000000",
+};
+
+static void cog_clip(canvas_t *c, int x0, int y0, int x1, int y1)
+{
+    for (int y = y0; y < y1; y++) {
+        float *p = c->frame + ((size_t)y * c->W + x0) * 3;
+        for (int x = x0; x < x1; x++, p += 3)
+            for (int k = 0; k < 3; k++) {
+                if (p[k] < 0.f) p[k] = 0.f;
+                else if (p[k] > 255.f) p[k] = 255.f;
+            }
+    }
+}
+
+static void cog_draw(canvas_t *c)
+{
+    int x1 = c->W - COG_MARGIN, y1 = c->H - COG_MARGIN;
+    int x0 = x1 - COG_BOX, y0 = y1 - COG_BOX;
+    if (x0 < 0 || y0 < 0) return;             /* screen too small for the corner */
+
+    /* Clip before the dim, for the reason metrics_draw() spells out: dimming a
+     * value that ran past 255 shrinks the wrong number. */
+    cog_clip(c, x0, y0, x1, y1);
+    for (int y = y0; y < y1; y++) {
+        float *p = c->frame + ((size_t)y * c->W + x0) * 3;
+        for (int x = x0; x < x1; x++, p += 3) {
+            p[0] *= COG_DIM; p[1] *= COG_DIM; p[2] *= COG_DIM;
+        }
+    }
+    mark(c, y0, y1);
+
+    int ix = x0 + COG_PAD, iy = y0 + COG_PAD;
+    for (int r = 0; r < COG_N; r++) {
+        const char *row = COG_ROWS[r];
+        for (int k = 0; k < COG_N; k++) {
+            if (row[k] != '1') continue;
+            for (int dy = 0; dy < COG_SCALE; dy++) {
+                float *p = c->frame
+                         + ((size_t)(iy + r * COG_SCALE + dy) * c->W
+                            + (ix + k * COG_SCALE)) * 3;
+                for (int dx = 0; dx < COG_SCALE; dx++, p += 3) {
+                    p[0] += TITLE_RGB.r; p[1] += TITLE_RGB.g; p[2] += TITLE_RGB.b;
+                }
+            }
+        }
+    }
+    cog_clip(c, x0, y0, x1, y1);
+}
+
 /* ------------------------------------------------------------- the one pass
  * clip -> quantise -> pack -> store. Replaces np.clip + astype(uint8) + three
  * uint16 casts + the bit-packing + tobytes() + the mmap slice assignment.    */
@@ -931,6 +1020,7 @@ int main(int argc, char **argv)
          * clips its own rect. */
         feed_poll(&mf);
         metrics_draw(&c, &mf, now);
+        cog_draw(&c);
 
         if (dump) {
             quantise_rgb888(&c, dumpbuf);
