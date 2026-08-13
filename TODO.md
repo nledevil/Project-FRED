@@ -44,38 +44,26 @@ above.
    and a 10 s one — but it is a deliberate choice worth revisiting if the NUC
    ever needs the memory.
 
-2. **Mic silence cannot be distinguished from a muted mic on this hardware.** The
-   PowerConf gates a quiet room to *exact zeros* (measured: 30 s of them with the
-   mic live), so the status page reports "no signal for N" in amber rather than
-   claiming a mute. Do not be tempted to make that red — it would cry wolf every
-   quiet evening. A level meter in the web panel would make the same data useful
-   without a threshold.
-
-3. **Two pronunciations are wrong and left for a ruling:** "Schultz" reads as
-   SHULTS (`ʃˈʌlts`) and "ASUS" as AY-sus. Both are one line each in `_SAY_AS`
-   in `sound.py`, verified against piper's own phonemizer. Nobody should respell
-   a person's name on a guess.
-
 ### New features worth considering
 
-4. **Display picker on the touchscreen.** Dropped from the settings menu's first
+2. **Display picker on the touchscreen.** Dropped from the settings menu's first
    version; the animation list is already local to the chest daemon, so it works
    with the brain switched off. One page file plus a list entry — the pattern is
    `page_cart.py`.
 
-5. **Access point settings from the touchscreen** — SSID and password. Today both
+3. **Access point settings from the touchscreen** — SSID and password. Today both
    mean editing `/etc/hostapd/fred.conf` over SSH, which is exactly the situation
    the Wireless tab exists to avoid.
 
-6. **Cart telemetry on the CART page.** Battery and board temperature are on the
+4. **Cart telemetry on the CART page.** Battery and board temperature are on the
    STATUS page but not next to the drive controls, which is where you want them
    while driving.
 
-7. **A "who am I" page** — the brain now knows it is three computers and who built
+5. **A "who am I" page** — the brain now knows it is three computers and who built
    it. The same facts (hostnames, addresses, versions, uptime) on a touchscreen
    page would replace a lot of SSH.
 
-8. **Auto-enable the AP at venues** — listed separately from the AP work above because the
+6. **Auto-enable the AP at venues** — listed separately from the AP work above because the
    trigger logic (no known SSID in range for N seconds) is the interesting part
    and the head Pi already solved it once.
 
