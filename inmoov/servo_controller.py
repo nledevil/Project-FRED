@@ -255,6 +255,19 @@ class ServoController:
     def is_suspended(self) -> bool:
         return self._suspended
 
+    def refresh_state(self) -> None:
+        """No-op: this controller owns the hardware, so `mock`/`locked` are never
+        out of date. Exists so reporting paths can call it on either controller
+        without caring which one they hold (RemoteServoController's does work)."""
+
+    def status(self) -> dict:
+        """Link health, in RemoteServoController.status()'s shape. There is no
+        link — the bus is on this machine — so it reports as permanently online
+        with no host, and callers get one answer to ask either controller."""
+        return {"host": None, "port": None, "online": True, "mock": self.mock,
+                "suspended": self._suspended, "audit": self._audit,
+                "locked": [], "error": None}
+
     def suspend(self) -> None:
         """Release the I2C bus / PCA9685 so another process (e.g. MyRobotLab) can
         drive the servos. Relaxes every servo (cuts pulses) while we still own the

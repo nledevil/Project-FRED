@@ -296,6 +296,10 @@ def _blocked_by_handoff():
 
 
 def _state() -> dict:
+    # Ask the servo link to freshen first, so the panel's MOCK/LIVE badge is the
+    # head's answer and not a stale guess from before it was reachable. No-op on
+    # a local controller, and on a healthy remote one.
+    _ctrl.refresh_state()
     servos = {}
     for name, s in _config["servos"].items():
         servos[name] = {
@@ -310,7 +314,8 @@ def _state() -> dict:
     channels = _config.get("i2c", {}).get("channels", 16)
     camera = _camera.settings() if _camera.available() else None
     sound = _sound.settings() if _sound.available() else None
-    return {"mock": _ctrl.mock, "channels": channels, "camera": camera,
+    return {"mock": _ctrl.mock, "servo_link": _ctrl.status(),
+            "channels": channels, "camera": camera,
             "sound": sound, "led": _status_led.status(), "track": _tracker.status(),
             "spotter": _spotter.status(),
             "voice": _assistant.status(), "servos": servos, "settings": _settings,

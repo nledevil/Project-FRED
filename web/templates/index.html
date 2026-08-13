@@ -446,9 +446,6 @@ async function onAudit(checked) {
 
 async function load() {
   STATE = await api('/api/state');
-  const m = document.getElementById('mode');
-  m.textContent = STATE.mock ? 'MOCK' : 'LIVE';
-  m.className = 'badge ' + (STATE.mock ? 'mock' : 'live');
   const s = STATE.settings || {};
   if (s.iris_color) document.documentElement.style.setProperty('--iris-color', s.iris_color);
   reflectAudit(!!(STATE.audit || {}).audit);
@@ -729,6 +726,12 @@ function updateReticle(st) {
 }
 
 function render() {
+  // Painted here, not once in load(): the badge sits over the sliders, so if it
+  // says MOCK while they drive real servos it is worse than useless. Every path
+  // that replaces STATE re-renders, so it now follows the state it labels.
+  const m = document.getElementById('mode');
+  m.textContent = STATE.mock ? 'MOCK' : 'LIVE';
+  m.className = 'badge ' + (STATE.mock ? 'mock' : 'live');
   const wrap = document.getElementById('servos');
   wrap.innerHTML = '';
   for (const [name, s] of Object.entries(STATE.servos)) {

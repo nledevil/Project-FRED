@@ -351,6 +351,23 @@ class RemoteServoController:
         self._suspended = False
         self._refresh()
 
+    def refresh_state(self) -> None:
+        """Re-read the head's state if our copy could be wrong — for callers that
+        *report* state rather than command it (/api/state, the admin panel).
+
+        Two ways it goes wrong. After a reconnect `_stale` is set, but only a move
+        clears it, so a panel polled between moves shows the pre-outage flags. And
+        if the head was down when we booted, `mock` is still its pessimistic
+        default (True) while `online` is False — the head may since have come back
+        without us sending it anything. Both end with the panel reading MOCK while
+        the servos are plainly moving, so probe on either.
+
+        Cheap when the link is healthy and current: it does nothing at all.
+        """
+        if not self.online:
+            self._stale = True
+        self._refresh_if_stale()
+
     def status(self) -> dict:
         """Link health, for the admin panel."""
         return {"host": self.host, "port": self.port, "online": self.online,
