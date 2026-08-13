@@ -156,6 +156,13 @@ class CartPage:
         if self._latched:
             ui.text(frame, "E-STOP LATCHED - NOTHING WILL MOVE", BTN_X0,
                     STATUS_Y + 90, ui.BAD_INK, 2)
+        elif cart.get("host_locked"):
+            # The deadman was released while the panel or Claude was still
+            # commanding, so the host is locked out until it asks again. Said
+            # here because the alternative is watching the cart refuse a panel
+            # that looks like it is driving.
+            ui.text(frame, "DEADMAN RELEASED - HOST MUST COMMAND AGAIN", BTN_X0,
+                    STATUS_Y + 90, ui.WARN_INK, 2)
         elif not cart.get("connected"):
             ui.text(frame, "CART PICO NOT PLUGGED IN", BTN_X0, STATUS_Y + 90,
                     ui.DIM_INK, 2)

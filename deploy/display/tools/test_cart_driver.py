@@ -267,11 +267,53 @@ def main() -> int:
               "ignored" in drv.drive(0, 50),
               drv.drive(0, 50).get("ignored", "NOT REPORTED"))
 
-        pad.deadman = False
+        # --- releasing the deadman revokes the host's authority --------------
+        # The case that matters is a host still streaming at the moment of
+        # release: whoever grabbed the controller did so because that motion was
+        # wrong, so letting go must not drop them back into it. A plain "zero
+        # it" would be undone by the host's next command 100ms later, so this
+        # checks the cart is still stopped a second after the release.
+        drv.drive(0, 90)                            # host is commanding...
+        pad.deadman = False                         # ...and the operator lets go
+        end = time.monotonic() + 1.0
+        while time.monotonic() < end:               # host keeps asking, 20 Hz
+            drv.drive(0, 90)
+            time.sleep(0.05)
+        check("releasing the deadman stops the cart", pico.speed == 0,
+              f"pico speed={pico.speed} (the host was still commanding 90)")
+        check("the host is told why it is being ignored",
+              "ignored" in drv.drive(0, 90),
+              drv.drive(0, 90).get("ignored", "NOT REPORTED"))
+        check("the lockout is visible in state", drv.state()["host_locked"])
+
+        # The host gets the cart back by going quiet and then asking again.
+        time.sleep(cart_driver.WATCHDOG_S + 0.3)
+        check("the lockout clears once the host goes quiet",
+              not drv.state()["host_locked"])
         drv.drive(0, 90)
-        wait_until(lambda: pico.speed == 90)
-        check("releasing the deadman hands control back to the host",
-              pico.speed == 90, f"pico speed={pico.speed}")
+        check("the host drives again after commanding afresh",
+              wait_until(lambda: pico.speed == 90), f"pico speed={pico.speed}")
+
+        # An explicit stop is the other way out, and the one both real hosts
+        # take: the panel posts one when its pad is released, nudge() when its
+        # motion ends. Without it a lockout would cost them a watchdog period.
+        pad.deadman, pad.speed = True, 1.0
+        wait_until(lambda: pico.speed == cart_driver.SPEED_LIMIT)
+        drv.drive(0, 80)
+        pad.deadman = False
+        end = time.monotonic() + 0.3
+        while time.monotonic() < end:
+            drv.drive(0, 80)
+            time.sleep(0.05)
+        check("still locked out while the host keeps streaming", pico.speed == 0,
+              f"pico speed={pico.speed}")
+        drv.stop()
+        check("an explicit stop clears the lockout at once",
+              not drv.state()["host_locked"])
+        drv.drive(0, 80)
+        check("the host drives immediately after its own stop",
+              wait_until(lambda: pico.speed == 80), f"pico speed={pico.speed}")
+        drv.stop()
 
         pad.deadman, pad.speed = True, -1.0
         wait_until(lambda: pico.speed == -cart_driver.SPEED_LIMIT)

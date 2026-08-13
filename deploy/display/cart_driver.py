@@ -35,6 +35,15 @@ tracks that state off the telemetry stream and reports it — otherwise "I sent 
 drive command and nothing moved" is a mystery instead of "someone picked up the
 controller".
 
+**Releasing the hand controller's deadman stops the cart and revokes the host's
+authority; it does not hand control back.** Someone grabs the controller because
+the motion in progress is wrong, so returning them to that motion when they let
+go is the opposite of what letting go should mean — and the host is usually
+still streaming, so a plain "zero it" would be undone at the next command 100 ms
+later. The host gets the cart back by going quiet for ``WATCHDOG_S`` and then
+commanding again, which both hosts do naturally: the panel posts a stop when its
+pad is released, and ``Cart.nudge`` posts one when its motion ends.
+
 Stdlib only, like the rest of this Pi: no pyserial, tty set up via termios.
 """
 from __future__ import annotations
@@ -177,6 +186,14 @@ class CartDriver:
         self._deadline = 0.0
         self._estop = False           # latched; only an explicit clear releases it
 
+        # Releasing the deadman revokes the host's authority rather than handing
+        # it back — see _send_loop. _host_locked is that revocation, and it needs
+        # _host_last_cmd because "the host has gone quiet" cannot be read off
+        # _deadline once the release has zeroed it.
+        self._hand_driving = False
+        self._host_locked = False
+        self._host_last_cmd = 0.0
+
         self._tel = {
             "connected": False, "port": "", "ps2_active": False,
             "controller_driving": False,
@@ -221,6 +238,11 @@ class CartDriver:
                 self._mode = mode
                 self._steer = self._speed = 0
                 self._deadline = 0.0
+                # Choosing who may drive is itself a deliberate act, so it is
+                # not blocked by a lockout — and leaving one in force after
+                # switching to "off" would strand the host with no controller
+                # left to release.
+                self._host_locked = self._hand_driving = False
                 self._log(f"cart: controller mode -> {mode}")
             return self._mode
 
@@ -266,21 +288,26 @@ class CartDriver:
             mode = self._mode
             cs, cv = clamp(steer, -STEER_LIMIT, STEER_LIMIT), clamp(speed, -SPEED_LIMIT, SPEED_LIMIT)
             self._steer, self._speed = cs, cv
-            self._deadline = time.monotonic() + self._watchdog
+            now = time.monotonic()
+            self._deadline = now + self._watchdog
+            self._host_last_cmd = now
             ps2 = self._tel["ps2_active"]
+            locked = self._host_locked
         out = {"ok": True, "steer": cs, "speed": cv,
                "clamped": (cs != steer or cv != speed),
                "expires_in": self._watchdog}
-        # The target is still recorded above, so releasing the deadman hands
-        # control back to whatever the host last asked for rather than to a
-        # stale zero. But say plainly that it is not being acted on — "I sent a
-        # command and nothing moved" must never be a mystery.
+        # The target is recorded either way, so telemetry keeps reporting what
+        # was asked for. But say plainly when it is not being acted on — "I sent
+        # a command and nothing moved" must never be a mystery.
         if ps2:
             out["ignored"] = "PS2 controller connected; it has priority"
         elif hand is not None:
             out["ignored"] = "hand controller has the deadman held; it has priority"
         elif mode == "only":
             out["ignored"] = "controller-only mode; host drive commands are refused"
+        elif locked:
+            out["ignored"] = ("the deadman was released; stop commanding for "
+                              f"{self._watchdog:.1f}s, then drive again")
         return out
 
     def stop(self, estop: bool = False) -> dict:
@@ -288,6 +315,11 @@ class CartDriver:
         with self._lock:
             self._steer = self._speed = 0
             self._deadline = 0.0
+            # An explicit stop is the host saying it is finished, which is the
+            # clean end of a takeover: both hosts already send one (the panel on
+            # releasing its pad, nudge() when its motion ends), so the lockout
+            # normally clears here rather than by timing out.
+            self._host_locked = False
             if estop:
                 self._estop = True
         self._write_line("x")           # 'x' is honoured even with PS2 connected
@@ -304,6 +336,7 @@ class CartDriver:
             s["steer"] = self._steer
             s["speed"] = self._speed
             s["estop"] = self._estop
+            s["host_locked"] = self._host_locked
             remaining = self._deadline - time.monotonic()
         last = s.pop("last_telemetry")
         s["telemetry_age"] = round(time.monotonic() - last, 2) if last else None
@@ -368,10 +401,36 @@ class CartDriver:
                     # button, not the host's deadline — the button is local and
                     # re-read every pass, so there is nothing to expire.
                     steer, speed = hand
+                    self._hand_driving = True
                     self._tel["controller_driving"] = True
                 else:
+                    if self._hand_driving:
+                        # The deadman was just released. Stop, and revoke the
+                        # host's authority rather than returning it: whoever
+                        # grabbed the controller did so because the motion in
+                        # progress was wrong, and handing back to that same
+                        # motion is the opposite of what letting go should mean.
+                        self._hand_driving = False
+                        self._steer = self._speed = 0
+                        self._deadline = 0.0
+                        self._host_locked = True
+                        self._moan("released",
+                                   "cart: deadman released - stopped; the host "
+                                   "must go quiet and command again to drive")
+                    if self._host_locked and (now - self._host_last_cmd) > self._watchdog:
+                        # The host has stopped asking. Anything it sends now is a
+                        # fresh decision rather than the tail of the command the
+                        # controller was taken away from, so let it drive again.
+                        #
+                        # This can clear a lockout on the same pass that set it,
+                        # when the host was already quiet at the moment of
+                        # release. That is right, not a race: there is no motion
+                        # to be dropped back into, and the cart is stopped either
+                        # way — the lockout only ever has work to do against a
+                        # host that is mid-stream.
+                        self._host_locked = False
                     steer, speed = self._steer, self._speed
-                    if self._mode == "only":
+                    if self._mode == "only" or self._host_locked:
                         # Nobody is holding the deadman and the host is not
                         # allowed to drive: the cart stays still.
                         steer = speed = 0
