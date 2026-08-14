@@ -200,9 +200,8 @@ class PinPad:
         for i in range(PIN_LENGTH):
             x0 = KEY_X0 + i * (DOT_W + DOT_GAP)
             filled = i < len(self._entry)
-            ui.fill(frame, x0, DOT_Y, x0 + DOT_W, DOT_Y + DOT_H,
-                    ui.PANEL_ON if filled else ui.PANEL)
-            ui.border(frame, x0, DOT_Y, x0 + DOT_W, DOT_Y + DOT_H, ui.EDGE)
+            # The dots show how many digits are in; they are not keys.
+            ui.readout(frame, x0, DOT_Y, x0 + DOT_W, DOT_Y + DOT_H)
 
         for label, button in self._keys:
             button.draw(frame, ink=ui.DIM_INK if wait > 0 else ui.INK)

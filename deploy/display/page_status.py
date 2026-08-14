@@ -259,8 +259,9 @@ class StatusPage:
 
         for i, (name, where, (state, ink, detail)) in enumerate(rows):
             y = ROW_Y + i * ROW_H
-            ui.fill(frame, ROW_X0, y, ROW_X1, y + ROW_H - 10, ui.PANEL)
-            ui.border(frame, ROW_X0, y, ROW_X1, y + ROW_H - 10, ui.EDGE)
+            # A readout, not a button: this page is entirely read-only, and
+            # five accent-bordered rows were five things that looked tappable.
+            ui.readout(frame, ROW_X0, y, ROW_X1, y + ROW_H - 10)
             # Stacked from the row's own line heights rather than from fixed
             # offsets. The offsets used to be safe because every scale was the
             # same 7px grid; a real typeface is taller and differs per theme, so

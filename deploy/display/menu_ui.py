@@ -21,6 +21,23 @@ panel is never bricked by a missing font.
 animations composite glow, so a filled panel is drawn first and its text added
 on top. ``fill`` therefore *sets* rather than adds — it is the one place that
 wants a flat background to put text on.
+
+The affordance rule
+-------------------
+**A face in the accent colour means you can tap it. Nothing else may wear one.**
+
+The accent border is the signal — not the fill, not the rounding. So:
+
+* Tappable → a ``Button``, or ``draw_face`` if it needs its own colours (the
+  e-stops). Both animate the press, which is the other half of the promise: a
+  control that acknowledges a tap is one you tap once.
+* Not tappable → ``readout``. Flatter face, dim edge, no accent, no animation.
+
+This was already broken once before it was written down — the cart's telemetry
+read as a fourth mode button — and writing it down is not what prevents the
+next one; having a function for each is. Reach for ``readout`` and the rule
+holds by construction. Hand-rolling ``fill`` + ``border`` in the accent colour
+is how a panel starts lying about what it does.
 """
 from __future__ import annotations
 
@@ -41,6 +58,7 @@ except Exception:                                    # noqa: BLE001
 # enough to draw, which keeps every page importable in isolation for testing.
 INK = DIM_INK = OK_INK = WARN_INK = BAD_INK = (255, 255, 255)
 BG = PANEL = PANEL_ON = EDGE = STOP_PANEL = STOP_PANEL_ARM = (0, 0, 0)
+READOUT = READOUT_EDGE = (0, 0, 0)
 
 THEME: theme_mod.Theme | None = None
 _FONTS: dict[int, object] = {}
@@ -58,6 +76,7 @@ def apply_theme(name: str) -> str:
     global THEME, _FONTS
     global INK, DIM_INK, OK_INK, WARN_INK, BAD_INK
     global BG, PANEL, PANEL_ON, EDGE, STOP_PANEL, STOP_PANEL_ARM
+    global READOUT, READOUT_EDGE
 
     th = theme_mod.THEMES.get(name) or theme_mod.THEMES[theme_mod.DEFAULT]
     THEME = th
@@ -153,6 +172,21 @@ def rounded(frame: np.ndarray, x0: int, y0: int, x1: int, y1: int, rgb,
     r = THEME.radius if radius is None else radius
     w, h = max(1, x1 - x0), max(1, y1 - y0)
     _blend(frame, x0, y0, _cov_fill(w, h, min(r, w / 2, h / 2)), rgb, alpha)
+
+
+def readout(frame: np.ndarray, x0: int, y0: int, x1: int, y1: int,
+            weight: int = 1) -> None:
+    """A surface that shows something and cannot be tapped.
+
+    The counterpart to Button: same rounding so the screen still looks like one
+    family, but a flatter face and a dim edge instead of the accent. See the
+    affordance rule in the module docstring — this exists so "not a button" is
+    something you reach for rather than something you remember.
+    """
+    w, h = max(1, x1 - x0), max(1, y1 - y0)
+    r = min(THEME.radius if THEME else 0, w / 2, h / 2)
+    _blend(frame, x0, y0, _cov_fill(w, h, r), READOUT)
+    _blend(frame, x0, y0, _cov_outline(w, h, r, float(weight)), READOUT_EDGE)
 
 
 def border(frame: np.ndarray, x0: int, y0: int, x1: int, y1: int, rgb,

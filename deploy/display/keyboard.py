@@ -151,8 +151,8 @@ class Keyboard:
     # ---- drawing -----------------------------------------------------------
     def draw(self, frame) -> None:
         ui.text(frame, self.label, X0, FIELD_Y0 - 22, ui.DIM_INK, 2)
-        ui.fill(frame, X0, FIELD_Y0, X1, FIELD_Y1, ui.PANEL)
-        ui.border(frame, X0, FIELD_Y0, X1, FIELD_Y1, ui.EDGE)
+        # The field displays what the keys below type into it.
+        ui.readout(frame, X0, FIELD_Y0, X1, FIELD_Y1)
 
         # Show the tail when it overflows: what you are typing is the end of it,
         # so a field that clipped the right would hide the cursor.
