@@ -482,15 +482,43 @@ class Brain:
         # prefix is cached and only the facts and the question are read: ~1.5 s.
         # Claude doesn't care either way — it reads the same tokens — so both
         # backends share this one shape.
+        # Event mode's answer cap, or None. Asked for per turn rather than held,
+        # because the switch is thrown from the panel mid-event.
+        cap = getattr(getattr(self.ctx, "event", None), "max_words", None)
+        brief = ("\n\nYou are at a public event: answer in one short sentence, "
+                 f"under {cap} words. Someone is waiting behind this person.\n"
+                 if cap else "")
         messages = self._history + [
-            {"role": "user", "content": f"{sysinfo.context_block()}\n\n{text}"}]
+            {"role": "user",
+             "content": f"{sysinfo.context_block()}{brief}\n\n{text}"}]
         actions: list[str] = []
         said: list[str] = []                 # every sentence handed to emit()
         system = SYSTEM                      # static: see the note above
+        spoken_words = 0
+        capped = False
 
         def ship(sentence: str) -> None:
+            # The cap is on what is *spoken*, not on what is generated: the cost
+            # being managed is the listener's time. The mic is paused while he
+            # talks (the USB codec wedges if capture and playback overlap), so a
+            # long answer cannot be cut short by voice and a child has to wait it
+            # out. Tokens are already bounded by max_tokens; attention is not.
+            #
+            # It stops at the first sentence boundary *past* the cap, so one long
+            # sentence still gets said in full. That is deliberate — half a
+            # spoken sentence sounds like a fault, not like brevity — and it
+            # means this is a backstop against rambling, not a word-exact limit.
+            # The instruction in the prompt is what actually keeps answers short;
+            # measured, it took a 48-word answer to 23 against a cap of 25. This
+            # is here for the turn where that instruction is ignored.
+            nonlocal spoken_words, capped
+            if capped:
+                return
             said.append(sentence)
             emit(sentence)
+            if cap is not None:
+                spoken_words += len(sentence.split())
+                capped = spoken_words >= cap
 
         # Both clients expose the same messages.stream(...) surface — that is the
         # whole design of local_brain — so everything below is backend-agnostic.
