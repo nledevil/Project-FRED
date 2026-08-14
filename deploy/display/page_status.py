@@ -28,7 +28,7 @@ import menu_ui as ui
 
 ROW_Y = 96                      # first row's top edge
 ROW_H = 62
-ROW_X0, ROW_X1 = 24, 776
+ROW_X0, ROW_X1 = ui.X0, ui.X1
 LABEL_X = 40
 STATE_X = 200
 DETAIL_X = 400
@@ -43,27 +43,6 @@ DETAIL_W = ROW_X1 - DETAIL_X - 16
 MIC_SILENCE_WARN = 60.0
 
 
-def _fit(s: str, width_px: int, scale: int = 2) -> str:
-    """Trim ``s`` to ``width_px``, at a word boundary where there is one.
-
-    Cutting mid-word produced things like "SERVO SERVER UNREACHAB", which reads
-    as a corrupted message rather than a shortened one — on a status panel that
-    is a real cost, because the whole point is being believed at a glance.
-    """
-    if ui.text_width(s, scale) <= width_px:
-        return s
-    words = s.split()
-    out = ""
-    for w in words:
-        candidate = f"{out} {w}".strip()
-        if ui.text_width(candidate, scale) > width_px:
-            break
-        out = candidate
-    if out:
-        return out
-    # A single word too long for the column: hard-cut it, there's nothing else.
-    n = max(1, width_px // ui.text_width("M", scale))
-    return s[:n]
 
 
 def _duration(seconds: float) -> str:
@@ -276,7 +255,7 @@ class StatusPage:
             det_h = ui.line_height(2)
             det_top = y + max(2, (ROW_H - 10 - det_h * len(details)) // 2)
             for k, d in enumerate(details):
-                ui.text(frame, _fit(d, DETAIL_W), DETAIL_X, det_top + k * det_h,
+                ui.text(frame, ui.fit(d, DETAIL_W), DETAIL_X, det_top + k * det_h,
                         ui.DIM_INK, 2)
 
         ui.text(frame, f"UPDATED {_age(snap.get('age'))}", ROW_X0, 440, ui.DIM_INK, 1)

@@ -174,6 +174,55 @@ def rounded(frame: np.ndarray, x0: int, y0: int, x1: int, y1: int, rgb,
     _blend(frame, x0, y0, _cov_fill(w, h, min(r, w / 2, h / 2)), rgb, alpha)
 
 
+# --- the page frame ---------------------------------------------------------
+# Every page had these written out itself, and they all happened to agree. They
+# agreed because each was copied from the last, which is not the same as being
+# shared: the next page agrees only if whoever writes it copies correctly.
+# Content top is deliberately *not* here — pages legitimately start at different
+# heights depending on whether they carry a heading.
+MARGIN = 24
+X0, X1 = MARGIN, 800 - MARGIN
+CONTENT_Y = 104                 # first row below the title and tab bar
+
+
+def fit(s: str, width_px: int, scale: int = 2) -> str:
+    """Trim ``s`` to ``width_px``, at a word boundary where there is one.
+
+    Cutting mid-word produced things like "SERVO SERVER UNREACHAB", which reads
+    as a corrupted message rather than a shortened one — on a status panel that
+    is a real cost, because the whole point is being believed at a glance.
+
+    Measured incrementally rather than by dividing by the width of an "M": that
+    only ever worked because the old bitmap font was monospaced.
+    """
+    if text_width(s, scale) <= width_px:
+        return s
+    out = ""
+    for word in s.split():
+        candidate = f"{out} {word}".strip()
+        if text_width(candidate, scale) > width_px:
+            break
+        out = candidate
+    if out:
+        return out
+    # A single word too long for the column: hard-cut it, there's nothing else.
+    for n in range(len(s), 0, -1):
+        if text_width(s[:n], scale) <= width_px:
+            return s[:n]
+    return s[:1]
+
+
+def empty(frame: np.ndarray, message: str, y: int = CONTENT_Y,
+          scale: int = 2) -> None:
+    """What a page says when it has nothing to show.
+
+    A page with nothing on it must say why. A blank where a fault should be is
+    the one thing this menu must never do — see page_status's docstring, which
+    made the same argument first.
+    """
+    text(frame, message, X0, y, BAD_INK, scale)
+
+
 def readout(frame: np.ndarray, x0: int, y0: int, x1: int, y1: int,
             weight: int = 1) -> None:
     """A surface that shows something and cannot be tapped.

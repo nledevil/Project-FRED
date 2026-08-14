@@ -20,18 +20,13 @@ from __future__ import annotations
 
 import menu_ui as ui
 
-X0, X1 = 24, 776
+X0, X1 = ui.X0, ui.X1
 COL2 = 300
 HEAD_Y = 104
 ROW_Y = 136
 LINE_H = 26
 
 
-def _fit(s: str, width_px: int, scale: int = 2) -> str:
-    if ui.text_width(s, scale) <= width_px:
-        return s
-    n = max(1, width_px // max(1, ui.text_width("M", scale)))
-    return s[:n]
 
 
 def _uptime(seconds) -> str:
@@ -116,7 +111,7 @@ class InfoPage:
 
         ui.text(frame, "WHAT THIS ROBOT IS", X0, HEAD_Y, ui.INK, 3)
         if not who:
-            ui.text(frame, "NO LINK TO THE BRAIN", X0, ROW_Y + 10, ui.BAD_INK, 2)
+            ui.empty(frame, "NO LINK TO THE BRAIN", ROW_Y + 10)
             ui.text(frame, "NAMES AND VERSIONS COME FROM THE NUC", X0,
                     ROW_Y + 10 + LINE_H, ui.DIM_INK, 1)
             return
@@ -124,9 +119,9 @@ class InfoPage:
         y = ROW_Y
         for label, value, ink in rows:
             if label:
-                ui.text(frame, _fit(label, COL2 - X0 - 8), X0, y, ui.DIM_INK, 2)
+                ui.text(frame, ui.fit(label, COL2 - X0 - 8), X0, y, ui.DIM_INK, 2)
             if value:
-                ui.text(frame, _fit(value, X1 - COL2), COL2, y, ink, 2)
+                ui.text(frame, ui.fit(value, X1 - COL2), COL2, y, ink, 2)
             y += LINE_H
             if y > 470:
                 break

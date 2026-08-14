@@ -32,7 +32,7 @@ from __future__ import annotations
 import menu_ui as ui
 from keyboard import Keyboard
 
-X0, X1 = 24, 776
+X0, X1 = ui.X0, ui.X1
 HEAD_Y = 104
 AP_BTN = (X0, 138, 380, 214)
 SSID_BTN = (396, 138, X1, 172)
@@ -44,11 +44,6 @@ SSID_MAX = 32
 PSK_MIN, PSK_MAX = 8, 63
 
 
-def _fit(s: str, width_px: int, scale: int = 2) -> str:
-    if ui.text_width(s, scale) <= width_px:
-        return s
-    n = max(1, width_px // max(1, ui.text_width("M", scale)))
-    return s[:n]
 
 
 class WirelessPage:
@@ -141,7 +136,7 @@ class WirelessPage:
             self._ap.draw(frame, on=False, ink=ui.DIM_INK, label="NO LINK")
             self._ssid_btn.draw(frame, ink=ui.DIM_INK)
             self._psk_btn.draw(frame, ink=ui.DIM_INK)
-            ui.text(frame, "CANNOT REACH THE BRAIN", X0, INFO_Y, ui.BAD_INK, 2)
+            ui.empty(frame, "CANNOT REACH THE BRAIN", INFO_Y)
             ui.text(frame, "THE ACCESS POINT IS SERVED BY THE NUC, NOT THIS PI",
                     X0, INFO_Y + LINE_H, ui.DIM_INK, 1)
             return
@@ -149,7 +144,7 @@ class WirelessPage:
             self._ap.draw(frame, on=False, ink=ui.DIM_INK, label="N/A")
             self._ssid_btn.draw(frame, ink=ui.DIM_INK)
             self._psk_btn.draw(frame, ink=ui.DIM_INK)
-            ui.text(frame, _fit(str(ap.get("error") or "NOT INSTALLED").upper(), X1 - X0),
+            ui.text(frame, ui.fit(str(ap.get("error") or "NOT INSTALLED").upper(), X1 - X0),
                     X0, INFO_Y, ui.DIM_INK, 2)
             return
 
@@ -174,7 +169,7 @@ class WirelessPage:
         if self._pending_ssid:
             rows.append((f"PENDING NAME {self._pending_ssid.upper()}", ui.WARN_INK))
         if ap.get("error"):
-            rows.append((_fit(str(ap["error"]).upper(), X1 - X0), ui.BAD_INK))
+            rows.append((ui.fit(str(ap["error"]).upper(), X1 - X0), ui.BAD_INK))
         for i, (text, ink) in enumerate(rows):
             ui.text(frame, text, X0, INFO_Y + i * LINE_H, ink, 2)
 

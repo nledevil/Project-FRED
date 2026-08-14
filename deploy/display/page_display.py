@@ -20,7 +20,7 @@ import menu_ui as ui
 import theme as theme_mod
 
 COLS, ROWS = 2, 4
-GRID_X0, GRID_X1 = 24, 776
+GRID_X0, GRID_X1 = ui.X0, ui.X1
 GRID_Y0, GRID_Y1 = 104, 362
 GAP = 12
 # The look of this menu is a choice about this display, made in front of it —
@@ -117,8 +117,7 @@ class DisplayPage:
                         ink=ui.OK_INK if name == active else ui.DIM_INK)
 
         if not self._buttons:
-            ui.text(frame, "NO ANIMATION LIST FROM THIS PI", GRID_X0, GRID_Y0,
-                    ui.BAD_INK, 2)
+            ui.empty(frame, "NO ANIMATION LIST FROM THIS PI", GRID_Y0)
             return
 
         for anim, button in self._buttons:
