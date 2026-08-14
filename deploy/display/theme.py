@@ -14,7 +14,10 @@ than the colours. Sizes are chosen to match the cap heights of the font5x7
 scales they replace, so a label occupies about the space it used to. Scale 1 is
 baked even though no page asks for it directly: pages pick the largest scale a
 label fits at by walking (3, 2, 1), and without a distinct 1 the last step
-shrinks nothing and long labels overflow their button.
+shrinks nothing and long labels overflow their button. Scale 8 is the two
+e-stops, which are sized to be hit without looking at them — falling back to
+the scale-4 atlas made the most safety-critical text on the panel 20% smaller
+than it was written to be.
 """
 from __future__ import annotations
 
@@ -45,7 +48,8 @@ THEMES = {
         "soft", "Soft", "Rounded cards, gentle gradient",
         style="soft",
         fonts={1: "rajdhani-15.npz", 2: "rajdhani-20.npz",
-               3: "rajdhani-30.npz", 4: "rajdhani-40.npz"},
+               3: "rajdhani-30.npz", 4: "rajdhani-40.npz",
+               8: "rajdhani-58.npz"},
         radius=14, tracking=0.0,
         palette={
             "INK": (238, 240, 246), "DIM_INK": (150, 154, 168),
@@ -58,7 +62,8 @@ THEMES = {
         "hud", "HUD", "Glowing hairlines, letterspaced caps",
         style="hud",
         fonts={1: "orbitron-13.npz", 2: "orbitron-18.npz",
-               3: "orbitron-26.npz", 4: "orbitron-34.npz"},
+               3: "orbitron-26.npz", 4: "orbitron-34.npz",
+               8: "orbitron-50.npz"},
         radius=10, tracking=2.0,
         palette={
             "INK": (150, 215, 245), "DIM_INK": (85, 150, 185),
@@ -71,7 +76,8 @@ THEMES = {
         "neon", "Neon", "Outlines on black, highest contrast",
         style="neon",
         fonts={1: "exo2-14.npz", 2: "exo2-19.npz",
-               3: "exo2-28.npz", 4: "exo2-38.npz"},
+               3: "exo2-28.npz", 4: "exo2-38.npz",
+               8: "exo2-52.npz"},
         radius=4, tracking=1.0,
         palette={
             "INK": (215, 255, 240), "DIM_INK": (0, 180, 132),

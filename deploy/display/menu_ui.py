@@ -226,8 +226,13 @@ class Button:
             return True
         return False
 
-    def _phase(self) -> float:
-        """0 at the moment of the press, 1 once the animation has finished."""
+    def phase(self) -> float:
+        """0 at the moment of the press, 1 once the animation has finished.
+
+        Public because the two e-stops draw their own face — they have to not
+        look like the other four buttons — but should still acknowledge a tap.
+        They keep a Button for hit-testing, so the timing is already here.
+        """
         t = _PRESS.get(id(self))
         if t is None:
             return 1.0
@@ -236,50 +241,61 @@ class Button:
     def draw(self, frame: np.ndarray, on: bool = False, ink=None,
              label: str | None = None) -> None:
         x0, y0, x1, y1 = self.rect
-        w, h = max(1, x1 - x0), max(1, y1 - y0)
-        p = self._phase()
-        lit = _ease_out(1.0 - p) if p < 1.0 else 0.0     # 1 just after a tap, decaying
-        face = PANEL_ON if on else PANEL
-        style = THEME.style if THEME else "soft"
-        r = min(THEME.radius if THEME else 0, w / 2, h / 2)
-
-        if style == "hud":
-            _blend(frame, x0 - 12, y0 - 12, _cov_glow(w + 24, h + 24, r + 12),
-                   EDGE, 0.10 + 0.35 * lit)
-            _blend(frame, x0, y0, _cov_fill(w, h, r), face, 0.95)
-            _blend(frame, x0, y0, _cov_outline(w, h, r, 1.6), EDGE, 0.55 + 0.45 * lit)
-        elif style == "neon":
-            _blend(frame, x0, y0, _cov_fill(w, h, r), face, 0.9)
-            if lit:
-                # The fill sweeps in from the left, then drains away again.
-                cov = _cov_fill(w, h, r).copy()
-                cov[:, int(w * min(1.0, (1.0 - lit) * 2 + 0.15)):] = 0.0
-                _blend(frame, x0, y0, cov, EDGE, 0.30 * lit)
-            _blend(frame, x0, y0, _cov_outline(w, h, r, 2.0), EDGE, 0.95)
-        else:                                            # "soft"
-            # Press insets the card and dims it, then it springs back out —
-            # cheaper than scaling a rendered card, and the same to the eye.
-            inset = int(round(3 * lit))
-            x0d, y0d = x0 + inset, y0 + inset
-            wd, hd = max(1, w - inset * 2), max(1, h - inset * 2)
-            ramp = np.linspace(0.0, 1.0, hd, dtype=np.float32)[:, None, None]
-            top = np.asarray(face, np.float32) * (1.14 - 0.14 * lit)
-            bot = np.asarray(face, np.float32) * (0.80 - 0.10 * lit)
-            card = np.clip(top * (1.0 - ramp) + bot * ramp, 0, 255)
-            cov = _cov_fill(wd, hd, min(r, wd / 2, hd / 2))[:, :, None]
-            xa, ya = max(0, x0d), max(0, y0d)
-            xb, yb = min(frame.shape[1], x0d + wd), min(frame.shape[0], y0d + hd)
-            if xb > xa and yb > ya:
-                c = cov[ya - y0d:yb - y0d, xa - x0d:xb - x0d]
-                frame[ya:yb, xa:xb] = frame[ya:yb, xa:xb] * (1 - c) + card[
-                    ya - y0d:yb - y0d] * c
-
+        draw_face(frame, x0, y0, x1, y1,
+                  PANEL_ON if on else PANEL, EDGE, self.phase())
         s = self.label if label is None else label
         if s:
             text_centred(frame, s, x0, x1,
-                         y0 + (h - line_height(self.scale)) // 2,
+                         y0 + ((y1 - y0) - line_height(self.scale)) // 2,
                          ink or INK, self.scale,
                          preserve_case=self.preserve_case)
+
+
+def draw_face(frame: np.ndarray, x0: int, y0: int, x1: int, y1: int,
+              face, edge, phase: float = 1.0, weight: float = 1.6) -> None:
+    """Draw a button-shaped panel in the theme's style, animating a press.
+
+    Split out of Button.draw so a control that needs its own colours — the
+    e-stops, which must not look like the other four buttons — still gets the
+    theme's shape and the same acknowledgement of a tap. Pass the Button's
+    ``phase()``; 1.0 means "not pressed".
+    """
+    w, h = max(1, x1 - x0), max(1, y1 - y0)
+    lit = _ease_out(1.0 - phase) if phase < 1.0 else 0.0  # 1 just after a tap, decaying
+    style = THEME.style if THEME else "soft"
+    r = min(THEME.radius if THEME else 0, w / 2, h / 2)
+
+    if style == "hud":
+        _blend(frame, x0 - 12, y0 - 12, _cov_glow(w + 24, h + 24, r + 12),
+               edge, 0.10 + 0.35 * lit)
+        _blend(frame, x0, y0, _cov_fill(w, h, r), face, 0.95)
+        _blend(frame, x0, y0, _cov_outline(w, h, r, 1.6), edge, 0.55 + 0.45 * lit)
+    elif style == "neon":
+        _blend(frame, x0, y0, _cov_fill(w, h, r), face, 0.9)
+        if lit:
+            # The fill sweeps in from the left, then drains away again.
+            cov = _cov_fill(w, h, r).copy()
+            cov[:, int(w * min(1.0, (1.0 - lit) * 2 + 0.15)):] = 0.0
+            _blend(frame, x0, y0, cov, edge, 0.30 * lit)
+        _blend(frame, x0, y0, _cov_outline(w, h, r, 2.0), edge, 0.95)
+    else:                                            # "soft"
+        # Press insets the card and dims it, then it springs back out —
+        # cheaper than scaling a rendered card, and the same to the eye.
+        inset = int(round(3 * lit))
+        x0d, y0d = x0 + inset, y0 + inset
+        wd, hd = max(1, w - inset * 2), max(1, h - inset * 2)
+        ramp = np.linspace(0.0, 1.0, hd, dtype=np.float32)[:, None, None]
+        top = np.asarray(face, np.float32) * (1.14 - 0.14 * lit)
+        bot = np.asarray(face, np.float32) * (0.80 - 0.10 * lit)
+        card = np.clip(top * (1.0 - ramp) + bot * ramp, 0, 255)
+        cov = _cov_fill(wd, hd, min(r, wd / 2, hd / 2))[:, :, None]
+        xa, ya = max(0, x0d), max(0, y0d)
+        xb, yb = min(frame.shape[1], x0d + wd), min(frame.shape[0], y0d + hd)
+        if xb > xa and yb > ya:
+            c = cov[ya - y0d:yb - y0d, xa - x0d:xb - x0d]
+            frame[ya:yb, xa:xb] = frame[ya:yb, xa:xb] * (1 - c) + card[
+                ya - y0d:yb - y0d] * c
+
 
 
 apply_theme(theme_mod.load_name())

@@ -222,8 +222,10 @@ class PinPad:
         cart = (snap.get("chest") or {}).get("cart") or {}
         latched = bool(cart.get("estop"))
         ink = ui.WARN_INK if latched else ui.BAD_INK
-        ui.fill(frame, STOP_X0, STOP_Y0, STOP_X1, STOP_Y1, ui.STOP_PANEL)
-        ui.border(frame, STOP_X0, STOP_Y0, STOP_X1, STOP_Y1, ink, 3)
+        # See page_cart._draw_stop: own colours, theme's shape, and it
+        # acknowledges the tap like every other control.
+        ui.draw_face(frame, STOP_X0, STOP_Y0, STOP_X1, STOP_Y1, ui.STOP_PANEL,
+                     ink, self._stop.phase(), weight=3.0)
         ui.text_centred(frame, "STOP", STOP_X0, STOP_X1, STOP_Y0 + 92, ink, 8)
         ui.text_centred(frame, "E-STOP LATCHED" if latched else "NO PIN NEEDED",
                         STOP_X0, STOP_X1, STOP_Y0 + 172, ink, 2)

@@ -254,8 +254,12 @@ class CartPage:
         else:
             face, ink, label, sub = ui.STOP_PANEL, ui.BAD_INK, "STOP", "LATCHES"
 
-        ui.fill(frame, STOP_X0, STOP_Y0, STOP_X1, STOP_Y1, face)
-        ui.border(frame, STOP_X0, STOP_Y0, STOP_X1, STOP_Y1, ink, 3)
+        # Its own colours, the theme's shape, and — via the Button it already
+        # keeps for hit-testing — the same press animation as everything else.
+        # This is the control most worth acknowledging: a stop that looks inert
+        # when you hit it is a stop you hit again, harder.
+        ui.draw_face(frame, STOP_X0, STOP_Y0, STOP_X1, STOP_Y1, face, ink,
+                     self._stop.phase(), weight=3.0)
         # Big enough to hit without looking at it: the label is scale 8, about a
         # third of the button's height, and the whole face is the target.
         ui.text_centred(frame, label, STOP_X0, STOP_X1, STOP_Y0 + 63, ink, 8)
