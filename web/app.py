@@ -132,7 +132,9 @@ _sensors = SensorHub(on_event=None, log=_log,
 _spot_cfg = _settings.get("spotter", {})
 _spotter = WideSpotter(device=int(_spot_cfg.get("device", 0)),
                        detect_hz=float(_spot_cfg.get("detect_hz", 4.0)),
-                       detect_width=int(_spot_cfg.get("detect_width", 1920)))
+                       detect_width=int(_spot_cfg.get("detect_width", 1920)),
+                       view_hz=float(_spot_cfg.get("view_hz", 10.0)),
+                       view_width=int(_spot_cfg.get("view_width", 1280)))
 
 
 def _bearing_hint():
@@ -1460,6 +1462,37 @@ def camera_snapshot():
     frame = _camera.snapshot()
     if not frame:
         return jsonify({"error": "no frame"}), 503
+    return Response(frame, mimetype="image/jpeg")
+
+
+# The wide camera's feed comes out of the spotter rather than from a second
+# VideoCapture, because a V4L2 node streams to one opener and the spotter has
+# it. See inmoov/wide_spotter.py. The head camera's LED is deliberately NOT
+# touched here: that red eye means "the camera in his head is on", and lighting
+# it for a camera bolted to the chest would be a lie told by a privacy light.
+@app.get("/camera/wide/stream")
+def wide_stream():
+    """Live MJPEG from the PanaCast — the ~180 degree view from the chest."""
+    if not _spotter.is_running():
+        return jsonify({"error": _spotter.last_error
+                        or "wide camera is not running"}), 503
+
+    def gen():
+        for frame in _spotter.frames():
+            yield (b"--frame\r\n"
+                   b"Content-Type: image/jpeg\r\n"
+                   b"Content-Length: " + str(len(frame)).encode() + b"\r\n\r\n"
+                   + frame + b"\r\n")
+
+    return Response(gen(), mimetype="multipart/x-mixed-replace; boundary=frame")
+
+
+@app.get("/camera/wide/snapshot")
+def wide_snapshot():
+    """Single still JPEG from the wide camera."""
+    frame = _spotter.snapshot()
+    if not frame:
+        return jsonify({"error": _spotter.last_error or "no frame"}), 503
     return Response(frame, mimetype="image/jpeg")
 
 

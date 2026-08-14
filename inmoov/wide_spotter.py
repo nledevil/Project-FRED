@@ -27,6 +27,18 @@ decoding it (measured: free), so the loop drains at native rate to keep frames
 fresh and only calls ``retrieve()`` when it actually intends to detect. That is
 the difference between ~25% and ~7% of one core.
 
+**Watching it in the browser goes through here too, and has to.** A V4L2 node
+streams to one opener; this class holds it, so a second ``VideoCapture`` for the
+panel would simply fail — and stopping the spotter to look through it would
+switch off the thing that finds people in order to watch for people. So the
+loop publishes JPEGs itself, and ``frames()`` hands them to the panel.
+
+That is opt-in and viewer-counted for the reason in the paragraph above: a
+retrieve plus a JPEG encode is exactly the cost the grab/retrieve split exists
+to avoid, so with nobody watching, not one extra frame is decoded and the idle
+cost is unchanged. When somebody is watching, the decode is shared — a frame
+retrieved for detection is published as well, rather than pulled twice.
+
 Degrades to silence: if OpenCV, the cascade, or the camera are missing,
 ``available()`` is False and ``bearing()`` returns None forever, which the
 tracker already treats as "no opinion".
@@ -52,6 +64,15 @@ from inmoov.face_tracker import CASCADE_PATH
 PANORAMA = (3840, 1080)
 _PANORAMA_MIN_ASPECT = 3.0
 
+# What a browser viewer gets. 3840 wide is four times what any panel shows it in
+# and would cost more to encode than to detect on, so frames are downscaled;
+# 1280x360 still resolves a face across the whole arc. 10 Hz because this is a
+# room view, not a driving feed — and every one of these frames is a decode the
+# idle spotter does not do, which is why nothing here runs without a viewer.
+VIEW_HZ = 10.0
+VIEW_WIDTH = 1280
+VIEW_QUALITY = 70
+
 
 class WideSpotter:
     """Watches a fixed wide-angle camera and reports a bearing to the most
@@ -70,18 +91,26 @@ class WideSpotter:
     stale_after : float
         A bearing older than this is withdrawn (``bearing()`` returns None)
         rather than left standing as a stale opinion.
+    view_hz, view_width, view_quality :
+        The browser feed served by ``frames()``. Costs nothing until somebody
+        actually watches.
     """
 
     def __init__(self, device: int = 0, *, detect_hz: float = 4.0,
                  detect_width: int = 1920, cascade_path: str = CASCADE_PATH,
                  min_face_px: int = 24, stale_after: float = 2.0,
-                 size: tuple[int, int] = PANORAMA):
+                 size: tuple[int, int] = PANORAMA,
+                 view_hz: float = VIEW_HZ, view_width: int = VIEW_WIDTH,
+                 view_quality: int = VIEW_QUALITY):
         self.device = int(device)
         self.detect_hz = float(detect_hz)
         self.detect_width = int(detect_width)
         self.min_face_px = int(min_face_px)
         self.stale_after = float(stale_after)
         self.size = size
+        self.view_hz = float(view_hz)
+        self.view_width = int(view_width)
+        self.view_quality = int(view_quality)
         self.last_error: str | None = None if cv2 is not None else str(_CV2_ERR)
 
         self._cap = None
@@ -95,6 +124,15 @@ class WideSpotter:
         self._frame_wh: tuple[int, int] | None = None
         self._detects = 0
         self._detect_ms = 0.0
+
+        # The browser feed, on its own condition rather than _lock: a viewer
+        # blocks here for up to seconds waiting for the next frame, and holding
+        # the lock the tracker reads bearings through while doing so would stall
+        # the one consumer that must never wait.
+        self._view = threading.Condition()
+        self._viewers = 0
+        self._frame: bytes | None = None
+        self._seq = 0
 
         if cv2 is not None:
             casc = cv2.CascadeClassifier(cascade_path)
@@ -153,11 +191,16 @@ class WideSpotter:
             self._cap = None
         with self._lock:
             self._bearing, self._faces = None, 0
+        with self._view:
+            self._frame = None       # do not hand a stopped camera's last frame
+            self._view.notify_all()  # to the next viewer; wake the ones waiting
 
     # ---- the loop ---------------------------------------------------------
     def _run(self) -> None:
-        interval = 1.0 / max(self.detect_hz, 0.1)
+        detect_interval = 1.0 / max(self.detect_hz, 0.1)
+        view_interval = 1.0 / max(self.view_hz, 0.1)
         next_detect = 0.0
+        next_view = 0.0
         while not self._stop.is_set():
             # Cheap: pulls the frame off the device without decoding it, which
             # is what keeps the buffer from going stale between detections.
@@ -165,13 +208,23 @@ class WideSpotter:
                 time.sleep(0.05)
                 continue
             now = time.monotonic()
-            if now < next_detect:
+            want_detect = now >= next_detect
+            with self._view:
+                want_view = self._viewers > 0 and now >= next_view
+            if not (want_detect or want_view):
                 continue
-            next_detect = now + interval
+            # ONE retrieve serves both. Decoding is the expensive half, so when
+            # somebody is watching, detection rides along on a frame that was
+            # going to be decoded anyway instead of paying for its own.
             ok, frame = self._cap.retrieve()
             if not ok or frame is None:
                 continue
-            self._detect(frame)
+            if want_detect:
+                next_detect = now + detect_interval
+                self._detect(frame)
+            if want_view:
+                next_view = now + view_interval
+                self._publish(frame)
 
     def _detect(self, frame) -> None:
         h, w = frame.shape[:2]
@@ -202,6 +255,72 @@ class WideSpotter:
             self._bearing = (cx / float(gray.shape[1])) * 2.0 - 1.0
             self._bearing_at = time.monotonic()
 
+    # ---- what the panel consumes -----------------------------------------
+    def _publish(self, frame) -> None:
+        """Downscale + JPEG-encode one frame for whoever is watching."""
+        h, w = frame.shape[:2]
+        scale = self.view_width / float(w)
+        if scale < 1.0:
+            frame = cv2.resize(frame, (self.view_width, max(int(h * scale), 1)))
+        ok, buf = cv2.imencode(".jpg", frame,
+                               [int(cv2.IMWRITE_JPEG_QUALITY), self.view_quality])
+        if not ok:
+            return
+        with self._view:
+            self._frame = buf.tobytes()
+            self._seq += 1
+            self._view.notify_all()
+
+    def viewers(self) -> int:
+        with self._view:
+            return self._viewers
+
+    def frames(self):
+        """Yield JPEG frames until the caller stops consuming. Mirrors
+        ``Camera.frames()`` so the panel's MJPEG route treats both the same.
+
+        Does NOT start the spotter. The camera being off is a decision made
+        elsewhere — the hardware handoff releases it to MyRobotLab — and quietly
+        retaking a device another process now owns is how you get a fight over
+        it. If it is not running, say so.
+        """
+        if not self.is_running():
+            raise RuntimeError(self.last_error or "wide camera is not running")
+        with self._view:
+            self._viewers += 1
+            last = self._seq       # only frames from now on: publishing stops
+        try:                       # with the last viewer, so _frame may be old
+            while not self._stop.is_set():
+                with self._view:
+                    if not self._view.wait_for(lambda: self._seq != last,
+                                               timeout=5.0):
+                        continue           # keep-alive rather than hang up
+                    last = self._seq
+                    frame = self._frame
+                if frame:
+                    yield frame
+        finally:
+            with self._view:
+                self._viewers = max(0, self._viewers - 1)
+
+    def snapshot(self, timeout: float = 3.0) -> bytes | None:
+        """One fresh JPEG. Registers as a viewer for as long as it takes, since
+        the loop publishes nothing when nobody is watching."""
+        if not self.is_running():
+            return None
+        with self._view:
+            self._viewers += 1
+            last = self._seq
+        try:
+            with self._view:
+                if not self._view.wait_for(lambda: self._seq != last,
+                                           timeout=timeout):
+                    return None
+                return self._frame
+        finally:
+            with self._view:
+                self._viewers = max(0, self._viewers - 1)
+
     # ---- what the tracker consumes ---------------------------------------
     def bearing(self) -> float | None:
         """-1..+1 (negative = image left), or None for "no opinion".
@@ -218,7 +337,8 @@ class WideSpotter:
             return self._bearing
 
     def status(self) -> dict:
-        with self._lock:
+        viewers = self.viewers()        # before _lock, not inside it: the only
+        with self._lock:                # place the two locks would ever nest
             fresh = (self._bearing is not None
                      and (time.monotonic() - self._bearing_at) <= self.stale_after)
             return {"available": self.available(), "running": self.is_running(),
@@ -227,4 +347,5 @@ class WideSpotter:
                     "size": list(self._frame_wh) if self._frame_wh else None,
                     "detect_hz": self.detect_hz,
                     "detect_ms": round(self._detect_ms, 1),
+                    "viewers": viewers,
                     "error": self.last_error}

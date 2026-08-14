@@ -153,6 +153,14 @@
   /* live camera */
   .cam .phead .cam-hbtns { margin-left:auto; display:flex; gap:8px; }
   .cam .phead button { padding:7px 14px; font-size:12px; }
+  /* Which camera. A segmented pair rather than two loose buttons, because these
+     are one choice with two answers, not two independent actions. */
+  .cam-src { display:flex; border:1px solid var(--border); border-radius:8px; overflow:hidden; }
+  .cam-src button { border:0; border-radius:0; padding:7px 12px; font-size:12px;
+                    background:var(--panel); color:var(--mut); }
+  .cam-src button + button { border-left:1px solid var(--border); }
+  .cam-src button.on { background:var(--accent); color:#fff; }
+  .cam-src button:disabled { opacity:.4; cursor:not-allowed; }
   .cam-view { position:relative; background:#000; border:1px solid var(--border);
               border-radius:12px; overflow:hidden; min-height:240px;
               display:flex; align-items:center; justify-content:center; }
@@ -317,6 +325,12 @@
       <div class="phead">Live camera
         <span id="camState" class="badge">…</span>
         <span class="cam-hbtns">
+          <span class="cam-src" id="camSrc">
+            <button id="srcHead" class="on" onclick="setCamSource('head')"
+                    title="The camera in FRED's head — it moves as he looks around">👁 Head</button>
+            <button id="srcWide" onclick="setCamSource('wide')" disabled
+                    title="The wide camera on the chest">🌐 Wide 180°</button>
+          </span>
           <button id="trackBtn" onclick="toggleTrack()" disabled
                   title="Face tracking (not yet connected)">◎ Track face</button>
           <button id="bigBtn" onclick="toggleBig()">⛶ Enlarge</button>
@@ -657,25 +671,79 @@ function syncLedToCam(on) {
 }
 
 // ---- live camera -------------------------------------------------------
+// Two cameras, one viewer. The head camera rides the neck and is the one every
+// control below belongs to; the wide camera is the PanaCast on the chest, fixed,
+// looking out at ~180 degrees. Focus, flip and face-tracking are meaningless on
+// the second, so switching source hides them rather than leaving dead controls.
 let CAM_ON = false;
+let CAM_SRC = 'head';
+const CAM_URL = {head: '/camera/stream', wide: '/camera/wide/stream'};
+
+function wideOk() {
+  // Only "running" will do: available() is true whenever OpenCV loaded, and the
+  // spotter can be stopped (hardware handoff) or unable to open the device. The
+  // stream route refuses in both cases, so offering the button would be a lie.
+  const sp = STATE && STATE.spotter;
+  return !!(sp && sp.running);
+}
+
+function setCamSource(src) {
+  if (src === CAM_SRC) return;
+  const was = CAM_ON;
+  if (CAM_ON) stopCam();               // release the old feed before opening the new
+  CAM_SRC = src;
+  applyCamSource();
+  if (was) startCam();
+}
+
+function applyCamSource() {
+  const wide = CAM_SRC === 'wide';
+  document.getElementById('srcHead').classList.toggle('on', !wide);
+  document.getElementById('srcWide').classList.toggle('on', wide);
+  // Focus/lens/flip drive the head camera through /api/camera. The wide camera
+  // is a fixed USB device with none of those, so the whole row goes.
+  document.getElementById('camCtls').style.display = wide ? 'none' : '';
+  const tb = document.getElementById('trackBtn');
+  if (wide) {
+    tb.disabled = true;
+    tb.title = 'Face tracking follows the head camera — it is the one that moves';
+    if (TRACK_ON) toggleTrack();       // tracking a feed we are no longer showing
+  }
+  if (!CAM_ON) document.getElementById('camMsg').textContent =
+    wide ? 'Wide camera off' : 'Camera off';
+}
+
 function initCam() {
   const cam = STATE && STATE.camera;      // object of settings, or null if no camera
   const ok = !!cam;
+  const sw = document.getElementById('srcWide');
+  sw.disabled = !wideOk();
+  sw.title = wideOk() ? 'The wide camera on the chest — a fixed ~180 degree view'
+             : 'Wide camera unavailable: '
+               + (((STATE && STATE.spotter) || {}).error || 'not running');
+  // The wide camera going away underneath us — hardware handoff, or the USB
+  // lead pulled — must not strand the panel on a feed that will never arrive.
+  // Before anything below reads CAM_SRC, because this can change it.
+  if (CAM_SRC === 'wide' && !wideOk()) setCamSource('head');
+  const wide = CAM_SRC === 'wide';
   const st = document.getElementById('camState');
-  st.textContent = ok ? 'READY' : 'NONE';
-  st.className = 'badge ' + (ok ? 'live' : 'mock');
-  document.getElementById('camBtn').disabled = !ok;
-  const trackOk = ok && STATE.track && STATE.track.available;
+  const usable = wide ? wideOk() : ok;
+  st.textContent = usable ? 'READY' : 'NONE';
+  st.className = 'badge ' + (usable ? 'live' : 'mock');
+  document.getElementById('camBtn').disabled = !usable;
+  const trackOk = ok && !wide && STATE.track && STATE.track.available;
   const tb = document.getElementById('trackBtn');
   tb.disabled = !trackOk;
   tb.title = trackOk ? 'Follow a face with the eyes and neck'
-                     : 'Face tracking needs OpenCV + a camera';
+             : wide ? 'Face tracking follows the head camera — it is the one that moves'
+                    : 'Face tracking needs OpenCV + a camera';
   if (STATE.track && STATE.track.tracking) applyTrack(STATE.track);   // already running
   if (!ok) {
-    document.getElementById('camMsg').textContent = 'No camera detected';
+    if (!wide) document.getElementById('camMsg').textContent = 'No camera detected';
     document.getElementById('camCtls').style.display = 'none';
     return;
   }
+  if (wide) document.getElementById('camCtls').style.display = 'none';
   document.getElementById('afMode').value = String(cam.af_mode === 0 ? 0 : 2);
   const lp = document.getElementById('lensPos');
   lp.min = cam.lens_min; lp.max = cam.lens_max; lp.value = cam.lens_position;
@@ -708,24 +776,29 @@ function onFlip() {
 }
 function toggleCam() { CAM_ON ? stopCam() : startCam(); }
 function startCam() {
+  const wide = CAM_SRC === 'wide';
   const img = document.getElementById('camImg');
   img.onerror = () => { document.getElementById('camMsg').textContent = 'Stream error'; stopCam(); };
-  img.src = '/camera/stream?t=' + performance.now();   // cache-bust so it (re)connects
+  img.src = CAM_URL[CAM_SRC] + '?t=' + performance.now();  // cache-bust so it (re)connects
   img.hidden = false;
   document.getElementById('camMsg').style.display = 'none';
-  document.getElementById('camBtn').textContent = '⏹ Stop camera';
-  syncLedToCam(true);                          // physical LED follows (if enabled)
+  document.getElementById('camBtn').textContent = wide ? '⏹ Stop wide' : '⏹ Stop camera';
+  // The red eye is a privacy light for the camera in his HEAD. The wide camera
+  // is on the chest and does not turn it on — a status light that means two
+  // different things means nothing.
+  if (!wide) syncLedToCam(true);
   CAM_ON = true;
 }
 function stopCam() {
+  const wide = CAM_SRC === 'wide';
   const img = document.getElementById('camImg');
   img.onerror = null;              // avoid the blank-src triggering our error handler
   img.src = '';                    // disconnect -> server releases the camera
   img.hidden = true;
   const msg = document.getElementById('camMsg');
-  msg.style.display = ''; msg.textContent = 'Camera off';
-  document.getElementById('camBtn').textContent = '▶ Start camera';
-  syncLedToCam(false);                         // physical LED follows (if enabled)
+  msg.style.display = ''; msg.textContent = wide ? 'Wide camera off' : 'Camera off';
+  document.getElementById('camBtn').textContent = wide ? '▶ Start wide' : '▶ Start camera';
+  if (!wide) syncLedToCam(false);              // physical LED follows (if enabled)
   CAM_ON = false;
   if (TRACK_ON) toggleTrack();       // tracking makes no sense without the feed
 }
@@ -747,6 +820,10 @@ async function toggleTrack() {
   const want = !(cur && cur.tracking !== undefined ? cur.tracking : TRACK_ON);
   const res = await api('/api/track', {on: want});
   if (res.error) { toast('⚠ ' + res.error); return; }
+  // Tracking drives the head camera, so show that one — this can be turned on
+  // by a voice command or by Claude while you happen to be watching the wide
+  // feed, and the reticle over a camera that isn't tracking makes no sense.
+  if (want) setCamSource('head');
   if (want && !CAM_ON && !document.getElementById('camBtn').disabled) startCam();
   applyTrack(res);
 }

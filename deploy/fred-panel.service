@@ -21,6 +21,14 @@ Wants=network-online.target
 Type=simple
 User=nledevil
 Group=nledevil
+# The PanaCast. /dev/video0 is root:video 0660 and nledevil is not in `video`,
+# so without this the wide spotter fails at VideoCapture with "cannot open
+# /dev/video0" -- and because it degrades to silence by design (no bearing is a
+# valid answer), it does that without ever complaining. It was down this way
+# until 2026-08-13. Granted to the service rather than by `usermod -aG video
+# nledevil`, so a rebuilt machine gets it from this file instead of from
+# somebody remembering.
+SupplementaryGroups=video
 Environment=PYTHONUNBUFFERED=1
 # Optional (the leading '-'): holds ANTHROPIC_API_KEY for FRED's replies. The
 # app runs without it — brain.py degrades to local commands only.
