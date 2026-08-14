@@ -1,5 +1,6 @@
-# Reference copy — see fred-terminal.service for the install recipe (this one is
-# port 7682). Keep the real password out of git.
+# Reference copy — see fred-terminal.service for the install recipe, including the
+# `tailscale serve` line without which nothing can reach this port (this one is
+# port 7682, published on 8082). No secret in this file.
 [Unit]
 Description=FRED browser terminal — head Pi over ssh (ttyd + tmux, :7682)
 After=network-online.target
@@ -12,6 +13,25 @@ Wants=network-online.target
 # The head's own inmoov-terminal.service (:7681 on the Pi) still exists and is
 # untouched — reachable directly if you are on the robot LAN.
 
+# Reached only through Tailscale Serve, which is why this binds to loopback and
+# authenticates on a header rather than a password. fred-terminal-head-local.service
+# is the other door into the same session, on every interface with a password,
+# for the access point and for venues with no uplink and so no tailnet.
+#
+# ttyd 1.7.7 requires HTTP basic auth on the *WebSocket upgrade*, not just on the
+# page. Browsers send cached credentials on the page load and on /token but do
+# not reliably attach them to the upgrade -- over Tailscale they did not, so the
+# page rendered, the token fetched, and the terminal then sat at "enter to
+# connect" while ttyd refused the socket without logging a reason. That is not
+# fixable from this end; the fix is to stop using basic auth here.
+#
+# So: -i lo makes the port unreachable from the LAN, the tailnet, and the access
+# point -- only Tailscale Serve can reach it -- and -H trusts the identity header
+# Serve injects. Because nothing on a network can reach the port, that header
+# cannot be forged from one. The trade is that any *local* account on this box
+# can curl loopback with a made-up header and get a shell as nledevil; on a
+# single-user machine that is not a new capability, but it is the reason -i lo is
+# not optional.
 [Service]
 Type=simple
 User=nledevil
@@ -35,7 +55,7 @@ Environment=PATH=/usr/local/bin:/home/nledevil/.local/bin:/usr/bin:/bin
 # both doors into the head land in ONE session rather than two that cannot see
 # each other. -A attaches if it exists and creates it if not.
 # -t forces a pty, which tmux needs and ssh will not allocate for a command.
-ExecStart=/usr/local/bin/ttyd -W -p 7682 -c fred:CHANGE_ME -m 3 --check-origin -t fontSize=15 /usr/bin/ssh -t head tmux new-session -A -s claude
+ExecStart=/usr/local/bin/ttyd -W -p 7682 -i lo -H Tailscale-User-Login -m 3 -t fontSize=15 /usr/bin/ssh -t head tmux new-session -A -s claude
 Restart=on-failure
 RestartSec=3
 

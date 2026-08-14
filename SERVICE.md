@@ -809,3 +809,98 @@ Two HC-SR04 ultrasonics and an HC-SR501 PIR, read by a Pico that plugs into the
 - **A node may name its own `transport`.** `/api/sensors/ingest` used to hardcode
   `"wifi"`, which would have mislabelled everything coming through here; the
   relay stamps `"serial-relay"` so the panel shows the real path.
+
+# Browser terminals — two doors into each one (2026-08-13)
+
+The three NUC-hosted terminals (`fred-terminal{,-head,-chest}.service`) each
+answer on **two** ports now, and the panel picks the right one per browser. This
+supersedes the single `:7681-7683` story in the 2026-07-05 section above — that
+section still describes the head Pi's own untouched `inmoov-terminal.service`.
+
+- **Through Tailscale — 8081/8082/8083.** The ttyds bind `-i lo` and
+  `tailscale serve --bg --http 8081 127.0.0.1:7681` publishes them to the
+  tailnet. No password: `-H Tailscale-User-Login` trusts the identity header
+  Serve injects, which is safe only because nothing on any network can reach a
+  loopback port to forge it. Installing the unit is half the job — without the
+  `serve` line the port is unreachable by everyone, including you.
+- **Direct — 7691/7692/7693.** `fred-terminal*-local.service`, bound to every
+  interface, HTTP basic auth as user `fred`. This is the door for the `fred`
+  access point and for any venue with no uplink, where Tailscale cannot reach
+  its coordination server and the tailnet does not exist at all. Both doors run
+  `tmux new-session -A` on the same session name, so it is one terminal with two
+  entrances — work started on one is on screen at the other.
+- **Why not basic auth on both.** ttyd 1.7.7 checks basic auth on the WebSocket
+  upgrade as well as the page, and browsers do not reliably attach cached
+  credentials to an upgrade that has crossed a proxy. Through Serve the page
+  rendered, `/token` returned, and the terminal then sat at "enter to connect"
+  with nothing logged. Hit directly it is fine — verified: `101 Switching
+  Protocols` with credentials, refused without them.
+- **`--check-origin` only on the direct units.** Serve rewrites Host to
+  `fred:8081` while ttyd sees `127.0.0.1:7681`, so the check compares two names
+  that can never match and rejects every websocket. On the loopback side the
+  bind already provides what the check would: a stranger's browser cannot reach
+  a loopback port cross-site. On the direct side the check is live and works —
+  a foreign `Origin` is refused.
+- **Which door am I getting?** `GET /api/terminals` answers with the URLs for
+  the asking browser, keyed on whether its address is in Tailscale's
+  `100.64.0.0/10` / `fd7a:115c:a1e0::/48`. A tailnet device coming in *through*
+  the subnet route is SNATed to the NUC's LAN address and is told to use the
+  direct ports — correct, since from there they are reachable and one hop
+  shorter.
+- **Still never port-forward any of these.** Six ports now, all plain HTTP, all
+  a full shell as `nledevil`.
+
+# Wide camera in the panel — and the group that stopped it (2026-08-13)
+
+The panel's camera card now switches between the head camera and the PanaCast's
+~180 degree view. Two things came out of building it.
+
+**The wide spotter had never run.** `/dev/video0` is `root:video` mode 0660 and
+`nledevil` is not in `video`, so `cv2.VideoCapture` failed at every start with
+`cannot open /dev/video0`. `WideSpotter` degrades to silence on purpose — no
+bearing is a legitimate answer — so it reported that in `/api/state` and
+otherwise said nothing, and `_bearing_hint()` fell through to the chest
+ultrasonics every time. Fixed with `SupplementaryGroups=video` in
+`fred-panel.service` rather than `usermod`, so a rebuilt machine gets it from
+the repo. It now opens the real 3840x1080 panorama.
+
+**It costs about 4 of the NUC's 16 cores, standing.** Measured over 20 s:
+4.26 cores with the spotter running and nobody watching. That is the Haar
+cascade — OpenCV fans `detectMultiScale` across its thread pool, and the worker
+threads inherit the spawning thread's name, so `top -H` shows a dozen
+`wide-spotter` rows and the per-thread view is easy to misread. `detect_ms` in
+`/api/state` is *wall* time (~90 ms), which understates the machine cost by
+roughly the thread count. Capping threads does not help — it trades latency for
+latency, not CPU. Resolution does, and `spotter.detect_width` in settings.json
+is the knob:
+
+| detect_width | face px at 2 m | CPU per detect | cores at 4 Hz |
+|---|---|---|---|
+| 1920 (current) | 49 | 416 ms | 1.7 |
+| 1280 | 33 | 195 ms | 0.8 |
+| 960 | 24 | 108 ms | 0.4 |
+| 640 | 16 | 49 ms | 0.2 |
+
+`min_face_px` is 24, so 960 puts a face at 2 m exactly on the floor and 640 is
+below it. 1280 is the honest middle. (Those are bench numbers on one frame; the
+live figure is higher because Haar cost tracks scene detail.)
+
+- **Viewing rides along, and is nearly free.** A V4L2 node streams to one opener
+  and the spotter holds it, so a second `VideoCapture` for the panel cannot
+  work, and stopping the spotter to look through the camera would switch off the
+  thing that finds people in order to watch for people. So the spotter's own
+  loop publishes JPEGs and `frames()` serves them. It is viewer-counted: with
+  nobody watching, not one extra frame is decoded, and when somebody is, the
+  detector shares the frame instead of paying for a second retrieve. The
+  measured difference between 0 and 1 viewer is inside the scene-to-scene
+  variance of the detector.
+- **Frames are downscaled to 1280x360 at 10 Hz**, from 3840x1080 at ~20. Full
+  resolution would cost more to encode than to detect on, for a feed no panel
+  displays at that size.
+- **The red eye LED stays off for the wide camera.** It is a privacy light for
+  the camera in his *head*; lighting it for one bolted to the chest would make
+  it mean two things, which is the same as meaning nothing.
+- **Focus, flip and face-tracking hide when wide is selected** — they all drive
+  the head camera through `/api/camera`, and the PanaCast has none of them.
+  Tracking also forces the view back to the head camera, since that is the one
+  that moves.

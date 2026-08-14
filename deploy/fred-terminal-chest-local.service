@@ -1,0 +1,33 @@
+# Reference copy — see fred-terminal-local.service for the install recipe and for
+# why this second door exists at all (this one is port 7693). Keep the real
+# password out of git.
+[Unit]
+Description=FRED browser terminal — chest Pi over ssh, local door (ttyd + tmux, :7693)
+After=network-online.target
+Wants=network-online.target
+
+# The password door into the chest, alongside fred-terminal-chest.service, which
+# is loopback-only and reached through Tailscale Serve. Same ssh, same tmux
+# session on the far end — this is a second way in, not a second terminal.
+#
+# Reachable from the robot LAN, the access point, the house WiFi and the tailnet.
+# The password is the only thing in front of a shell; never forward this port to
+# the internet.
+[Service]
+Type=simple
+User=nledevil
+Group=nledevil
+WorkingDirectory=/home/nledevil
+Environment=HOME=/home/nledevil
+Environment=TERM=xterm-256color
+Environment=LANG=C.UTF-8
+Environment=PATH=/usr/local/bin:/home/nledevil/.local/bin:/usr/bin:/bin
+# Session name "claude" matches fred-terminal-chest.service, so both doors into
+# the chest land in one session. The chest serves no ttyd of its own.
+# -t forces a pty, which tmux needs and ssh will not allocate for a command.
+ExecStart=/usr/local/bin/ttyd -W -p 7693 -c fred:CHANGE_ME -m 3 --check-origin -t fontSize=15 /usr/bin/ssh -t chest tmux new-session -A -s claude
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

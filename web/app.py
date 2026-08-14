@@ -12,6 +12,7 @@ Works with no hardware (MOCK mode) and drives real servos once I2C is live.
 """
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import re
@@ -846,6 +847,60 @@ def api_whoami():
     """
     return jsonify(whoami_mod.state(brain=_assistant.brain,
                                     hotspot=hotspot_mod.state()))
+
+
+# The browser terminals answer on two sets of ports, and which one a given
+# browser can reach depends on how it got here. Tailscale Serve publishes the
+# loopback ttyds on 8081-8083 and only tailnet members can see those; the second
+# set of ttyds (fred-terminal*-local.service) binds every interface on 7691-7693
+# and takes a password. Machine -> (through Serve, direct).
+TERMINAL_PORTS = {"nuc": (8081, 7691), "head": (8082, 7692), "chest": (8083, 7693)}
+
+# Tailscale's own ranges: 100.64/10 is the CGNAT block it allocates from, and
+# fd7a:115c:a1e0::/48 the matching v6 one. An address in either arrived over the
+# tailnet, whatever hostname the browser used to get here.
+_TAILNET = (ipaddress.ip_network("100.64.0.0/10"),
+            ipaddress.ip_network("fd7a:115c:a1e0::/48"))
+
+
+def _on_tailnet(addr: str) -> bool:
+    try:
+        ip = ipaddress.ip_address((addr or "").strip())
+    except ValueError:
+        return False                    # cannot tell: assume not, and hand out
+    return any(ip in net for net in _TAILNET)   # the door that works everywhere
+
+
+def _host_only(host: str) -> str:
+    """``host`` with any :port removed, brackets on a v6 literal kept."""
+    if host.startswith("["):                    # [fd7a:115c:a1e0::1]:8080
+        return host.split("]", 1)[0] + "]"
+    return host.rsplit(":", 1)[0] if ":" in host else host
+
+
+@app.get("/api/terminals")
+def api_terminals():
+    """Where THIS browser should open the ttyd terminals.
+
+    Open, like /api/whoami: it is a set of URLs on ports anyone who can reach
+    this one can already find with a port scan, and both doors authenticate for
+    themselves.
+
+    The host is whatever the browser typed, so the answer stays right on every
+    name the panel answers to — fred, fred.tail58016f.ts.net, 10.0.0.1,
+    192.168.50.1 — without this file needing to know any of them. Only the port
+    changes, and it changes on the *client's* address rather than on that host:
+    a tailnet device coming in through the subnet route is SNATed to the NUC's
+    LAN address and looks local, which is correct, because from there the direct
+    ports are reachable and shorter.
+    """
+    tailnet = _on_tailnet(request.remote_addr or "")
+    host = _host_only(request.host or "") or "localhost"
+    return jsonify({
+        "tailnet": tailnet,
+        "urls": {name: f"http://{host}:{ports[0 if tailnet else 1]}"
+                 for name, ports in TERMINAL_PORTS.items()},
+    })
 
 
 @app.get("/api/hotspot")

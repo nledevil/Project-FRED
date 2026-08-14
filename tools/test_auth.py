@@ -65,6 +65,12 @@ OPEN = [
     # implied by /api/state. Kept open so the chest panel can show it
     # without a session it has no way to obtain.
     "/api/whoami",
+    # Which port this browser should open the terminals on. The URLs are not
+    # the secret -- the terminals authenticate for themselves, and both doors
+    # are on ports a scan of this host would find anyway. Gating it would also
+    # be backwards: the AP guest who cannot reach the tailnet door is exactly
+    # the one who needs to be told about the other one.
+    "/api/terminals",
 ]
 
 

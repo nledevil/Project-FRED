@@ -337,19 +337,20 @@
     <p class="phead">Developer</p>
     <div class="row">
       <div class="label"><b>Claude terminal</b><span>browser shell on any of the three</span></div>
-      <button class="primary" onclick="openTerminal(7681)">🖥 NUC (brain)</button>
-      <button onclick="openTerminal(7682)">🖥 Head Pi</button>
-      <button onclick="openTerminal(7683)">🖥 Chest Pi</button>
+      <button class="primary" onclick="openTerminal('nuc')">🖥 NUC (brain)</button>
+      <button onclick="openTerminal('head')">🖥 Head Pi</button>
+      <button onclick="openTerminal('chest')">🖥 Chest Pi</button>
     </div>
     <p class="hint">Opens a full terminal (ttyd + tmux) in a new tab — run <code>claude</code>,
-       git, tests, etc. to work on FRED without SSH. Log in as <code>fred</code> with the
-       password from setup; type <code>claude</code> to start. Your session persists in
-       tmux if you close the tab.</p>
+       git, tests, etc. to work on FRED without SSH. Type <code>claude</code> to start; your
+       session persists in tmux if you close the tab, and it is the <em>same</em> session
+       however you got in.</p>
+    <p class="hint" id="termDoor"></p>
     <p class="hint">All three are served <em>by the NUC</em>: the Pi terminals ssh out from
        here rather than each Pi running its own. The robot LAN (10.0.0.0/24) is not routable
        from the house network, so a ttyd on a Pi would be unreachable from a laptop — this
        way every terminal works wherever this panel does.
-       <b>LAN-only — do not forward ports 7681-7683 to the internet.</b></p>
+       <b>Never forward these ports to the internet.</b></p>
   </section>
 
   <div class="actions">
@@ -626,15 +627,42 @@ async function onAudit(checked) {
                 : 'Audit mode OFF — FRED is live again');
 }
 
-// Open a browser terminal on whatever host served this page. All three ttyd
-// instances (7681 NUC / 7682 head / 7683 chest) run on the NUC, so the host is
-// always the one already serving this panel — which is what makes these work
-// from the house WiFi as well as the robot LAN.
+// ---- Browser terminals -------------------------------------------------
+// All three ttyd instances run on the NUC, so the host is always the one
+// already serving this panel. The PORT is the part that varies: there are two
+// doors into each terminal — Tailscale Serve on 8081-8083, which only tailnet
+// devices can reach, and a password-protected pair on 7691-7693 bound to every
+// interface, for the access point and for venues where there is no uplink and
+// therefore no tailnet at all. The server decides which one this browser can
+// actually reach, because it is the only party that knows where we came from.
 //
-// New tab, not an iframe: ttyd runs with --check-origin, and an embedded frame
-// would present the panel's origin on the websocket handshake and be rejected.
-function openTerminal(port) {
-  window.open(`http://${location.hostname}:${port || 7681}`, '_blank', 'noopener');
+// Fetched up front rather than per click: window.open() from inside an await is
+// no longer inside the click, and every popup blocker eats it.
+let TERMINALS = null;
+
+async function loadTerminals() {
+  let r;
+  try { r = await api('/api/terminals'); } catch (e) { return; }  // fallback covers it
+  TERMINALS = r.urls || null;
+  const note = document.getElementById('termDoor');
+  if (!note || !TERMINALS) return;
+  note.innerHTML = r.tailnet
+    ? 'You are on the tailnet, so these open through Tailscale — it signs you in, '
+      + 'no password. From the <code>fred</code> access point, or with the uplink down, '
+      + 'the same buttons switch to the direct ports and ask for one.'
+    : 'These open the direct ports and ask for a password — log in as <code>fred</code> '
+      + 'with the password from setup. On the tailnet, Tailscale signs you in instead.';
+}
+
+// New tab, not an iframe: the direct ports run ttyd with --check-origin, and an
+// embedded frame would present the panel's origin on the websocket handshake
+// and be rejected.
+function openTerminal(which) {
+  // Falling back to the direct port matters: if /api/terminals failed we are
+  // most likely offline at a venue, which is the case the direct door exists for.
+  const fallback = {nuc: 7691, head: 7692, chest: 7693}[which] || 7691;
+  const url = (TERMINALS || {})[which] || `http://${location.hostname}:${fallback}`;
+  window.open(url, '_blank', 'noopener');
 }
 
 // ---- Terminator clips --------------------------------------------------
@@ -693,6 +721,7 @@ function initDropzone() {
 
 initDropzone();
 loadClips();
+loadTerminals();
 loadHandoff();
 loadAudit();
 loadBrain();
