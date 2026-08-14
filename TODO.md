@@ -1,6 +1,6 @@
 # InMoov TODO
 
-## Where things stand after 2026-08-12/13
+## Where things stand after 2026-08-12/14
 
 A long session that touched the brain, the GPU, the chest touchscreen, the cart
 and the network. Everything below is either unfinished, worth doing, or worth
@@ -30,6 +30,38 @@ they do. What four digits over plain HTTP is actually worth is written down in
 `inmoov/auth.py`; the AP password and physical access are still the real
 perimeter — and that password is still the published default `inmoov-robot`.
 
+**Also cleared (2026-08-13): FRED can see.** `look_at_what_you_see` is the one
+tool whose result is a picture rather than a sentence, so it bypasses
+`run_tool`'s string contract — `brain.py`'s tool loop special-cases it and calls
+`Brain._look`. Two lenses: the eye camera, which always works, and the wide
+PanaCast when the spotter is already running (starting it for one glance costs
+about four cores). Frames go out at 1024px, ~1000 tokens, ~$0.0016 a look,
+rate-limited to one grab per camera per 12 s.
+
+Three things learned building it, worth not rediscovering:
+
+- **The rate limit re-sends the cached frame rather than referring to it.**
+  `_history` keeps only final text, never tool blocks, so by the next turn the
+  previous picture is gone from the conversation. Answering a repeat look with
+  "you already have one, answer from that" produced a confidently invented
+  shirt colour — the exact fabrication the tool exists to remove.
+- **The matcher was answering the questions vision is for.** The presence rule
+  sent "how many people are in front of you?" to `read_sensors`, which cannot
+  count. It now stands aside for count/describe/see phrasings; bare "is anyone
+  there?" still takes the offline fast path, because that is the case sensors
+  win in the dark.
+- **Only Claude gets the image** — `local_brain._to_ollama` flattens tool_result
+  content with `str()`, so on the local backend he says he can't see.
+
+Still open on it: **a look does not light the privacy LED** (`Camera.acquire()`
+tracks MJPEG viewers only), so frames leave the robot with no outward sign.
+Raised and deliberately declined on 2026-08-13 — it matches face tracking, which
+has never lit it either. And the TODO below wanted this gated behind event mode;
+only the rate limit and a `brain.vision` switch gate it, because event mode does
+not exist. Two items below still assume it does — capping answer length, and the
+crowd speed cap — so it may be worth building as its own thing rather than
+inventing a third private version of it.
+
 ### Finish first
 
 Nothing. The two items that were here — driving the cart from the hand
@@ -42,37 +74,22 @@ Ideas, not commitments — nothing here has been agreed. Ordered by what would
 change the most for the least work. The STEM list further down still stands;
 this is what is *not* already on it.
 
-### The one that reframes the rest
-
-1. **FRED cannot see.** Claude has ten tools (`CLAUDE_TOOLS` in `commands.py`)
-   and not one of them looks through the camera — yet the system prompt already
-   tells him the NUC runs "your speech, **your vision** and this conversation".
-   So today he will claim to see and then cannot, which is the worst of both.
-   Everything needed is already built: `Camera.snapshot()` returns JPEG bytes and
-   `/camera/snapshot` already serves them; the brain's model takes images.
-   A `look_at_what_you_see` tool turns "what am I looking at?", "how many people
-   are in front of me?", "what colour is my shirt?" into things he answers — and
-   at a fair, a robot that can *see you* is a different demo, not a better one.
-   Roughly $0.0016 a look at the current model's input price (~1600 tokens for a
-   1568px frame); gate it behind event mode and a rate limit rather than letting
-   it fire on every turn, and downscale before sending.
-
 ### Hearing kids in a loud room
 
-2. **The speech model is the small one.** `vosk-model-small-en-us-0.15`, on a NUC
+1. **The speech model is the small one.** `vosk-model-small-en-us-0.15`, on a NUC
    with 22 GB usable and an iGPU that is already earning its keep. Children's
    voices are measurably harder for ASR than adults', and a fair is the worst
    acoustic case there is — this is the likeliest reason a kid walks away
    thinking he ignored them. A larger Vosk model is a download and a path change.
    Worth measuring before building anything else on this list.
 
-3. **He is deaf while he talks, and a kid cannot interrupt.** The mic is paused
+2. **He is deaf while he talks, and a kid cannot interrupt.** The mic is paused
    during playback because the USB codec wedges if capture and playback overlap
    (see `listener.pause`). So a long answer cannot be cut short by voice, only by
    a button. Cap answer length in event mode rather than relying on the person
    giving up.
 
-4. **Say who is talking, on the screen at kid height.** The chest panel is at a
+3. **Say who is talking, on the screen at kid height.** The chest panel is at a
    child's eyeline and currently shows an animation. A large LISTENING /
    THINKING / SPEAKING state there would do more for turn-taking in a crowd than
    anything in the web panel — the planned kiosk view is a *laptop* screen, which
@@ -80,24 +97,24 @@ this is what is *not* already on it.
 
 ### Driving him when you are not next to him
 
-5. **An operator page shaped like a phone.** The panel is a desktop layout and at
+4. **An operator page shaped like a phone.** The panel is a desktop layout and at
    an event you are holding a phone one-handed: stop speaking, mute the mic,
    reset the conversation, volume, and the live transcript. Distinct from the
    kiosk view below, which faces outward at visitors.
 
-6. **A deck of one-tap things to say.** `/api/say` already exists. "Ask me about
+5. **A deck of one-tap things to say.** `/api/say` already exists. "Ask me about
    my servos", "Let me think about that one", "Who is next?" — for when he
    misfires and the queue needs managing. Cheap, and the most useful thing on
    this list during an actual event.
 
 ### Things worth handing him
 
-7. **His own vitals as a tool.** `/api/whoami` and the cart's telemetry now exist
+6. **His own vitals as a tool.** `/api/whoami` and the cart's telemetry now exist
    but Claude cannot read either. "How are you feeling?" answering with uptime,
    CPU temperature and battery is nearly free and is exactly the kind of question
    children ask.
 
-8. **Expression as an action.** He can already set his mouth and switch to
+7. **Expression as an action.** He can already set his mouth and switch to
    terminator mode; letting him pick the chest animation or play a sound as part
    of an answer costs one tool each over APIs that already exist.
 
@@ -106,32 +123,32 @@ this is what is *not* already on it.
 Ryan's read, and it holds up under inspection — the menu grew a page at a time
 and it shows:
 
-9. **No shared page frame.** `_fit()` is written out in three pages, and five
+8. **No shared page frame.** `_fit()` is written out in three pages, and five
    pages each declare their own margins that happen to agree. A small
    `page_frame` helper (margins, heading, truncation, empty state) would make the
    next page consistent by construction rather than by copying.
 
-10. **Nothing acknowledges a tap.** There is no pressed state anywhere; the only
-    feedback is the optimistic "lit" behaviour on the cart and display pages. On
-    a resistive-feeling panel that is the difference between confident and
-    hesitant tapping.
+9. **Nothing acknowledges a tap.** There is no pressed state anywhere; the only
+   feedback is the optimistic "lit" behaviour on the cart and display pages. On
+   a resistive-feeling panel that is the difference between confident and
+   hesitant tapping.
 
-11. **The affordance rule is real but unwritten** — a filled box with a border
+10. **The affordance rule is real but unwritten** — a filled box with a border
     means tappable. It was broken once already (the cart telemetry read as a
     fourth mode button) and nothing but care prevents the next one. Worth stating
     in `menu_ui` and auditing the other pages against.
 
-12. **Long lists have nowhere to go.** Every page assumes its content fits one
+11. **Long lists have nowhere to go.** Every page assumes its content fits one
     screen. The display picker already computes its grid from the preset list; a
     ninth preset would shrink the buttons rather than paginate.
 
 ### Other
 
-13. **Which questions he failed to understand.** Logging the transcriptions that
-    matched nothing turns a fair into a tuning set for item 2 — the real
+12. **Which questions he failed to understand.** Logging the transcriptions that
+    matched nothing turns a fair into a tuning set for item 1 — the real
     vocabulary of real children, rather than guesses.
 
-14. **A crowd speed cap for the cart.** `SPEED_LIMIT` is 300 and the same in a
+13. **A crowd speed cap for the cart.** `SPEED_LIMIT` is 300 and the same in a
     workshop as in a hall full of children. An event mode that caps it far lower
     is a small change to a machine that weighs 350 lb.
 
