@@ -176,6 +176,23 @@
   </section>
 
   <section class="panel">
+    <p class="phead">Event mode</p>
+    <div class="row" style="margin-bottom:12px">
+      <div class="label"><b>He is in front of the public</b>
+        <span>shorter answers, slower driving</span></div>
+      <div class="grow"></div>
+      <span id="eventStatus" class="badge">…</span>
+      <label class="switch" style="margin-left:10px">
+        <input type="checkbox" id="eventOn" onchange="onEvent(this.checked)"> Event mode</label>
+    </div>
+    <p class="hint">A hall full of children is not a workshop. On, FRED keeps spoken answers under
+       <b id="eventWords">25</b> words — the mic is deaf while he talks, so a long answer cannot be
+       interrupted by voice — and the cart's speed ceiling drops to <b id="eventSpeed">120</b> of 300
+       on a machine that weighs 350&nbsp;lb. It is not a safety interlock; the e-stop and the deadman
+       are. It is how you avoid needing them. Live (no Save needed); persists across reboots.</p>
+  </section>
+
+  <section class="panel">
     <p class="phead">Audit mode</p>
     <div class="row" style="margin-bottom:12px">
       <div class="label"><b>Dry run — no sound, no motion</b>
@@ -606,6 +623,26 @@ async function onBrainBackend(v) {
   reflectBrain(s);
   toast(`Brain: ${v} — now using ${s.active}`);
 }
+function reflectEvent(s) {
+  s = s || {};
+  const on = !!s.enabled;
+  const box = document.getElementById('eventOn');
+  if (box) box.checked = on;
+  const el = document.getElementById('eventStatus');
+  if (el) {
+    el.textContent = on ? 'at an event' : 'workshop';
+    // Not a fault either way — this is a mode, so neither state shouts.
+    el.className = 'badge' + (on ? ' live' : '');
+  }
+  if (s.max_words) document.getElementById('eventWords').textContent = s.max_words;
+  if (s.cart_speed) document.getElementById('eventSpeed').textContent = s.cart_speed;
+}
+async function loadEvent() { reflectEvent(await api('/api/event')); }
+async function onEvent(on) {
+  reflectEvent(await api('/api/event', { enabled: on }));
+  toast(on ? 'Event mode on — shorter answers, slower cart' : 'Event mode off');
+}
+
 async function onBrainVision(on) {
   const s = await api('/api/brain', { vision: on });
   reflectBrain(s);
@@ -725,6 +762,7 @@ loadTerminals();
 loadHandoff();
 loadAudit();
 loadBrain();
+loadEvent();
 load();
 refreshDisplay();
 </script>

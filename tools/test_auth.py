@@ -38,6 +38,10 @@ def check(label: str, ok: bool, detail: str = ""):
 # about it shows up here as an unlisted route instead of a silent default.
 GATED = [
     "/api/settings", "/api/handoff", "/api/brain", "/api/audit",
+    # Event mode relaxes as well as tightens: switching it off puts the cart's
+    # speed ceiling back up, which is not a thing a passer-by should be able to
+    # do to a 350 lb machine in a room full of children.
+    "/api/event",
     "/api/cart/drive", "/api/cart/controller", "/api/hotspot",
     "/api/display", "/api/display/metrics", "/api/led", "/api/track",
     "/api/voice", "/api/command", "/api/log/clear", "/api/move", "/api/rest",

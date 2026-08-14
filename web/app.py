@@ -48,6 +48,7 @@ from inmoov import cart as cart_mod  # noqa: E402
 from inmoov.cart import CartClient, CartError  # noqa: E402
 from inmoov.display import DisplayClient, DisplayError, VoicePusher  # noqa: E402
 from inmoov.greeter import Greeter  # noqa: E402
+from inmoov.event import EventMode  # noqa: E402
 from inmoov.settings import load_settings, save_settings  # noqa: E402
 from inmoov import auth  # noqa: E402
 from inmoov import whoami as whoami_mod  # noqa: E402
@@ -194,6 +195,13 @@ _voice_pusher.start()
 # a robot that can move itself should not start able to, and the safety layer
 # that stops it lives on the chest Pi, not here (see inmoov/cart.py).
 _cart_cfg = _settings.get("cart", {})
+_event_cfg = _settings.get("event", {})
+# One switch three features ask about. Read at call time, never copied,
+# so flipping it mid-event reaches the brain, the cart and the camera
+# without restarting any of them. See inmoov/event.py.
+_event = EventMode(enabled=bool(_event_cfg.get("enabled")),
+                   max_words=int(_event_cfg.get("max_words", 25)),
+                   cart_speed=int(_event_cfg.get("cart_speed", 120)))
 _cart = CartClient(host=str(_display_cfg.get("host", "") or ""),
                    port=int(_display_cfg.get("port", 8081)),
                    token=str(_display_cfg.get("token", "") or ""))
@@ -218,6 +226,7 @@ _assistant.ctx.camera = _camera
 # is facing. Only usable while the spotter is already running — commands.py
 # never starts it, because that costs about four cores.
 _assistant.ctx.spotter = _spotter
+_assistant.ctx.event = _event
 _lock = threading.Lock()                     # serialize hardware access
 
 # Whether the shared hardware is currently released to another owner (MyRobotLab).
@@ -375,6 +384,7 @@ def _state() -> dict:
             "voice": _assistant.status(), "servos": servos, "settings": _settings,
             "handoff": _handoff_state(), "audit": _audit_state(),
             "brain": _assistant.brain.status(),
+            "event": _event.status(),
             "sensors": _sensors.state(), "greet": _greeter.state()}
 
 
@@ -694,6 +704,29 @@ def api_handoff():
 def api_brain_status():
     """Which LLM backend answers open questions, and what's actually reachable."""
     return jsonify(_assistant.brain.status())
+
+
+@app.get("/api/event")
+def api_event_status():
+    """Is FRED at an event, and what would that cap."""
+    return jsonify(_event.status())
+
+
+@app.post("/api/event")
+@protected
+def api_event():
+    """Turn event mode on or off: ``{"enabled": bool}``. Persists.
+
+    Protected because it relaxes as well as tightens — switching it off puts the
+    cart's speed ceiling back up, and that is not a thing a passer-by should be
+    able to do to a 350 lb machine in a room full of children."""
+    data = request.get_json(force=True) or {}
+    if "enabled" in data:
+        _event.set(bool(data["enabled"]))
+        _settings.setdefault("event", {})["enabled"] = _event.enabled
+        save_settings(_settings)
+        _log.event(f"event mode {'on' if _event.enabled else 'off'}")
+    return jsonify(_event.status())
 
 
 @app.post("/api/brain")

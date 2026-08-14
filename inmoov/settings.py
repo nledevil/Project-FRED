@@ -136,6 +136,15 @@ DEFAULT_SETTINGS = {
         "vision": True,
         "vision_min_seconds": 12.0,
     },
+    "event": {
+        # Flipped when FRED is in front of the public. One switch rather than
+        # three, because "he is at an event" is one fact and capping his answer
+        # length, his driving speed and his spending are all consequences of it.
+        # See inmoov/event.py. Live from the panel; persists.
+        "enabled": False,
+        "max_words": 25,          # spoken answers; the mic is deaf while he talks
+        "cart_speed": 120,        # of cart.py's 300, on a machine weighing 350 lb
+    },
     "voice": {
         "enabled": False,             # start the "Hey FRED" wake-word listener at boot
         "gain": 1.0,                  # software mic boost (analog capture is already
