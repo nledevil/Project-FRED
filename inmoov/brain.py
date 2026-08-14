@@ -27,6 +27,7 @@ connected" reply.
 """
 from __future__ import annotations
 
+import base64
 import os
 import re
 import time
@@ -53,6 +54,13 @@ CLOUD_RETRY_SECS = 60.0
 # replies are one or two spoken sentences over a small tool set, which Haiku
 # handles well, and a talking head is judged on how fast it answers.
 MODEL = "claude-haiku-4-5-20251001"
+
+# The shortest gap between two *camera grabs*, in seconds. A look costs a camera
+# start and ~1 s of latency, and nothing stops Claude calling the tool on every
+# turn of a conversation about what it saw once. Inside this window the last
+# frame is re-sent instead (see Brain._look), so a follow-up question still gets
+# a real picture — this bounds the camera thrash, not the answers.
+LOOK_MIN_SECS = 12.0
 
 # Only some models accept output_config={"effort": ...}; Haiku 4.5 rejects it
 # with a 400, so we send it only where it's supported.
@@ -101,7 +109,18 @@ SYSTEM = (
     "Lead with the answer, then stop; don't pad with pleasantries or caveats. "
     "You have a body you can move with your tools — your jaw/mouth, your eyes, "
     "turning your head/neck left and right, face tracking, and a red 'terminator' "
-    "LED. You can also sense things about yourself: the current date and time, "
+    "LED. "
+    # The prompt above has always told FRED he has vision. Until the look tool
+    # existed that was a promise he couldn't keep, and he'd describe a room he
+    # had never seen. Now the sight is real, but only through the tool — so the
+    # rule that matters is that he must look before he claims to have looked.
+    f"You can see, but only by calling your {commands.VISION_TOOL} tool, which "
+    "shows you what your eye camera is pointed at right now. Call it before "
+    "answering anything about what is in front of you or what someone is "
+    "wearing, holding or showing you. Until you call it you have not seen "
+    "anything this turn: never describe, guess at or invent what is in front of "
+    "you, and if the look fails just say you couldn't see. "
+    "You can also sense things about yourself: the current date and time, "
     "your own network address, and the temperature of your processor — all in the "
     "facts below, which are read fresh every time you answer. Never claim you lack "
     "a sensor for something listed there. When someone asks you to do "
@@ -198,8 +217,16 @@ class Brain:
                  history_exchanges: int = HISTORY_MAX_EXCHANGES,
                  history_idle_secs: float = HISTORY_IDLE_SECS,
                  backend: str = "auto", local_model: str | None = None,
-                 local_host: str | None = None):
+                 local_host: str | None = None, vision: bool = True,
+                 look_min_secs: float = LOOK_MIN_SECS):
         self.ctx = ctx
+        self.vision = bool(vision)
+        self._look_min_secs = max(0.0, float(look_min_secs))
+        self._last_look = 0.0            # monotonic; 0 = hasn't looked yet
+        # The last frame taken, re-sent for repeat looks inside the rate-limit
+        # window. Held because the conversation memory drops tool blocks, so a
+        # follow-up question arrives with no picture in context at all.
+        self._last_frame: bytes | None = None
         self.model = model or MODEL
         self.backend = backend if backend in BACKENDS else "auto"
         self._client = None
@@ -227,6 +254,53 @@ class Brain:
             self._ai_error = "anthropic SDK not installed"
         else:
             self._ai_error = "no ANTHROPIC_API_KEY"
+
+    def _look(self, which: str):
+        """Answer the vision tool — with a picture, or with why there isn't one.
+
+        Returns either image content blocks for the tool_result or a plain
+        sentence. Every failure path returns a sentence: handing back nothing
+        would leave Claude to fill the gap, and the failure mode this whole
+        feature exists to fix is FRED describing a room he never saw.
+
+        Only Claude gets the image. local_brain._to_ollama flattens tool_result
+        content with str(), so an image block would reach the local model as a
+        page of base64 — a text-only backend has to be told it can't see.
+        """
+        if not self.vision:
+            return "My eyes are switched off at the moment."
+        if which != "claude":
+            return "I can't see right now — I'm running on my local brain."
+        now = time.monotonic()
+        waited = now - self._last_look
+        if self._last_frame is not None and waited < self._look_min_secs:
+            # Inside the window, re-send the frame he already took rather than
+            # grabbing a new one. It must be re-sent, not merely referred to:
+            # _history keeps only final text, so by the next turn the previous
+            # image is gone from the conversation entirely. Telling Claude to
+            # "answer from the look you already have" instead of handing the
+            # picture back got a confidently wrong shirt colour in testing —
+            # the exact fabrication this tool exists to stop.
+            return self._frame_blocks(self._last_frame,
+                                      f"a moment ago ({waited:.0f}s)")
+        jpeg, why = commands.capture_view(self.ctx)
+        if jpeg is None:
+            return why
+        self._last_look = now
+        self._last_frame = jpeg
+        return self._frame_blocks(jpeg, "right now")
+
+    @staticmethod
+    def _frame_blocks(jpeg: bytes, when: str) -> list[dict]:
+        """Wrap a JPEG as the content blocks of a tool_result."""
+        return [
+            {"type": "image",
+             "source": {"type": "base64", "media_type": "image/jpeg",
+                        "data": base64.standard_b64encode(jpeg).decode("ascii")}},
+            {"type": "text",
+             "text": f"This is what your eye camera saw {when}. Describe only "
+                     "what is actually in this picture."},
+        ]
 
     def ai_available(self) -> bool:
         """True when *some* LLM backend can answer an open question."""
@@ -412,7 +486,13 @@ class Brain:
                     if block.type == "tool_use":
                         actions.append(block.name)
                         try:
-                            out = commands.run_tool(self.ctx, block.name, block.input)
+                            if block.name == commands.VISION_TOOL:
+                                # Returns image blocks, not a sentence — the one
+                                # tool whose result Claude looks at rather than
+                                # reads. See Brain._look.
+                                out = self._look(which)
+                            else:
+                                out = commands.run_tool(self.ctx, block.name, block.input)
                         except Exception as exc:  # noqa: BLE001 - a wedged servo or I2C
                             # glitch shouldn't kill the turn. Hand the failure back and
                             # let FRED tell the user, mid-conversation, what went wrong.

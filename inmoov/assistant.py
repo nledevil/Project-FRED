@@ -23,7 +23,7 @@ import wave
 
 import numpy as np
 
-from .brain import Brain
+from .brain import LOOK_MIN_SECS, Brain
 from .listener import Listener
 
 
@@ -43,7 +43,10 @@ class Assistant:
         self.brain = Brain(self._ctx, api_key=api_key, model=model,
                            backend=str(bc.get("backend", "auto")),
                            local_model=bc.get("local_model") or None,
-                           local_host=bc.get("local_host") or None)
+                           local_host=bc.get("local_host") or None,
+                           vision=bool(bc.get("vision", True)),
+                           look_min_secs=float(bc.get("vision_min_seconds",
+                                                      LOOK_MIN_SECS)))
         self.listener = Listener(on_command=self._on_command, on_wake=self._on_wake,
                                  device=device, gain=mic_gain)
         self._speaking = False

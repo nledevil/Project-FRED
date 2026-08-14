@@ -207,6 +207,10 @@ def _cart_enabled() -> bool:
 # should hardcode.
 _assistant.ctx.cart = _cart
 _assistant.ctx.cart_cfg = _cart_cfg
+# The head camera, so Claude's look tool can see through FRED's eyes. Same
+# object the /camera/* routes and the face tracker use — snapshot() starts the
+# sensor if it is idle, so a look works even with nobody watching the stream.
+_assistant.ctx.camera = _camera
 _lock = threading.Lock()                     # serialize hardware access
 
 # Whether the shared hardware is currently released to another owner (MyRobotLab).

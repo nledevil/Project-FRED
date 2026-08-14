@@ -16,10 +16,25 @@ hardware singletons and returns a short line for FRED to speak back.
 """
 from __future__ import annotations
 
+import io
 import random
 import re
 
 from . import sysinfo
+
+# The one tool whose result is a picture rather than a sentence. brain.py
+# special-cases it (see Brain._look) because only there is it known which
+# backend is answering — the local model is text-only and would be handed a
+# wall of base64. Named here so the two files can't drift apart.
+VISION_TOOL = "look_at_what_you_see"
+
+# What gets sent to the vision model. Image cost is roughly pixels/750 tokens,
+# so the long edge is the price dial: 1024 is ~1050 tokens against the ~1600 a
+# full 1568px frame costs, and is still ample for "how many people are there?"
+# or "what colour is my shirt?". The API's own ceiling is 1568 on the long edge;
+# anything larger is downscaled server-side and billed for the trip anyway.
+VIEW_MAX_EDGE = 1024
+VIEW_QUALITY = 80
 
 # Spoken when terminator mode is engaged — one at random, for flavour.
 TERMINATOR_PHRASES = (
@@ -226,6 +241,57 @@ def _cart_stop(ctx) -> str:
         # stops hearing from us, so a failed stop request is not a runaway.
         return f"I couldn't reach the drive base ({exc}) — it stops itself in half a second."
     return "Stopped."
+
+
+def _shrink(jpeg: bytes, max_edge: int, quality: int) -> bytes:
+    """Downscale a frame to ``max_edge`` on its long side, re-encoded as JPEG.
+
+    Best-effort: a missing or unhappy Pillow returns the original bytes rather
+    than failing the look. Oversized frames still work — the API downscales
+    them itself — they just cost more than they need to.
+    """
+    try:
+        from PIL import Image
+    except Exception:  # noqa: BLE001 - Pillow is not a hard dependency here
+        return jpeg
+    try:
+        img = Image.open(io.BytesIO(jpeg))
+        if max(img.size) <= max_edge:
+            return jpeg
+        img = img.convert("RGB")
+        img.thumbnail((max_edge, max_edge), Image.LANCZOS)
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=quality)
+        return buf.getvalue()
+    except Exception:  # noqa: BLE001 - a truncated frame shouldn't kill the turn
+        return jpeg
+
+
+def capture_view(ctx, *, max_edge: int = VIEW_MAX_EDGE,
+                 quality: int = VIEW_QUALITY) -> tuple[bytes | None, str]:
+    """Grab one still from the head camera, sized for the vision model.
+
+    Returns ``(jpeg, "")`` on success or ``(None, reason)`` when there is no
+    picture — the reason is a sentence FRED can say. Never returns both empty:
+    the caller must always have something to tell the person, because the one
+    unacceptable outcome is FRED silently pretending he looked.
+
+    The head camera, not the wide one: that is the camera behind his eyes, the
+    one the face tracker follows with, and the one the privacy LED is wired to.
+    ``snapshot()`` starts the sensor if it is idle and stops it again after.
+    """
+    cam = getattr(ctx, "camera", None)
+    if cam is None:
+        return None, "I don't have a camera wired up."
+    try:
+        if not cam.available():
+            return None, "My camera isn't working right now, so I can't look."
+        frame = cam.snapshot()
+    except Exception as exc:  # noqa: BLE001 - a wedged sensor is a spoken answer
+        return None, f"I couldn't get a picture: {exc}"
+    if not frame:
+        return None, "My camera didn't give me a picture just then."
+    return _shrink(frame, max_edge, quality), ""
 
 
 def execute_action(ctx, name: str, **args) -> str:
@@ -441,6 +507,18 @@ CLAUDE_TOOLS = [
     {"name": "stop_moving", "description":
         "Stop the wheeled base immediately. Use for 'stop', 'halt', 'whoa'.",
      "input_schema": {"type": "object", "properties": {}}},
+    {"name": VISION_TOOL, "description":
+        "Look through FRED's eye camera and see what is actually in front of "
+        "him right now. Call this whenever answering depends on what he can "
+        "see — 'what are you looking at?', 'how many people are here?', 'what "
+        "colour is my shirt?', 'what am I holding?', 'is anyone in the room?', "
+        "'read this for me' — and whenever you are about to describe his "
+        "surroundings. You cannot see anything until you call this, so never "
+        "guess at or invent what is in front of him; if the look fails, say so "
+        "plainly. It returns the picture itself for you to examine. This is "
+        "sight, not proximity: read_sensors reports distances and movement in "
+        "the dark, and answers 'did someone walk past?' better than looking.",
+     "input_schema": {"type": "object", "properties": {}}},
     {"name": "reset_pose", "description": "Return all servos to their neutral resting position.",
      "input_schema": {"type": "object", "properties": {}}},
     {"name": "relax", "description": "Release the servos so they stop holding torque.",
@@ -472,4 +550,10 @@ def run_tool(ctx, tool_name: str, tool_input: dict) -> str:
         return execute_action(ctx, "reset")
     if tool_name == "relax":
         return execute_action(ctx, "relax")
+    if tool_name == VISION_TOOL:
+        # Only Brain._look can answer this properly — it is the one caller that
+        # knows whether the backend can receive an image. Reaching here means a
+        # text-only path asked to see, so say so rather than returning a
+        # confirmation that would read as "I looked".
+        return "I can't look at anything from here."
     return "I don't have that ability."

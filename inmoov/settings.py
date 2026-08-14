@@ -128,6 +128,13 @@ DEFAULT_SETTINGS = {
         "backend": "auto",
         "local_model": "qwen2.5:3b",
         "local_host": "http://127.0.0.1:11434",
+        # Whether FRED may look through his eye camera to answer a question.
+        # Cloud-only: the local model is text-only, so this does nothing on the
+        # "local" backend. A look costs ~1000 image tokens (about $0.0016 at
+        # Haiku's input price) plus a camera start, so it is rate-limited rather
+        # than free — vision_min_seconds is the shortest gap between two looks.
+        "vision": True,
+        "vision_min_seconds": 12.0,
     },
     "voice": {
         "enabled": False,             # start the "Hey FRED" wake-word listener at boot
