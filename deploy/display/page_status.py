@@ -25,7 +25,6 @@ is the one thing a status page must never do.
 from __future__ import annotations
 
 import menu_ui as ui
-from font5x7 import text_width
 
 ROW_Y = 96                      # first row's top edge
 ROW_H = 62
@@ -51,19 +50,19 @@ def _fit(s: str, width_px: int, scale: int = 2) -> str:
     as a corrupted message rather than a shortened one — on a status panel that
     is a real cost, because the whole point is being believed at a glance.
     """
-    if text_width(s, scale) <= width_px:
+    if ui.text_width(s, scale) <= width_px:
         return s
     words = s.split()
     out = ""
     for w in words:
         candidate = f"{out} {w}".strip()
-        if text_width(candidate, scale) > width_px:
+        if ui.text_width(candidate, scale) > width_px:
             break
         out = candidate
     if out:
         return out
     # A single word too long for the column: hard-cut it, there's nothing else.
-    n = max(1, width_px // text_width("M", scale))
+    n = max(1, width_px // ui.text_width("M", scale))
     return s[:n]
 
 
@@ -262,11 +261,21 @@ class StatusPage:
             y = ROW_Y + i * ROW_H
             ui.fill(frame, ROW_X0, y, ROW_X1, y + ROW_H - 10, ui.PANEL)
             ui.border(frame, ROW_X0, y, ROW_X1, y + ROW_H - 10, ui.EDGE)
-            ui.text(frame, name, LABEL_X, y + 10, ui.INK, 3)
-            ui.text(frame, where, LABEL_X, y + 34, ui.DIM_INK, 1)
-            ui.text(frame, state, STATE_X, y + 16, ink, 2)
-            for k, d in enumerate([d for d in detail if d][:2]):
-                ui.text(frame, _fit(d, DETAIL_W), DETAIL_X, y + 8 + k * 20,
+            # Stacked from the row's own line heights rather than from fixed
+            # offsets. The offsets used to be safe because every scale was the
+            # same 7px grid; a real typeface is taller and differs per theme, so
+            # a hardcoded y+34 put the sub-label through the bottom of the panel.
+            name_h = ui.line_height(2)
+            top = y + max(2, (ROW_H - 10 - name_h - ui.line_height(1)) // 2)
+            ui.text(frame, name, LABEL_X, top, ui.INK, 2)
+            ui.text(frame, where, LABEL_X, top + name_h, ui.DIM_INK, 1)
+            ui.text(frame, state, STATE_X, top + (name_h - ui.line_height(2)) // 2,
+                    ink, 2)
+            details = [d for d in detail if d][:2]
+            det_h = ui.line_height(2)
+            det_top = y + max(2, (ROW_H - 10 - det_h * len(details)) // 2)
+            for k, d in enumerate(details):
+                ui.text(frame, _fit(d, DETAIL_W), DETAIL_X, det_top + k * det_h,
                         ui.DIM_INK, 2)
 
         ui.text(frame, f"UPDATED {_age(snap.get('age'))}", ROW_X0, 440, ui.DIM_INK, 1)

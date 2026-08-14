@@ -222,15 +222,21 @@ class CartPage:
             ink = ui.INK
         else:
             ink = ui.OK_INK
-        ui.text(frame, f"{volts:.1f}V", BTN_X0, TEL_Y0 + 8, ink, 4)
-        ui.text(frame, "BATTERY", BTN_X0 + 138, TEL_Y0 + 6, ui.DIM_INK, 1)
+        # The label column starts after the voltage rather than at a fixed
+        # offset: the themes' typefaces are not the same width, and 138px was
+        # measured against the old bitmap font. In a wide face the reading ran
+        # straight into its own label.
+        reading = f"{volts:.1f}V"
+        ui.text(frame, reading, BTN_X0, TEL_Y0 + 8, ink, 4)
+        label_x = BTN_X0 + max(138, ui.text_width(reading, 4) + 14)
+        ui.text(frame, "BATTERY", label_x, TEL_Y0 + 6, ui.DIM_INK, 1)
+        second_y = TEL_Y0 + 6 + ui.line_height(1)
         if stale:
-            ui.text(frame, "STALE", BTN_X0 + 138, TEL_Y0 + 20, ui.WARN_INK, 2)
+            ui.text(frame, "STALE", label_x, second_y, ui.WARN_INK, 2)
         elif temp is not None:
-            ui.text(frame, f"BOARD {round(float(temp))}C", BTN_X0 + 138,
-                    TEL_Y0 + 20, ui.INK, 2)
+            ui.text(frame, f"BOARD {round(float(temp))}C", label_x, second_y, ui.INK, 2)
         else:
-            ui.text(frame, "NO BOARD TEMP", BTN_X0 + 138, TEL_Y0 + 20, ui.DIM_INK, 2)
+            ui.text(frame, "NO BOARD TEMP", label_x, second_y, ui.DIM_INK, 2)
 
     def _draw_stop(self, frame) -> None:
         """The e-stop, drawn by hand rather than as a ui.Button.

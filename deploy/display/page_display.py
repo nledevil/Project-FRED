@@ -17,13 +17,18 @@ not work, which is how you get someone tapping it four times.
 from __future__ import annotations
 
 import menu_ui as ui
-from font5x7 import text_width
+import theme as theme_mod
 
 COLS, ROWS = 2, 4
 GRID_X0, GRID_X1 = 24, 776
-GRID_Y0, GRID_Y1 = 104, 400
+GRID_Y0, GRID_Y1 = 104, 362
 GAP = 12
-STATUS_Y = 418
+# The look of this menu is a choice about this display, made in front of it —
+# the same argument that put the animation list here rather than in the web
+# panel. It is a strip rather than a page of its own because it is three taps
+# in a lifetime, and a tab for that would cost a tab on every other screen.
+THEME_Y0, THEME_Y1 = 376, 424
+STATUS_Y = 438
 
 
 class DisplayPage:
@@ -32,7 +37,14 @@ class DisplayPage:
     def __init__(self):
         self._buttons: list[tuple[str, ui.Button]] = []
         self._pending: str | None = None
-        self._built_for: list[str] = []
+        self._built_for: tuple | None = None
+        n = len(theme_mod.ORDER)
+        w = (GRID_X1 - GRID_X0 - GAP * (n - 1)) // n
+        self._themes = [
+            (name, ui.Button(GRID_X0 + i * (w + GAP), THEME_Y0,
+                             GRID_X0 + i * (w + GAP) + w, THEME_Y1,
+                             theme_mod.THEMES[name].label, scale=2))
+            for i, name in enumerate(theme_mod.ORDER)]
 
     # ---- layout ------------------------------------------------------------
     def _build(self, animations: list[dict]) -> None:
@@ -42,10 +54,16 @@ class DisplayPage:
         display_control.py, and a page that assumed eight of them would quietly
         hide the ninth.
         """
-        ids = [a.get("id", "") for a in animations]
-        if ids == self._built_for:
+        # Keyed on the theme as well as the list: the scale each label is drawn
+        # at is chosen from how wide that label measures, and every theme has a
+        # different typeface. Cached on the ids alone, switching to a wider face
+        # kept the scales picked for the narrower one and long labels ran off
+        # the ends of their buttons.
+        key = ([a.get("id", "") for a in animations],
+               ui.THEME.name if ui.THEME else None)
+        if key == self._built_for:
             return
-        self._built_for = ids
+        self._built_for = key
         self._buttons = []
         cols = COLS if len(animations) > ROWS else 1
         rows = max(1, -(-len(animations) // cols))       # ceil
@@ -59,7 +77,7 @@ class DisplayPage:
             # Biggest scale that fits, rather than a fixed one: "Arc Reactor
             # (Copper)" is twice the width of "Off" and a size chosen for the
             # longest would make the short ones look like a mistake.
-            scale = next((s for s in (3, 2, 1) if text_width(label, s) <= w - 16), 1)
+            scale = next((s for s in (3, 2, 1) if ui.text_width(label, s) <= w - 16), 1)
             self._buttons.append((str(anim.get("id") or ""),
                                   ui.Button(x0, y0, x0 + w, y0 + h, label, scale=scale)))
 
@@ -67,6 +85,13 @@ class DisplayPage:
     def on_touch(self, kind: str, x: int, y: int, net) -> None:
         if kind != "down":
             return
+        for name, button in self._themes:
+            if button.hit(x, y):
+                # Applied and saved on the spot: the next frame is already in
+                # the new look, which is the only honest preview of a theme.
+                ui.apply_theme(name)
+                theme_mod.save_name(name)
+                return
         for anim, button in self._buttons:
             if button.hit(x, y):
                 self._pending = anim
@@ -82,6 +107,14 @@ class DisplayPage:
         if current and current == self._pending:
             self._pending = None                 # the daemon caught up
         shown = self._pending or current
+
+        # The theme strip is drawn before the animation list bails out: the look
+        # of the menu is a local choice and stays available even when the Pi
+        # cannot say what it is running.
+        active = ui.THEME.name if ui.THEME else theme_mod.DEFAULT
+        for name, button in self._themes:
+            button.draw(frame, on=(name == active),
+                        ink=ui.OK_INK if name == active else ui.DIM_INK)
 
         if not self._buttons:
             ui.text(frame, "NO ANIMATION LIST FROM THIS PI", GRID_X0, GRID_Y0,

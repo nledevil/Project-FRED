@@ -30,7 +30,6 @@ with it; reviving any of this means starting from the notes in SERVICE.md.
 from __future__ import annotations
 
 import menu_ui as ui
-from font5x7 import text_width
 from keyboard import Keyboard
 
 X0, X1 = 24, 776
@@ -46,9 +45,9 @@ PSK_MIN, PSK_MAX = 8, 63
 
 
 def _fit(s: str, width_px: int, scale: int = 2) -> str:
-    if text_width(s, scale) <= width_px:
+    if ui.text_width(s, scale) <= width_px:
         return s
-    n = max(1, width_px // max(1, text_width("M", scale)))
+    n = max(1, width_px // max(1, ui.text_width("M", scale)))
     return s[:n]
 
 

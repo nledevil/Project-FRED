@@ -28,7 +28,6 @@ from __future__ import annotations
 import time
 
 import menu_ui as ui
-from font5x7 import text_width
 
 ROW_Y0 = 100                    # first slider row
 ROW_H = 52
@@ -207,7 +206,7 @@ class ServosPage:
             ui.fill(frame, kx - KNOB_W // 2, mid - 16, kx + KNOB_W // 2, mid + 16, ink)
 
             label = f"{round(angle)}"
-            ui.text(frame, label, VALUE_X - text_width(label, 2), y + 12,
+            ui.text(frame, label, VALUE_X - ui.text_width(label, 2), y + 12,
                     ui.DIM_INK if blocked else ui.INK, 2)
 
         self._rest.draw(frame, ink=ui.DIM_INK if blocked else ui.INK)

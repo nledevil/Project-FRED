@@ -38,7 +38,6 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import menu_ui as ui                        # noqa: E402 — sibling module
-from font5x7 import text_width              # noqa: E402
 from fb import Framebuffer, hide_cursor     # noqa: E402
 from page_cart import CartPage              # noqa: E402
 from page_display import DisplayPage        # noqa: E402
@@ -264,7 +263,7 @@ def main() -> int:
     # neighbour instead — visibly wrong, and silently so in a test that only
     # checked geometry.
     tab_scale = max(1, min(2, *(next((sc for sc in (2, 1)
-                                      if text_width(p.title, sc) <= tab_w - 8), 1)
+                                      if ui.text_width(p.title, sc) <= tab_w - 8), 1)
                                 for p in pages)))
     tabs = [ui.Button(TAB_X0 + i * (tab_w + TAB_GAP), TAB_Y,
                       TAB_X0 + i * (tab_w + TAB_GAP) + tab_w, TAB_Y + TAB_H,

@@ -23,7 +23,7 @@ page owns it and the keyboard is only a way of changing it.
 from __future__ import annotations
 
 import menu_ui as ui
-from font5x7 import FONT, text_width
+from font5x7 import FONT
 
 X0, X1 = 24, 776
 # The label sits at 104, immediately under the tab strip (which ends at 90).
@@ -157,7 +157,7 @@ class Keyboard:
         # Show the tail when it overflows: what you are typing is the end of it,
         # so a field that clipped the right would hide the cursor.
         shown, scale = self.text, 3
-        while shown and text_width(shown, scale) > (X1 - X0 - 24):
+        while shown and ui.text_width(shown, scale) > (X1 - X0 - 24):
             shown = shown[1:]
         ui.text(frame, shown, X0 + 12, FIELD_Y0 + 12, ui.INK, scale,
                 preserve_case=True)

@@ -19,7 +19,6 @@ a filled box with a border means tappable; a readout has to go without one.
 from __future__ import annotations
 
 import menu_ui as ui
-from font5x7 import text_width
 
 X0, X1 = 24, 776
 COL2 = 300
@@ -29,9 +28,9 @@ LINE_H = 26
 
 
 def _fit(s: str, width_px: int, scale: int = 2) -> str:
-    if text_width(s, scale) <= width_px:
+    if ui.text_width(s, scale) <= width_px:
         return s
-    n = max(1, width_px // max(1, text_width("M", scale)))
+    n = max(1, width_px // max(1, ui.text_width("M", scale)))
     return s[:n]
 
 
