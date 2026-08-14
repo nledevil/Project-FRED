@@ -211,6 +211,10 @@ _assistant.ctx.cart_cfg = _cart_cfg
 # object the /camera/* routes and the face tracker use — snapshot() starts the
 # sensor if it is idle, so a look works even with nobody watching the stream.
 _assistant.ctx.camera = _camera
+# The wide PanaCast too, for looks that need the whole room rather than what he
+# is facing. Only usable while the spotter is already running — commands.py
+# never starts it, because that costs about four cores.
+_assistant.ctx.spotter = _spotter
 _lock = threading.Lock()                     # serialize hardware access
 
 # Whether the shared hardware is currently released to another owner (MyRobotLab).
@@ -697,6 +701,12 @@ def api_brain():
     'auto' prefers Claude and falls back to the local model when the network is
     down — which is the case FRED is taken to events for. Persists."""
     data = request.get_json(force=True) or {}
+    if "vision" in data:
+        # Whether FRED may look through a camera to answer. Persisted like the
+        # backend, so "no photographs today" survives a reboot.
+        _assistant.brain.set_vision(bool(data["vision"]))
+        _settings.setdefault("brain", {})["vision"] = _assistant.brain.vision
+        save_settings(_settings)
     if "backend" in data:
         want = str(data["backend"])
         if want not in BACKENDS:

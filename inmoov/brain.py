@@ -222,11 +222,12 @@ class Brain:
         self.ctx = ctx
         self.vision = bool(vision)
         self._look_min_secs = max(0.0, float(look_min_secs))
-        self._last_look = 0.0            # monotonic; 0 = hasn't looked yet
-        # The last frame taken, re-sent for repeat looks inside the rate-limit
-        # window. Held because the conversation memory drops tool blocks, so a
-        # follow-up question arrives with no picture in context at all.
-        self._last_frame: bytes | None = None
+        # Per camera ("eyes"/"wide"): when it was last grabbed, and the frame
+        # itself, re-sent for repeat looks inside the rate-limit window. Held
+        # because the conversation memory drops tool blocks, so a follow-up
+        # question arrives with no picture in context at all.
+        self._last_look: dict[str, float] = {}
+        self._last_frame: dict[str, bytes] = {}
         self.model = model or MODEL
         self.backend = backend if backend in BACKENDS else "auto"
         self._client = None
@@ -255,7 +256,7 @@ class Brain:
         else:
             self._ai_error = "no ANTHROPIC_API_KEY"
 
-    def _look(self, which: str):
+    def _look(self, which: str, tool_input: dict | None = None):
         """Answer the vision tool — with a picture, or with why there isn't one.
 
         Returns either image content blocks for the tool_result or a plain
@@ -271,9 +272,16 @@ class Brain:
             return "My eyes are switched off at the moment."
         if which != "claude":
             return "I can't see right now — I'm running on my local brain."
+        # Cameras are rate-limited and cached separately: they point at
+        # different things, so a wide look must never be answered with the eye
+        # camera's frame just because that one is recent.
+        source = str((tool_input or {}).get("camera") or "eyes")
+        if source not in ("eyes", "wide"):
+            source = "eyes"
         now = time.monotonic()
-        waited = now - self._last_look
-        if self._last_frame is not None and waited < self._look_min_secs:
+        waited = now - self._last_look.get(source, 0.0)
+        cached = self._last_frame.get(source)
+        if cached is not None and waited < self._look_min_secs:
             # Inside the window, re-send the frame he already took rather than
             # grabbing a new one. It must be re-sent, not merely referred to:
             # _history keeps only final text, so by the next turn the previous
@@ -281,25 +289,27 @@ class Brain:
             # "answer from the look you already have" instead of handing the
             # picture back got a confidently wrong shirt colour in testing —
             # the exact fabrication this tool exists to stop.
-            return self._frame_blocks(self._last_frame,
+            return self._frame_blocks(cached, source,
                                       f"a moment ago ({waited:.0f}s)")
-        jpeg, why = commands.capture_view(self.ctx)
+        jpeg, why = commands.capture_view(self.ctx, source=source)
         if jpeg is None:
             return why
-        self._last_look = now
-        self._last_frame = jpeg
-        return self._frame_blocks(jpeg, "right now")
+        self._last_look[source] = now
+        self._last_frame[source] = jpeg
+        return self._frame_blocks(jpeg, source, "right now")
 
     @staticmethod
-    def _frame_blocks(jpeg: bytes, when: str) -> list[dict]:
+    def _frame_blocks(jpeg: bytes, source: str, when: str) -> list[dict]:
         """Wrap a JPEG as the content blocks of a tool_result."""
+        lens = ("your wide chest camera, which takes in the whole room"
+                if source == "wide" else "your eye camera, pointed where you are facing")
         return [
             {"type": "image",
              "source": {"type": "base64", "media_type": "image/jpeg",
                         "data": base64.standard_b64encode(jpeg).decode("ascii")}},
             {"type": "text",
-             "text": f"This is what your eye camera saw {when}. Describe only "
-                     "what is actually in this picture."},
+             "text": f"This is what {lens} saw {when}. Describe only what is "
+                     "actually in this picture."},
         ]
 
     def ai_available(self) -> bool:
@@ -319,14 +329,38 @@ class Brain:
         self._cloud_failed_at = 0.0        # a deliberate switch clears the sulk
         return self.backend
 
+    def set_vision(self, on: bool) -> bool:
+        """Turn looking on or off at runtime.
+
+        Switching off drops the cached frames too: they are pictures of whoever
+        was in front of him, and "stop looking" should not leave the last one
+        sitting in memory ready to be re-sent.
+        """
+        self.vision = bool(on)
+        if not self.vision:
+            self._last_frame.clear()
+            self._last_look.clear()
+        return self.vision
+
     def status(self) -> dict:
         """What the admin panel shows about the brain."""
+        cam = getattr(self.ctx, "camera", None)
+        spotter = getattr(self.ctx, "spotter", None)
         return {"backend": self.backend, "backends": list(BACKENDS),
                 "claude_model": self.model, "claude_ready": self._client is not None,
                 "claude_error": self._ai_error,
                 "local_model": self._local.model, "local_ready": self._local.available(),
                 "local_host": self._local.host, "local_models": self._local.models(),
-                "active": self._pick_backend()}
+                "active": self._pick_backend(),
+                # Vision: the switch, and whether a look would actually work.
+                # Separate on purpose — "on but no camera" and "camera but
+                # switched off" are different problems and the panel should be
+                # able to say which. Cloud-only, hence the backend in the test.
+                "vision": self.vision,
+                "vision_ready": bool(self.vision and self._client is not None
+                                     and cam is not None and cam.available()),
+                "vision_wide_ready": bool(spotter is not None and spotter.is_running()),
+                "vision_min_seconds": self._look_min_secs}
 
     def _pick_backend(self) -> str:
         """Which backend a question would actually go to right now."""
@@ -490,7 +524,7 @@ class Brain:
                                 # Returns image blocks, not a sentence — the one
                                 # tool whose result Claude looks at rather than
                                 # reads. See Brain._look.
-                                out = self._look(which)
+                                out = self._look(which, block.input)
                             else:
                                 out = commands.run_tool(self.ctx, block.name, block.input)
                         except Exception as exc:  # noqa: BLE001 - a wedged servo or I2C

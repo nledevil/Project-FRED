@@ -160,6 +160,14 @@
       <div class="grow"></div>
       <span id="brainStatus" class="badge">…</span>
     </div>
+    <div class="row" style="margin-bottom:12px">
+      <div class="label"><b>Let him look</b>
+        <span>send a camera frame to Claude to answer "what do you see?"</span></div>
+      <div class="grow"></div>
+      <span id="visionStatus" class="badge">…</span>
+      <label class="switch" style="margin-left:10px">
+        <input type="checkbox" id="brainVision" onchange="onBrainVision(this.checked)"> Vision</label>
+    </div>
     <p class="hint">FRED is taken places without reliable WiFi, so <b>Auto</b> uses Claude when it can
        reach it and silently falls back to the local model when it can't — a worse answer instead of
        no answer. After a failure it stays local for a minute rather than paying a network timeout on
@@ -578,12 +586,29 @@ function reflectBrain(s) {
   el.className = 'badge ' + (active === 'none' ? 'mock' : 'live');
   el.title = `Claude ${s.claude_ready ? 'ready' : 'unavailable' + (s.claude_error ? ': ' + s.claude_error : '')}`
            + ` · local ${s.local_ready ? 'ready (' + s.local_model + ')' : 'unavailable'}`;
+  // Vision: the switch and whether a look would actually work are different
+  // facts. Off is a choice, so it reads neutral; on-but-broken is the one worth
+  // flagging, because he'd have to tell someone he can't see.
+  const vis = document.getElementById('brainVision');
+  if (vis) vis.checked = !!s.vision;
+  const vs = document.getElementById('visionStatus');
+  if (vs) {
+    vs.textContent = !s.vision ? 'off' : (s.vision_ready ? 'ready' : 'no camera');
+    vs.className = 'badge ' + (!s.vision ? '' : (s.vision_ready ? 'live' : 'mock'));
+    vs.title = s.vision_wide_ready ? 'eye camera and wide camera' : 'eye camera only'
+             + ' · needs Claude (the local model is text-only)';
+  }
 }
 async function loadBrain() { reflectBrain(await api('/api/brain')); }
 async function onBrainBackend(v) {
   const s = await api('/api/brain', { backend: v });
   reflectBrain(s);
   toast(`Brain: ${v} — now using ${s.active}`);
+}
+async function onBrainVision(on) {
+  const s = await api('/api/brain', { vision: on });
+  reflectBrain(s);
+  toast(on ? 'FRED can look through his cameras' : 'Looking switched off');
 }
 
 // ---- audit (dry run) mode ----------------------------------------------

@@ -267,19 +267,42 @@ def _shrink(jpeg: bytes, max_edge: int, quality: int) -> bytes:
         return jpeg
 
 
-def capture_view(ctx, *, max_edge: int = VIEW_MAX_EDGE,
+def capture_view(ctx, *, source: str = "eyes", max_edge: int = VIEW_MAX_EDGE,
                  quality: int = VIEW_QUALITY) -> tuple[bytes | None, str]:
-    """Grab one still from the head camera, sized for the vision model.
+    """Grab one still for the vision model, from the eye or the wide camera.
 
     Returns ``(jpeg, "")`` on success or ``(None, reason)`` when there is no
     picture — the reason is a sentence FRED can say. Never returns both empty:
     the caller must always have something to tell the person, because the one
     unacceptable outcome is FRED silently pretending he looked.
 
-    The head camera, not the wide one: that is the camera behind his eyes, the
-    one the face tracker follows with, and the one the privacy LED is wired to.
-    ``snapshot()`` starts the sensor if it is idle and stops it again after.
+    Two cameras, and they are not interchangeable:
+
+    * ``eyes`` — the head camera, behind his eyes, the one the face tracker
+      follows with. It sees where he is facing, and ``snapshot()`` starts the
+      sensor if it is idle and stops it again after, so a look always works.
+    * ``wide`` — the PanaCast on his chest, which takes in the whole room. It
+      is only usable **while the spotter is already running**: its snapshot()
+      returns nothing when stopped, and starting it costs about four CPU cores
+      — far too much to spend on one glance. So this never starts it.
     """
+    if source == "wide":
+        spotter = getattr(ctx, "spotter", None)
+        if spotter is None:
+            return None, "I don't have a wide camera."
+        try:
+            if not spotter.is_running():
+                # Deliberately not started here — see the docstring. Naming the
+                # other camera keeps this a useful answer rather than a dead end.
+                return None, ("My wide camera isn't running, so I can only look "
+                              "straight ahead with my eyes.")
+            frame = spotter.snapshot()
+        except Exception as exc:  # noqa: BLE001 - a wedged sensor is a spoken answer
+            return None, f"I couldn't get a picture from my wide camera: {exc}"
+        if not frame:
+            return None, "My wide camera didn't give me a picture just then."
+        return _shrink(frame, max_edge, quality), ""
+
     cam = getattr(ctx, "camera", None)
     if cam is None:
         return None, "I don't have a camera wired up."
@@ -424,7 +447,19 @@ _PATTERNS = [
     # match it (on "someone ... by") and answer with distances nobody asked for.
     (re.compile(r"\b(walk(ed)?|go(ne)?|came?|pass(ed)?|went)\b.*\b(by|past|through|in front)\b", re.I), "read_sensors", {"which": "motion"}),
     (re.compile(r"\b(did|has|have)\b.*\b(any\s?(one|body)|some\s?(one|body))\b.*\b(walk|walked|go|gone|come|came|pass|passed|move|moved)\b", re.I), "read_sensors", {"which": "motion"}),
-    (re.compile(r"\b(any\s?(one|body)|some\s?(one|body)|people)\b.*\b(there|here|around|near(by)?|close|in front)\b", re.I), "read_sensors", {}),
+    # Bare presence only. Since FRED can actually see (VISION_TOOL), a question
+    # that asks him to *count*, *describe* or *look at* something must not be
+    # short-circuited to distance readings — the sensors cannot count people or
+    # tell you what colour a shirt is, and answering from them is how "how many
+    # people are in front of you?" got "I don't have any proximity sensors".
+    # Anything with a seeing verb goes to Claude instead, which holds both this
+    # tool and the camera and can pick the right one. "Is anyone there?" stays
+    # here: instant, offline, and right in the dark.
+    (re.compile(r"^(?!.*\b(how many|count|colou?r|wearing|holding|describe|"
+                r"look(s|ing)? like|see|seeing|watch(ing)?|show(ing)?|read)\b)"
+                r".*\b(any\s?(one|body)|some\s?(one|body)|people)\b"
+                r".*\b(there|here|around|near(by)?|close|in front)\b", re.I),
+     "read_sensors", {}),
     (re.compile(r"\bmotion (sensor|detect)", re.I), "read_sensors", {"which": "motion"}),
     (re.compile(r"\bhow far\b", re.I), "read_sensors", {"which": "distance"}),
     (re.compile(r"\b(distance|proximity|ultrasonic)\b.*\b(sensor|reading|say|read)", re.I), "read_sensors", {"which": "distance"}),
@@ -481,9 +516,12 @@ CLAUDE_TOOLS = [
     {"name": "read_sensors", "description":
         "Read FRED's proximity sensors: ultrasonic distance sensors and a motion "
         "detector in his chest. Use this for 'is anyone there?', 'how far away am "
-        "I?', 'did someone walk by?', 'can you see anyone?'. Reports current "
+        "I?', 'did someone walk by?'. Reports current "
         "distances plus whether anything has moved in the last few minutes, so it "
-        "answers questions about the recent past as well as right now.",
+        "answers questions about the recent past as well as right now. It works "
+        "in the dark and sees behind him, which the camera cannot — but it only "
+        "reports distance and movement. To count people, or to say anything "
+        f"about what someone or something looks like, use {VISION_TOOL} instead.",
      "input_schema": {"type": "object", "properties": {
          "which": {"type": "string", "enum": ["all", "distance", "motion"],
                    "description": "Limit the reading to one kind of sensor. Defaults to all."}}}},
@@ -518,7 +556,15 @@ CLAUDE_TOOLS = [
         "plainly. It returns the picture itself for you to examine. This is "
         "sight, not proximity: read_sensors reports distances and movement in "
         "the dark, and answers 'did someone walk past?' better than looking.",
-     "input_schema": {"type": "object", "properties": {}}},
+     "input_schema": {"type": "object", "properties": {
+         "camera": {"type": "string", "enum": ["eyes", "wide"],
+                    "description":
+                        "'eyes' (the default) is the camera in his head — it "
+                        "sees whoever he is facing, and always works. 'wide' is "
+                        "the camera on his chest, which takes in the whole room "
+                        "at once: better for counting people or finding "
+                        "something off to one side, but it only works when it "
+                        "is already running, and says so if it isn't."}}}},
     {"name": "reset_pose", "description": "Return all servos to their neutral resting position.",
      "input_schema": {"type": "object", "properties": {}}},
     {"name": "relax", "description": "Release the servos so they stop holding torque.",
