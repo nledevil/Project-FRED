@@ -62,6 +62,17 @@ not exist. Two items below still assume it does — capping answer length, and t
 crowd speed cap — so it may be worth building as its own thing rather than
 inventing a third private version of it.
 
+**Also cleared (2026-08-14): he can say how he is doing.** `check_health`
+reports uptime, processor temperature, and the drive base's battery and board
+heat. The facts block already carried the date, addresses and SoC temperature
+into every turn, so the tool covers only what was actually missing — and a
+missing battery reading is itself an answer, because it nearly always means the
+wheels are switched off rather than anything being broken. Battery is spoken as
+a rough level beside the voltage: a 10S pack sags under load, so a percentage
+would be false precision. No matcher pattern for it on purpose — "how are you
+feeling?" deserves warmth, and a regex hands back the same flat recitation
+every time.
+
 ### Finish first
 
 Nothing. The two items that were here — driving the cart from the hand
@@ -109,12 +120,7 @@ this is what is *not* already on it.
 
 ### Things worth handing him
 
-6. **His own vitals as a tool.** `/api/whoami` and the cart's telemetry now exist
-   but Claude cannot read either. "How are you feeling?" answering with uptime,
-   CPU temperature and battery is nearly free and is exactly the kind of question
-   children ask.
-
-7. **Expression as an action.** He can already set his mouth and switch to
+6. **Expression as an action.** He can already set his mouth and switch to
    terminator mode; letting him pick the chest animation or play a sound as part
    of an answer costs one tool each over APIs that already exist.
 
@@ -123,32 +129,32 @@ this is what is *not* already on it.
 Ryan's read, and it holds up under inspection — the menu grew a page at a time
 and it shows:
 
-8. **No shared page frame.** `_fit()` is written out in three pages, and five
+7. **No shared page frame.** `_fit()` is written out in three pages, and five
    pages each declare their own margins that happen to agree. A small
    `page_frame` helper (margins, heading, truncation, empty state) would make the
    next page consistent by construction rather than by copying.
 
-9. **Nothing acknowledges a tap.** There is no pressed state anywhere; the only
+8. **Nothing acknowledges a tap.** There is no pressed state anywhere; the only
    feedback is the optimistic "lit" behaviour on the cart and display pages. On
    a resistive-feeling panel that is the difference between confident and
    hesitant tapping.
 
-10. **The affordance rule is real but unwritten** — a filled box with a border
-    means tappable. It was broken once already (the cart telemetry read as a
-    fourth mode button) and nothing but care prevents the next one. Worth stating
-    in `menu_ui` and auditing the other pages against.
+9. **The affordance rule is real but unwritten** — a filled box with a border
+   means tappable. It was broken once already (the cart telemetry read as a
+   fourth mode button) and nothing but care prevents the next one. Worth stating
+   in `menu_ui` and auditing the other pages against.
 
-11. **Long lists have nowhere to go.** Every page assumes its content fits one
+10. **Long lists have nowhere to go.** Every page assumes its content fits one
     screen. The display picker already computes its grid from the preset list; a
     ninth preset would shrink the buttons rather than paginate.
 
 ### Other
 
-12. **Which questions he failed to understand.** Logging the transcriptions that
+11. **Which questions he failed to understand.** Logging the transcriptions that
     matched nothing turns a fair into a tuning set for item 1 — the real
     vocabulary of real children, rather than guesses.
 
-13. **A crowd speed cap for the cart.** `SPEED_LIMIT` is 300 and the same in a
+12. **A crowd speed cap for the cart.** `SPEED_LIMIT` is 300 and the same in a
     workshop as in a hall full of children. An event mode that caps it far lower
     is a small change to a machine that weighs 350 lb.
 
