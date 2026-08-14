@@ -20,7 +20,7 @@ import io
 import random
 import re
 
-from . import sysinfo
+from . import sysinfo, whoami
 
 # The one tool whose result is a picture rather than a sentence. brain.py
 # special-cases it (see Brain._look) because only there is it known which
@@ -115,6 +115,74 @@ def _speak_ago(sec: float) -> str:
     if sec < 5:
         return "just now"
     return f"{round(sec)} seconds ago" if sec < 90 else f"{round(sec / 60)} minutes ago"
+
+
+def _speak_uptime(sec: float) -> str:
+    """Uptime as something sayable. Nobody wants "27143 seconds"."""
+    if sec < 60:                 # only ever true just after a reboot
+        return "less than a minute"
+    mins = sec / 60
+    if mins < 60:
+        return "a minute" if round(mins) == 1 else f"{round(mins)} minutes"
+    hours = mins / 60
+    if hours < 36:
+        return "an hour" if round(hours) == 1 else f"{round(hours)} hours"
+    days = hours / 24
+    return "a day" if round(days) == 1 else f"{round(days)} days"
+
+
+def _health_report(ctx) -> str:
+    """How FRED is doing, phrased to be spoken aloud.
+
+    The facts block already hands Claude the date, the addresses and the
+    processor temperature on every turn, so the point of this is the rest: how
+    long he has been up, and what the drive base's own board says about its
+    battery and its heat — which nothing else in the conversation can see.
+
+    Everything degrades to a clause rather than an absence. "How are you
+    feeling?" should never come back empty, and a missing battery reading is
+    itself worth saying: it usually means the base is switched off.
+    """
+    parts: list[str] = []
+
+    up = whoami.uptime_s()
+    if up:
+        parts.append(f"I've been awake for {_speak_uptime(up)}")
+
+    c = sysinfo.soc_temp_c()
+    if c is not None:
+        # Warm rather than a number he'd have to interpret; the exact figure is
+        # in the facts block already if someone actually asks for degrees.
+        parts.append(f"my processor is at {c:.0f} degrees Celsius"
+                     + (" and running hot" if c >= 80 else ""))
+
+    cart = getattr(ctx, "cart", None)
+    if cart is None or not cart.configured():
+        parts.append("I don't have a drive base wired up")
+        return ", ".join(parts) + "."
+
+    try:
+        st = cart.state()
+    except Exception:  # noqa: BLE001 - CartError or a network blip; both are "can't ask"
+        parts.append("I can't reach my drive base to check its battery")
+        return ", ".join(parts) + "."
+
+    volts, board = st.get("battery_v"), st.get("board_temp_c")
+    if volts:
+        # A 10S hoverboard pack: ~42 V charged, ~33 V empty. Rough on purpose —
+        # voltage sags under load, so a percentage would be false precision.
+        level = ("well charged" if volts >= 39 else
+                 "getting low" if volts >= 35 else "nearly flat")
+        parts.append(f"my battery is {level} at {volts:.1f} volts")
+    else:
+        # The board only reports while it is powered; the panel can be talking
+        # to the chest Pi quite happily and still hear nothing from the wheels.
+        parts.append("my base isn't reporting a battery, so it's probably switched off")
+    if board:
+        parts.append(f"the board in my base is at {board:.0f} degrees")
+    if st.get("estop"):
+        parts.append("and my emergency stop is engaged, so I can't drive until it's cleared")
+    return ", ".join(parts) + "."
 
 
 def _sensor_label(name: str) -> str:
@@ -323,6 +391,8 @@ def execute_action(ctx, name: str, **args) -> str:
         return _drive(ctx, str(args.get("direction", "")), args.get("seconds"))
     if name == "cart_stop":
         return _cart_stop(ctx)
+    if name == "check_health":
+        return _health_report(ctx)
 
     if name == "open_mouth":
         _jaw(ctx, True)
@@ -565,6 +635,16 @@ CLAUDE_TOOLS = [
                         "at once: better for counting people or finding "
                         "something off to one side, but it only works when it "
                         "is already running, and says so if it isn't."}}}},
+    {"name": "check_health", "description":
+        "Check how FRED himself is doing: how long he has been running, how hot "
+        "his processor is, and what his drive base reports about its battery "
+        "and temperature. Call this for 'how are you feeling?', 'how's your "
+        "battery?', 'are you tired?', 'how long have you been on?', 'are you "
+        "okay?'. This is about his own body, not the room — read_sensors is for "
+        "what is near him and look_at_what_you_see is for what he can see. The "
+        "date, time, network addresses and processor temperature are already in "
+        "the facts you are given each turn; call this for the rest.",
+     "input_schema": {"type": "object", "properties": {}}},
     {"name": "reset_pose", "description": "Return all servos to their neutral resting position.",
      "input_schema": {"type": "object", "properties": {}}},
     {"name": "relax", "description": "Release the servos so they stop holding torque.",
@@ -592,6 +672,8 @@ def run_tool(ctx, tool_name: str, tool_input: dict) -> str:
                               seconds=ti.get("seconds"))
     if tool_name == "stop_moving":
         return execute_action(ctx, "cart_stop")
+    if tool_name == "check_health":
+        return execute_action(ctx, "check_health")
     if tool_name == "reset_pose":
         return execute_action(ctx, "reset")
     if tool_name == "relax":
