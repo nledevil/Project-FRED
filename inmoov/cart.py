@@ -55,6 +55,10 @@ class CartClient:
         # Audit (dry run): drive commands are acknowledged but never sent. Stops
         # are deliberately NOT suppressed — see stop().
         self._audit = False
+        # An optional extra speed cap on top of STEER_LIMIT/SPEED_LIMIT, set by
+        # whoever owns policy (web/app.py, from event mode). None = firmware
+        # limits only. Callable so it stays live; see _ceiling().
+        self.speed_ceiling = None
 
     def configure(self, host: str | None = None, port: int | None = None,
                   token: str | None = None) -> None:
@@ -109,12 +113,40 @@ class CartClient:
         self._audit = on
 
     # -- motion ------------------------------------------------------------
+    def _ceiling(self) -> int | None:
+        """The current extra speed cap, or None for the firmware's own limits.
+
+        Held as a callable rather than a number so a live switch cannot go stale
+        here: event mode is flipped from the panel mid-event, and a copy taken
+        at construction would keep driving at workshop speed in a hall full of
+        children. See inmoov/event.py and where app.py assigns this.
+        """
+        source = self.speed_ceiling
+        if source is None:
+            return None
+        try:
+            value = source() if callable(source) else source
+        except Exception:                       # noqa: BLE001 - never block a drive
+            return None
+        return int(value) if value else None
+
     def drive(self, steer, speed) -> dict:
         """One command. Authority expires at the chest's watchdog unless repeated.
 
         This is what the panel's joystick calls on every tick. Callers that are
         not a human holding a control should use nudge() instead.
+
+        The cap is applied *here* rather than in nudge(), because nudge() calls
+        this — so every path out of this class passes through one clamp, and a
+        caller added later cannot route around it by accident.
         """
+        cap = self._ceiling()
+        if cap is not None:
+            # Steer as well as speed: a fast spin next to a child is exactly as
+            # bad as a fast run at one, and capping only forward motion would
+            # have left the sharpest thing this base does uncapped.
+            steer = max(-cap, min(int(steer), cap))
+            speed = max(-cap, min(int(speed), cap))
         if self._audit:
             # Acknowledge without sending: nudge() checks this reply for an error
             # before it spawns, and the joystick expects a dict back every tick.

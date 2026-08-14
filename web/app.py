@@ -227,6 +227,9 @@ _assistant.ctx.camera = _camera
 # never starts it, because that costs about four cores.
 _assistant.ctx.spotter = _spotter
 _assistant.ctx.event = _event
+# The cart asks event mode for its ceiling on every command rather than being
+# told when it changes — one source of truth, and no way for the two to drift.
+_cart.speed_ceiling = lambda: _event.cart_speed
 _lock = threading.Lock()                     # serialize hardware access
 
 # Whether the shared hardware is currently released to another owner (MyRobotLab).
