@@ -97,6 +97,24 @@ Also worth knowing: **there is almost nothing to play.** Three utility clips
 (`ok`, `startup`, `test`) and no terminator clips uploaded at all, so the sound
 half of this works but has nothing expressive to say with it.
 
+**Also cleared (2026-08-15): the speech model, on cost.** He runs
+`vosk-model-en-us-0.22-lgraph` now. `voice.asr_model` picks it by directory
+name, so changing it is a settings edit and reverting is the same edit
+backwards; `tools/bench_asr.py` measures any pair. On this machine: 0.15x real
+time for the small model against 0.80x for this one — 5.4x the CPU, still under
+real time, and the factor barely moves with the wide camera stopped, so the
+cost is the model's own rather than contention. Above 1.0x he would fall behind
+the microphone and stop hearing people, which is worse than mishearing, so that
+headroom is the thing to watch.
+
+**But the question the list asked is still open.** The decision was made on cost
+plus one accuracy win on clean synthetic speech ("my sure" -> "my shirt"). The
+case that actually fails is a child at three feet in a hall of four hundred, and
+nothing here can synthesise it — the failed-transcription item below is what
+collects it. Worth re-running the bench against real recordings before calling
+this settled. And note both models hear "servos" as "servers": that is
+vocabulary, not size, and no larger download fixes it.
+
 ### Finish first
 
 Nothing. The two items that were here — driving the cart from the hand
@@ -111,14 +129,7 @@ this is what is *not* already on it.
 
 ### Hearing kids in a loud room
 
-1. **The speech model is the small one.** `vosk-model-small-en-us-0.15`, on a NUC
-   with 22 GB usable and an iGPU that is already earning its keep. Children's
-   voices are measurably harder for ASR than adults', and a fair is the worst
-   acoustic case there is — this is the likeliest reason a kid walks away
-   thinking he ignored them. A larger Vosk model is a download and a path change.
-   Worth measuring before building anything else on this list.
-
-2. **Say who is talking, on the screen at kid height.** The chest panel is at a
+1. **Say who is talking, on the screen at kid height.** The chest panel is at a
    child's eyeline and currently shows an animation. A large LISTENING /
    THINKING / SPEAKING state there would do more for turn-taking in a crowd than
    anything in the web panel — the planned kiosk view is a *laptop* screen, which
@@ -126,19 +137,19 @@ this is what is *not* already on it.
 
 ### Driving him when you are not next to him
 
-3. **An operator page shaped like a phone.** The panel is a desktop layout and at
+2. **An operator page shaped like a phone.** The panel is a desktop layout and at
    an event you are holding a phone one-handed: stop speaking, mute the mic,
    reset the conversation, volume, and the live transcript. Distinct from the
    kiosk view below, which faces outward at visitors.
 
-4. **A deck of one-tap things to say.** `/api/say` already exists. "Ask me about
+3. **A deck of one-tap things to say.** `/api/say` already exists. "Ask me about
    my servos", "Let me think about that one", "Who is next?" — for when he
    misfires and the queue needs managing. Cheap, and the most useful thing on
    this list during an actual event.
 
 ### Other
 
-5. **Which questions he failed to understand.** Logging the transcriptions that
+4. **Which questions he failed to understand.** Logging the transcriptions that
    matched nothing turns a fair into a tuning set for item 1 — the real
    vocabulary of real children, rather than guesses.
 
