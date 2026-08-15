@@ -224,17 +224,22 @@ def empty(frame: np.ndarray, message: str, y: int = CONTENT_Y,
 
 
 def readout(frame: np.ndarray, x0: int, y0: int, x1: int, y1: int,
-            weight: int = 1) -> None:
+            weight: int = 1, face=None) -> None:
     """A surface that shows something and cannot be tapped.
 
     The counterpart to Button: same rounding so the screen still looks like one
     family, but a flatter face and a dim edge instead of the accent. See the
     affordance rule in the module docstring — this exists so "not a button" is
     something you reach for rather than something you remember.
+
+    ``face`` overrides the fill for a readout that has to show a *state* rather
+    than just hold text — the PIN dots, which must look different once a digit
+    is in. That does not break the rule: the accent **border** is the signal, so
+    a filled readout still reads as a value and not as a control.
     """
     w, h = max(1, x1 - x0), max(1, y1 - y0)
     r = min(THEME.radius if THEME else 0, w / 2, h / 2)
-    _blend(frame, x0, y0, _cov_fill(w, h, r), READOUT)
+    _blend(frame, x0, y0, _cov_fill(w, h, r), READOUT if face is None else face)
     _blend(frame, x0, y0, _cov_outline(w, h, r, float(weight)), READOUT_EDGE)
 
 

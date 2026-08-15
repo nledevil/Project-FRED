@@ -45,6 +45,9 @@ def _uptime(seconds) -> str:
 class InfoPage:
     title = "INFO"
 
+    def on_touch(self, kind: str, x: int, y: int, net) -> None:
+        """Nothing to press — the page is a readout. The poller refreshes it."""
+
     def draw(self, frame, snap: dict) -> None:
         who = snap.get("whoami") or {}
         rows: list[tuple[str, str, tuple]] = []

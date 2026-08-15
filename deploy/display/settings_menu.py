@@ -309,7 +309,14 @@ def main() -> int:
                         current = next(i for i, t in enumerate(tabs) if t.hit(x, y))
                         continue
                 if gate.unlocked:
-                    pages[current].on_touch(kind, x, y, net)
+                    # getattr because a page with nothing to press is a normal
+                    # kind of page, and forgetting the empty method should cost
+                    # a dead tab at worst. It cost the whole menu: INFO shipped
+                    # without one, the 'up' of the tap that selected it landed
+                    # here, and the crash took the process down to the PIN gate.
+                    handler = getattr(pages[current], "on_touch", None)
+                    if handler is not None:
+                        handler(kind, x, y, net)
                 else:
                     gate.on_touch(kind, x, y, net)
 
