@@ -29,6 +29,17 @@ LINE_H = 26
 
 
 
+def _named(machine: dict) -> str:
+    """The machine's own hostname, but only when it is worth reading.
+
+    Both Pis ship as "DietPi", so printing it says nothing about which one this
+    is. If someone has renamed one, that is worth seeing — so it appears then
+    and stays out of the way otherwise.
+    """
+    name = str(machine.get("hostname") or "").strip()
+    return f" - {name.upper()}" if name and name.lower() != "dietpi" else ""
+
+
 def _uptime(seconds) -> str:
     """Short and glanceable: 3D 04H, 5H 12M, 47M. Never a bare number of seconds."""
     try:
@@ -89,16 +100,21 @@ class InfoPage:
             rows.append(("", f"{addr.get('interface', '?')} {addr.get('address', '?')}",
                          ui.DIM_INK))
 
+        # Labelled by role, not by hostname. Both Pis answer to "DietPi", so the
+        # hostname put the same word on two rows and identified neither — and
+        # the useful label only appeared when the machine was unreachable, which
+        # is exactly backwards. A renamed Pi still gets its name shown, on the
+        # right, where it is information rather than a heading that repeats.
         head = snap.get("head") or {}
-        rows.append((str(head.get("hostname") or "HEAD").upper(),
+        rows.append(("HEAD PI",
                      f"10.0.0.10 - UP {_uptime(head.get('uptime_s'))}"
-                     if head else "10.0.0.10 - NO LINK",
+                     f"{_named(head)}" if head else "10.0.0.10 - NO LINK",
                      ui.INK if head else ui.BAD_INK))
 
         display = (snap.get("chest") or {}).get("display") or {}
-        rows.append((str(display.get("hostname") or "CHEST").upper(),
+        rows.append(("CHEST PI",
                      f"10.0.0.11 - UP {_uptime(display.get('uptime_s'))}"
-                     if display else "10.0.0.11 - THIS PI",
+                     f"{_named(display)}" if display else "10.0.0.11 - THIS PI",
                      ui.INK))
 
         ap = snap.get("hotspot") or {}
