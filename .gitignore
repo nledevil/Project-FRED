@@ -15,5 +15,6 @@ config/settings.json
 
 # Compiled chest-panel animations: built per-machine from deploy/display/*.c
 deploy/display/voice_hud
-deploy/display/theme_colors.h   # generated from theme.py by the Makefile
+# Generated from theme.py by the Makefile, beside the binary above.
+deploy/display/theme_colors.h
 verify-*.raw
