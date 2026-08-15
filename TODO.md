@@ -150,7 +150,8 @@ this is what is *not* already on it.
 ### Other
 
 4. **Which questions he failed to understand.** Logging the transcriptions that
-   matched nothing turns a fair into a tuning set for item 1 — the real
+   matched nothing turns a fair into a tuning set for the speech model —
+   which is the measurement the cleared note above says is still missing. The real
    vocabulary of real children, rather than guesses.
 
 ## STEM event readiness (planned 2026-07-08)
