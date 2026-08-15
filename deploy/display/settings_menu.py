@@ -61,17 +61,26 @@ POLL_EVERY = 2.0                            # seconds between refreshes
 NET_TIMEOUT = 2.0                           # per request; the poller has its own thread
 FPS = 30
 
+# The tabs, left to right. Module level so a harness can render the real strip
+# — order and labels included — instead of keeping its own copy, which is how a
+# tool ended up drawing a WIRELESS tab months after it became WIFI.
+PAGES = (StatusPage, VoicePage, ServosPage, CartPage,
+         DisplayPage, WirelessPage, InfoPage)
+
 # Chrome layout, 800x480.
 TITLE_H = 56
 # The tabs start 8px *below* the title bar, not on its last pixel. At TAB_Y=56
 # they shared an edge with it, and in the soft theme — where both the bar and a
 # tab are filled panels in nearly the same tone — the row read as part of the
 # header rather than as controls under it. The outlined themes got away with it.
-TAB_Y, TAB_H, TAB_GAP = 64, 34, 4
+TAB_Y, TAB_H, TAB_GAP = 64, 30, 8
 TAB_X0, TAB_X1 = 24, 776        # the strip's span; tabs divide it evenly
-# The gap between tabs is 4 rather than 8 to buy each tab 4 more pixels of
-# label: the side margins stay at 24 because they line up with "FRED SETTINGS"
-# above them, and losing that alignment to fit a word is the worse trade.
+# The gap between tabs must clear the HUD theme's glow on both sides, or the
+# selected tab lights up its neighbours and the highlight looks like it is on
+# the wrong button. Narrowing it to 4 bought label width nothing needed: the
+# widest tab is DISPLAY at 80px of the 84 available, and it fits at 8.
+# The strip is 30 tall rather than 34 for the same reason vertically: its glow
+# has to stop above the first row of whatever page is showing.
 CLOSE = (700, 8, 792, 48)
 POWER = (596, 8, 692, 48)       # left of the X; see power_menu.py
 
@@ -272,8 +281,7 @@ def main() -> int:
     hide_cursor()
     touch = open_touch(width=fb.w, height=fb.h)
 
-    pages = [StatusPage(), VoicePage(), ServosPage(), CartPage(),
-             DisplayPage(), WirelessPage(), InfoPage()]
+    pages = [cls() for cls in PAGES]
     current = next((i for i, p in enumerate(pages)
                     if p.title.lower() == args.page.strip().lower()), 0)
     # Width is computed, not fixed: five tabs at the old 150px ran off the

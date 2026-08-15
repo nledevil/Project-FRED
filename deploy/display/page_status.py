@@ -26,7 +26,8 @@ from __future__ import annotations
 
 import menu_ui as ui
 
-ROW_Y = 96                      # first row's top edge
+ROW_Y = 110                     # first row's top edge; clears the tab
+                                # strip and the HUD glow above it
 ROW_H = 62
 ROW_X0, ROW_X1 = ui.X0, ui.X1
 LABEL_X = 40

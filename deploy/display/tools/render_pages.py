@@ -66,7 +66,11 @@ def chrome(frame, page_title: str) -> int:
     """
     import settings_menu as sm
 
-    titles = [t for t, _ in _PAGES]
+    # Order and labels come from the menu itself, never from a list written out
+    # here. A copy of them drifted immediately — it still drew a WIRELESS tab
+    # after the label became WIFI — and a harness that renders a panel nobody
+    # has is worse than no harness, because it gets believed.
+    titles = [cls.title for cls in sm.PAGES]
     n = len(titles)
     tab_w = (sm.TAB_X1 - sm.TAB_X0 - sm.TAB_GAP * (n - 1)) // n
     scale = ui.scale_to_fit_all(titles, tab_w, 2)
@@ -81,11 +85,6 @@ def chrome(frame, page_title: str) -> int:
     return scale
 
 
-# Tab order as the menu builds it, so the strip drawn here is the real one.
-_PAGES = [("STATUS", "status"), ("VOICE", "voice"), ("SERVOS", "servos"),
-          ("CART", "cart"), ("DISPLAY", "display"), ("WIRELESS", "wireless"),
-          ("INFO", "info")]
-_TITLE_OF = {short: title for title, short in _PAGES}
 
 
 def pages():
@@ -114,7 +113,7 @@ def main() -> int:
                 # Chrome first, then the page, exactly as the menu's loop does —
                 # so a page whose first row rides up under the tab strip shows
                 # it here instead of on the robot.
-                chrome(frame, _TITLE_OF.get(page_name, ""))
+                chrome(frame, page.title)
                 page.draw(frame, SNAP)
             except Exception as exc:                 # noqa: BLE001
                 print(f"  {name}/{page_name}: RAISED {type(exc).__name__}: {exc}")

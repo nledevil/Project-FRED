@@ -53,10 +53,10 @@ MODES = (
 )
 
 BTN_X0, BTN_X1 = 24, 470            # the mode column; the stop button owns the rest
-BTN_Y0, BTN_H, BTN_GAP = 104, 56, 10
+BTN_Y0, BTN_H, BTN_GAP = 110, 56, 10
 TEL_Y0, TEL_Y1 = 302, 356           # battery and board temperature, under the modes
 STOP_X0, STOP_X1 = 490, 776
-STOP_Y0, STOP_Y1 = 104, 356
+STOP_Y0, STOP_Y1 = 110, 356
 STATUS_Y = 370
 LINE_H = 26
 

@@ -355,6 +355,16 @@ def line_height(scale: int = 2) -> int:
 # collision on this panel.
 PAD = 8
 
+# How far the HUD theme's glow is drawn *outside* a control's rectangle. This is
+# layout, not decoration: a control is visually this much bigger than its rect
+# on every side, so anything placed closer than GLOW_PX to it gets smeared into
+# it. At 12 the tab strip's glow reached into the page below and across the gap
+# onto the neighbouring tab, which read as the highlight belonging to the wrong
+# button. Nothing else in the panel bleeds — the soft theme insets on press and
+# the neon one draws only fill and outline — so this is the one number the rest
+# of the layout has to leave room for.
+GLOW_PX = 6
+
 
 def scale_to_fit(s: str, width_px: int, scale: int = 2, pad: int = PAD,
                  preserve_case: bool = False) -> int:
@@ -451,7 +461,8 @@ def draw_face(frame: np.ndarray, x0: int, y0: int, x1: int, y1: int,
     r = min(THEME.radius if THEME else 0, w / 2, h / 2)
 
     if style == "hud":
-        _blend(frame, x0 - 12, y0 - 12, _cov_glow(w + 24, h + 24, r + 12),
+        _blend(frame, x0 - GLOW_PX, y0 - GLOW_PX,
+               _cov_glow(w + 2 * GLOW_PX, h + 2 * GLOW_PX, r + GLOW_PX),
                edge, 0.10 + 0.35 * lit)
         _blend(frame, x0, y0, _cov_fill(w, h, r), face, 0.95)
         _blend(frame, x0, y0, _cov_outline(w, h, r, 1.6), edge, 0.55 + 0.45 * lit)

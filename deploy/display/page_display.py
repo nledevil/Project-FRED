@@ -25,7 +25,7 @@ COLS, ROWS = 2, 4
 # buttons — at twelve they were 33px tall. It pages instead.
 PER_PAGE = COLS * ROWS
 GRID_X0, GRID_X1 = ui.X0, ui.X1
-GRID_Y0, GRID_Y1 = 104, 362
+GRID_Y0, GRID_Y1 = 110, 362
 GAP = 12
 # The look of this menu is a choice about this display, made in front of it —
 # the same argument that put the animation list here rather than in the web
