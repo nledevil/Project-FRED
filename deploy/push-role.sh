@@ -68,6 +68,28 @@ for f in ${SYNC[@]+"${SYNC[@]}"} ${SEED[@]+"${SEED[@]}"}; do
 done
 [ "$missing" -eq 0 ] || { echo "aborting: manifest names files that do not exist" >&2; exit 1; }
 
+# So must a name that does not exist. The chest Pi has no linter and no pip, and
+# a NameError in a branch nothing imports — `PowerMenu(log=log)` in the settings
+# menu — reaches the panel as a blank screen when someone presses the gear, with
+# the traceback in child-stderr.log where nobody is looking. The tests import
+# page classes directly and never launched the menu, so nothing caught it.
+#
+# Only "undefined name" is fatal. pyflakes' other opinions (unused imports, the
+# `global` declarations menu_ui assigns through globals()[k]) are style at best
+# and wrong at worst, and a deploy is the wrong place to argue about them.
+if "$REPO/venv/bin/python" -m pyflakes --version >/dev/null 2>&1; then
+  undef=0
+  for f in ${SYNC[@]+"${SYNC[@]}"}; do
+    case "$f" in *.py) ;; *) continue ;; esac
+    out="$("$REPO/venv/bin/python" -m pyflakes "$REPO/$f" 2>/dev/null \
+           | grep 'undefined name')" || true
+    [ -z "$out" ] || { echo "$out" >&2; undef=1; }
+  done
+  [ "$undef" -eq 0 ] || { echo "aborting: undefined names above would crash on the Pi" >&2; exit 1; }
+else
+  echo "  note: no pyflakes in venv - skipping the undefined-name check" >&2
+fi
+
 # ---- --list-extra ----------------------------------------------------------
 if [ "$LIST_EXTRA" -eq 1 ]; then
   claimed="$(mktemp)"; trap 'rm -f "$claimed"' EXIT

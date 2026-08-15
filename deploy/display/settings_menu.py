@@ -287,7 +287,9 @@ def main() -> int:
             for i, p in enumerate(pages)]
     close = ui.Button(*CLOSE, "X", scale=3)
     power = ui.Button(*POWER, "POWER", scale=2)
-    power_menu = PowerMenu(log=log)
+    # log defaults to print, which is where the rest of this file's diagnostics
+    # already go — the daemon captures the child's stdout.
+    power_menu = PowerMenu()
 
     net = Net()
     net.start()
