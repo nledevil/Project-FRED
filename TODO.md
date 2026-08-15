@@ -127,29 +127,21 @@ Ideas, not commitments — nothing here has been agreed. Ordered by what would
 change the most for the least work. The STEM list further down still stands;
 this is what is *not* already on it.
 
-### Hearing kids in a loud room
-
-1. **Say who is talking, on the screen at kid height.** The chest panel is at a
-   child's eyeline and currently shows an animation. A large LISTENING /
-   THINKING / SPEAKING state there would do more for turn-taking in a crowd than
-   anything in the web panel — the planned kiosk view is a *laptop* screen, which
-   is not where the queue is looking.
-
 ### Driving him when you are not next to him
 
-2. **An operator page shaped like a phone.** The panel is a desktop layout and at
+1. **An operator page shaped like a phone.** The panel is a desktop layout and at
    an event you are holding a phone one-handed: stop speaking, mute the mic,
    reset the conversation, volume, and the live transcript. Distinct from the
    kiosk view below, which faces outward at visitors.
 
-3. **A deck of one-tap things to say.** `/api/say` already exists. "Ask me about
+2. **A deck of one-tap things to say.** `/api/say` already exists. "Ask me about
    my servos", "Let me think about that one", "Who is next?" — for when he
    misfires and the queue needs managing. Cheap, and the most useful thing on
    this list during an actual event.
 
 ### Other
 
-4. **Which questions he failed to understand.** Logging the transcriptions that
+3. **Which questions he failed to understand.** Logging the transcriptions that
    matched nothing turns a fair into a tuning set for the speech model —
    which is the measurement the cleared note above says is still missing. The real
    vocabulary of real children, rather than guesses.

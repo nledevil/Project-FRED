@@ -30,6 +30,13 @@ from metrics_hud import MetricsHud
 from voice_state import VoiceFeed
 from font5x7 import draw_text, text_width, CHAR_H
 
+# The state word is the point of this screen; everything else is texture. 11
+# puts LISTENING — the longest of the four — at 583 px across an 800 px panel
+# and 77 px tall, which clears the trace window starting at 0.30 H. Must match
+# voice_hud.c: tools/verify_voice_hud.py compares the two pixel for pixel.
+STATE_SCALE_MAX = 11
+STATE_MARGIN = 48
+
 CYAN = np.array([90, 210, 255], dtype=np.float32)
 GREEN = np.array([90, 255, 150], dtype=np.float32)
 AMBER = np.array([255, 180, 60], dtype=np.float32)
@@ -176,8 +183,21 @@ def main():
             # --- state readout ---
             label = state.upper()
             pulse = 0.75 + 0.25 * (0.5 + 0.5 * math.sin(t * 3.2))
-            draw_text(frame, label, wx0 + 28, ty, colour * pulse, scale=4)
-            frame[ddy0:ddy0 + 2 * r, wx0:wx0 + 2 * r] += DOT * colour * pulse
+            # Big, centred, and the largest thing on the panel — this screen is
+            # at a child's eyeline and its job in a crowd is turn-taking, which
+            # a 28px word in the corner could not do from the back of a queue.
+            # Scaled to the width it is given rather than fixed, so SPEAKING and
+            # LISTENING read as one control at different moments. Kept in step
+            # with voice_hud.c by tools/verify_voice_hud.py, pixel for pixel.
+            scale = STATE_SCALE_MAX
+            while scale > 4 and text_width(label, scale) > W - 2 * STATE_MARGIN:
+                scale -= 1
+            tx = (W - text_width(label, scale)) // 2
+            draw_text(frame, label, tx, ty, colour * pulse, scale=scale)
+            # The dot still says the panel is live mid-word; it just moves out
+            # of the way of the text it used to sit in front of.
+            dx = tx - 4 * r
+            frame[ddy0:ddy0 + 2 * r, dx:dx + 2 * r] += DOT * colour * pulse
 
             # --- live level meter, bottom right ---
             lvl = feed.level(now)

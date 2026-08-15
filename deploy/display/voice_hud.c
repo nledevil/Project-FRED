@@ -86,6 +86,11 @@ static const rgb_t VALUE_RGB = { 120.f, 210.f, 255.f };
 static const rgb_t ALERT_RGB = { 230.f, 120.f,  90.f };
 
 enum { ST_IDLE, ST_LISTENING, ST_THINKING, ST_SPEAKING };
+/* The state word is the point of this screen; everything else is texture.
+ * 11 puts LISTENING — the longest of the four — at 583 px across an 800 px
+ * panel, and 77 px tall, which clears the trace window that starts at 0.30 H. */
+#define STATE_SCALE_MAX 11
+#define STATE_MARGIN    48
 static const char *STATE_NAME[] = { "idle", "listening", "thinking", "speaking" };
 
 /* ------------------------------------------------------------------- 5x7 font
@@ -992,13 +997,27 @@ int main(int argc, char **argv)
         snprintf(label, sizeof label, "%s", STATE_NAME[state]);
         for (char *q = label; *q; q++)
             if (*q >= 'a' && *q <= 'z') *q = (char)(*q - 'a' + 'A');
-        draw_text(&c, label, wx0 + 28, ty, cp, 4, 1);
+        /* Big, centred, and the largest thing on the panel. This screen sits at
+         * a child's eyeline and its job in a crowd is turn-taking: whether he
+         * is listening to you or to somebody else has to be readable from the
+         * back of a queue, which a 28-pixel word in the corner was not. The
+         * label is scaled to fill the width it is given rather than fixed, so
+         * SPEAKING and LISTENING look like the same control at different
+         * moments instead of two differently-sized labels. */
+        int scale = STATE_SCALE_MAX;
+        while (scale > 4 && text_width(label, scale, 1) > W - 2 * STATE_MARGIN)
+            scale--;
+        const int tw = text_width(label, scale, 1);
+        const int tx = (W - tw) / 2;
+        draw_text(&c, label, tx, ty, cp, scale, 1);
+        /* The dot keeps its meaning — a pulse that says the panel is live even
+         * mid-word — but moves out of the way of the text it used to precede. */
         for (int y = 0; y < 2 * r; y++)
             for (int x = 0; x < 2 * r; x++) {
                 float d = DOT[y * 2 * r + x];
                 rgb_t dv = { d * colour.r * (float)pulse, d * colour.g * (float)pulse,
                              d * colour.b * (float)pulse };
-                px_add(&c, wx0 + x, ddy0 + y, dv);
+                px_add(&c, tx - 4 * r + x, ddy0 + y, dv);
             }
 
         /* --- live level meter, bottom right --- */

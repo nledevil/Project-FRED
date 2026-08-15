@@ -32,7 +32,12 @@ import tempfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-DISPLAY = HERE.parent
+# Two layouts: tools/ is a subdirectory in the repo, and everything lands in
+# one directory on the chest Pi because that manifest flattens. Pick whichever
+# actually holds the renderer — resolving to HERE.parent unconditionally meant
+# this tool could never run on the machine it exists to check.
+DISPLAY = next((d for d in (HERE.parent, HERE)
+                if (d / "voice_hud.py").is_file()), HERE.parent)
 BINARY = DISPLAY / "voice_hud"
 
 W, H = 800, 480
