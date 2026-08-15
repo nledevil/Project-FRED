@@ -67,6 +67,10 @@ deploy/display/Makefile
 deploy/display/tools/verify_voice_hud.py
 deploy/display/tools/test_power_menu.py
 deploy/display/tools/render_pages.py
+deploy/display/tools/render_anims.py
+# Generates the C renderer's palettes from theme.py. Shipped because the
+# Makefile here calls it, even though this Pi cannot run the compiler.
+deploy/display/tools/gen_theme_colors.py
 
 # --- cart bring-up: the real Pico, not the simulated one -----------------
 deploy/display/tools/ps2_probe.py
@@ -100,6 +104,7 @@ deploy/vcgencmd_power_report.sh
 # voice_hud: compiled here, from voice_hud.c, by the Makefile above.
 # state.json: the animation pick, persisted across reboots.
 keep: voice_hud
+keep: theme_colors.h
 keep: state.json
 # The cached panel PIN (salt + digest), pushed by the brain when it
 # changes. Never deployed: it is per-robot state, not source.

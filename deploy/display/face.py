@@ -27,15 +27,20 @@ import math
 import signal
 import argparse
 import numpy as np
+import theme
 from fb import Framebuffer, hide_cursor
 from cog_hud import CogHud
 from metrics_hud import MetricsHud
 from voice_state import VoiceFeed
 
-CYAN = np.array([90, 210, 255], dtype=np.float32)
-WHITE = np.array([220, 245, 255], dtype=np.float32)
-GREEN = np.array([90, 255, 150], dtype=np.float32)
-AMBER = np.array([255, 180, 60], dtype=np.float32)
+_RAMP = theme.ramp()
+# The face's own colour follows the theme. The other two do not: green means he
+# is listening and amber means he is working on it, on every theme, because a
+# child reads the colour long before the word.
+CYAN = np.array(_RAMP.at(0.47), dtype=np.float32)      # his resting tint
+WHITE = np.array(_RAMP.at(0.80), dtype=np.float32)     # highlights off it
+GREEN = np.array(_RAMP.ok, dtype=np.float32)
+AMBER = np.array(_RAMP.warn, dtype=np.float32)
 
 # Ring tint + how urgently it moves, per voice state.
 STATE_STYLE = {

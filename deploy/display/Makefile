@@ -21,8 +21,14 @@ BINS    := voice_hud
 
 all: $(BINS)
 
-voice_hud: voice_hud.c
+voice_hud: voice_hud.c theme_colors.h
 	$(CC) $(CFLAGS) -o $@ $< $(LDLIBS)
+
+# The palettes, generated from theme.py so the two renderers cannot disagree
+# about a colour. Regenerated whenever the themes change; it is a build
+# artifact, not source, and is git-ignored like the binary.
+theme_colors.h: theme.py tools/gen_theme_colors.py
+	python3 tools/gen_theme_colors.py > $@
 
 # Ship it, then bounce the animation so the daemon picks up the new binary.
 install-chest: $(BINS)
@@ -37,4 +43,4 @@ verify: $(BINS)
 	python3 tools/verify_voice_hud.py
 
 clean:
-	rm -f $(BINS)
+	rm -f $(BINS) theme_colors.h

@@ -24,6 +24,8 @@ from __future__ import annotations
 
 import numpy as np
 
+import theme
+
 # 24x24, MSB left, generated then hand-checked. Eight teeth and a hole: at
 # scale 2 it reads as a cog from across the room, which is all it has to do.
 _COG = (
@@ -60,7 +62,7 @@ SCALE = 2                              # 48x48 drawn
 PAD = 8                                # panel border around the icon
 MARGIN = 12                            # gap to the screen edge; matches metrics_hud
 DIM = 0.25                             # a power of two, so float32 and float64 agree
-COG_RGB = (90, 150, 190)               # metrics_hud's TITLE_RGB: same furniture
+COG_RGB = theme.ramp().at(0.33)        # metrics_hud's TITLE_RGB: same furniture
 
 BOX = ICON_N * SCALE + PAD * 2         # 64
 

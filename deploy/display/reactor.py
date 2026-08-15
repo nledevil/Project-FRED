@@ -15,6 +15,7 @@ import time
 import signal
 import argparse
 import numpy as np
+import theme
 from fb import Framebuffer, hide_cursor
 from cog_hud import CogHud
 from metrics_hud import MetricsHud
@@ -25,7 +26,17 @@ def band(dist, r, width):
     return np.exp(-(((dist - r) / width) ** 2))
 
 
-def build_geometry(w, h, copper=False):
+def build_geometry(w, h, copper=False, ramp=None):
+    """Precompute the reactor. ``ramp`` is a theme.Ramp; colours are sampled
+    from it by level, so the accent moves with the panel's theme while the
+    structure — dim rim, bright coils, white core — does not.
+
+    Copper stays copper. It is a second preset in the animation list rather
+    than a theme, chosen because someone wanted a copper reactor, so re-tinting
+    it to the theme would delete the only thing that distinguishes it.
+    """
+    ramp = ramp or theme.ramp()
+    lvl = lambda t: np.array(ramp.at(t), dtype=np.float32)
     cx, cy = w / 2.0, h / 2.0
     Y, X = np.mgrid[0:h, 0:w].astype(np.float32)
     dx, dy = X - cx, Y - cy
@@ -39,34 +50,34 @@ def build_geometry(w, h, copper=False):
 
     # background radial vignette (very dark blue)
     vign = np.clip(1.0 - dist / (R * 1.6), 0, 1) ** 2
-    layers.append((vign * 0.12, np.array([10, 25, 45]), 0.0))
+    layers.append((vign * 0.12, lvl(0.0), 0.0))                  # vignette
 
     # outer steel rings
-    layers.append((band(dist, R * 0.95, R * 0.03), np.array([70, 130, 190]), 0.15))
-    layers.append((band(dist, R * 0.78, R * 0.02), np.array([90, 160, 220]), 0.15))
+    layers.append((band(dist, R * 0.95, R * 0.03), lvl(0.34), 0.15))   # outer ring
+    layers.append((band(dist, R * 0.78, R * 0.02), lvl(0.41), 0.15))   # inner steel
 
     # segmented copper coils (the classic 10 wound posts)
     N = 10
     seg = 0.5 + 0.5 * np.cos(N * ang)
     seg = seg ** 6                                   # sharpen into discrete posts
     coil_ring = band(dist, R * 0.62, R * 0.10)
-    coil_color = np.array([210, 150, 70]) if copper else np.array([120, 210, 255])
+    coil_color = np.array([210, 150, 70], np.float32) if copper else lvl(0.5)
     layers.append((coil_ring * seg, coil_color, 0.25))
     # thin wire highlights across the coils
     wire = (0.5 + 0.5 * np.cos(N * 3 * ang)) ** 8
-    layers.append((coil_ring * wire * 0.5, np.array([255, 240, 210]), 0.2))
+    layers.append((coil_ring * wire * 0.5, np.array([255, 240, 210], np.float32), 0.2))
 
     # inner ring
-    layers.append((band(dist, R * 0.40, R * 0.03), np.array([120, 220, 255]), 0.3))
+    layers.append((band(dist, R * 0.40, R * 0.03), lvl(0.51), 0.3))    # inner ring
 
     # triangle core outline (Iron Man's tri-emitter)
     tri = 0.5 + 0.5 * np.cos(3 * ang)
     tri = tri ** 3
-    layers.append((band(dist, R * 0.26, R * 0.05) * tri, np.array([180, 245, 255]), 0.5))
+    layers.append((band(dist, R * 0.26, R * 0.05) * tri, lvl(0.63), 0.5))  # tri-emitter
 
     # bright pulsing core
     core = np.exp(-((dist / (R * 0.22)) ** 2))
-    layers.append((core, np.array([210, 245, 255]), 1.0))
+    layers.append((core, lvl(0.72), 1.0))                        # core
     # hot center
     layers.append((np.exp(-((dist / (R * 0.09)) ** 2)), np.array([255, 255, 255]), 1.0))
 

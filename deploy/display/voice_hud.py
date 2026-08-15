@@ -30,6 +30,8 @@ from metrics_hud import MetricsHud
 from voice_state import VoiceFeed
 from font5x7 import draw_text, text_width, CHAR_H
 
+import theme
+
 # The state word is the point of this screen; everything else is texture. 11
 # puts LISTENING — the longest of the four — at 583 px across an 800 px panel
 # and 77 px tall, which clears the trace window starting at 0.30 H. Must match
@@ -37,10 +39,18 @@ from font5x7 import draw_text, text_width, CHAR_H
 STATE_SCALE_MAX = 11
 STATE_MARGIN = 48
 
-CYAN = np.array([90, 210, 255], dtype=np.float32)
-GREEN = np.array([90, 255, 150], dtype=np.float32)
-AMBER = np.array([255, 180, 60], dtype=np.float32)
-WHITE = np.array([225, 245, 255], dtype=np.float32)
+def palette(name=None):
+    """The seven colours, for one theme. Levels live in theme.HUD_LEVELS so
+    the C renderer gets the same numbers from the same place."""
+    c = theme.hud_colours(name)
+    return {k: np.array(v, dtype=np.float32) for k, v in c.items()}
+
+
+_P = palette()
+CYAN = _P["base"]                    # idle and speaking: the panel's own colour
+GREEN = _P["green"]                  # listening
+AMBER = _P["amber"]                  # thinking
+WHITE = _P["white"]
 
 STATE_COLOUR = {"idle": CYAN * 0.75, "listening": GREEN,
                 "thinking": AMBER, "speaking": CYAN}

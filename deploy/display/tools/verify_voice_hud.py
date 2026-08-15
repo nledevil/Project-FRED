@@ -38,6 +38,9 @@ HERE = Path(__file__).resolve().parent
 # this tool could never run on the machine it exists to check.
 DISPLAY = next((d for d in (HERE.parent, HERE)
                 if (d / "voice_hud.py").is_file()), HERE.parent)
+sys.path.insert(0, str(DISPLAY))
+import theme                                          # noqa: E402
+
 BINARY = DISPLAY / "voice_hud"
 
 W, H = 800, 480
@@ -82,7 +85,8 @@ def build_fixtures(tmp: Path) -> tuple[Path, Path]:
     return docs, metrics
 
 
-def python_hashes(docs: Path, metrics: Path, keep: int | None) -> tuple[list[str], bytes | None]:
+def python_hashes(docs: Path, metrics: Path, keep: int | None,
+                  theme_name: str) -> tuple[list[str], bytes | None]:
     """Run voice_hud.py over the timeline, hashing each frame as it is blitted."""
     keep_path = docs.parent / "py_frame.raw"
     script = f'''
@@ -99,6 +103,12 @@ frame_no = [0]
 _time.monotonic = lambda: frame_no[0] * PERIOD     # clock == frame index
 _time.sleep = lambda *a: None                      # the limiter must not block
 
+# Every module that draws resolves its palette when it is imported, so the
+# theme has to be forced before the first of them — metrics_hud and
+# cog_hud do it as well as voice_hud, which is why patching it later
+# passed on the default theme and failed on the other two.
+import theme
+theme.load_name = lambda *a, **k: {theme_name!r}
 import fb as fbmod, voice_state, metrics_hud
 hashes, kept = [], [None]
 
@@ -160,11 +170,13 @@ if kept[0] is not None:
     return r.stdout.split(), (keep_path.read_bytes() if keep_path.exists() else None)
 
 
-def c_hashes(docs: Path, metrics: Path, keep: int | None) -> tuple[list[str], bytes | None]:
+def c_hashes(docs: Path, metrics: Path, keep: int | None,
+             theme_name: str) -> tuple[list[str], bytes | None]:
     """Stream the native renderer's frames off a pipe, hashing as they arrive."""
     proc = subprocess.Popen(
         [str(BINARY), "--sim", "--sim-docs", str(docs), "--frames", str(N),
-         "--fps", str(FPS), "--metrics-path", str(metrics), "--dump", "/dev/stdout"],
+         "--fps", str(FPS), "--metrics-path", str(metrics),
+         "--theme", theme_name, "--dump", "/dev/stdout"],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     hashes, kept = [], None
     while True:
@@ -187,26 +199,37 @@ def main() -> int:
     tmp = Path(tempfile.mkdtemp(prefix="voice-hud-verify-"))
     try:
         docs, metrics = build_fixtures(tmp)
-        py, _ = python_hashes(docs, metrics, None)
-        c, _ = c_hashes(docs, metrics, None)
+        # Every theme, not just the running one: the palettes are the newest
+        # thing that exists twice, and a colour that disagrees between the two
+        # renderers would otherwise only show up on the theme nobody tested.
+        ok = True
+        for theme_name in theme.ORDER:
+            py, _ = python_hashes(docs, metrics, None, theme_name)
+            c, _ = c_hashes(docs, metrics, None, theme_name)
 
-        if len(py) != N or len(c) != N:
-            print(f"FAIL: frame counts differ — python {len(py)}, native {len(c)}")
-            return 1
+            if len(py) != N or len(c) != N:
+                print(f"FAIL [{theme_name}]: frame counts differ — "
+                      f"python {len(py)}, native {len(c)}")
+                return 1
 
-        bad = [i for i, (a, b) in enumerate(zip(py, c)) if a != b]
-        if not bad:
-            print(f"OK: {N}/{N} frames identical "
+            bad = [i for i, (a, b) in enumerate(zip(py, c)) if a != b]
+            if not bad:
+                print(f"  OK [{theme_name}]: {N}/{N} frames identical")
+                continue
+            ok = False
+            break
+        if ok:
+            print(f"OK: {N}/{N} frames identical in all {len(theme.ORDER)} themes "
                   f"({', '.join(PHASES)}; {len(PHASES) - 1} state changes, "
                   f"playhead sweep, sensor overlay)")
             return 0
 
         first = bad[0]
-        print(f"FAIL: {len(bad)}/{N} frames differ, first at {first} "
+        print(f"FAIL [{theme_name}]: {len(bad)}/{N} frames differ, first at {first} "
               f"({PHASES[first // PER_PHASE]})")
         # Re-run just far enough to materialise the offending frame from both.
-        _, pyf = python_hashes(docs, metrics, first)
-        _, cf = c_hashes(docs, metrics, first)
+        _, pyf = python_hashes(docs, metrics, first, theme_name)
+        _, cf = c_hashes(docs, metrics, first, theme_name)
         if pyf and cf:
             out = Path.cwd()
             (out / "verify-py.raw").write_bytes(pyf)

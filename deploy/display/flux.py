@@ -18,12 +18,19 @@ import time
 import signal
 import argparse
 import numpy as np
+import theme
 from fb import Framebuffer, hide_cursor
 from cog_hud import CogHud
 from metrics_hud import MetricsHud
 
 
-def build(w, h):
+def build(w, h, ramp=None):
+    """Levels rather than colours, so the tubes take the theme's accent.
+    The spark stays near-white at both ends of the ramp: it is the thing the
+    eye is meant to follow, and a spark the same colour as the tube it runs
+    along is just a brighter tube."""
+    ramp = ramp or theme.ramp()
+    lvl = lambda t: np.array(ramp.at(t), dtype=np.float32)
     cx, cy = w / 2.0, h * 0.52
     R = min(w, h) * 0.40                      # arm length
     tube_r = min(w, h) * 0.055                 # tube half-width
@@ -40,8 +47,8 @@ def build(w, h):
     P = np.stack([X, Y], axis=-1)             # (h, w, 2)
 
     base = np.zeros((h, w, 3), dtype=np.float32)
-    dim_tube = np.array([25, 55, 80], dtype=np.float32)
-    bulb_col = np.array([90, 150, 200], dtype=np.float32)
+    dim_tube = lvl(0.10)                      # resting glass
+    bulb_col = lvl(0.38)                      # end bulbs
 
     arms = []  # per arm: (flat_idx, s_along, glow_weight)
     for end in ends:
@@ -67,7 +74,7 @@ def build(w, h):
 
     # central hub: ring + core (core flashes on spark arrival)
     hd = np.linalg.norm(P - hub, axis=-1)
-    base += np.exp(-(((hd - bulb_r * 1.3) / (tube_r * 0.4)) ** 2))[..., None] * np.array([80, 140, 190])
+    base += np.exp(-(((hd - bulb_r * 1.3) / (tube_r * 0.4)) ** 2))[..., None] * lvl(0.33)
     hub_flash = np.exp(-((hd / (bulb_r * 1.5)) ** 2)).astype(np.float32)  # (h,w)
 
     return base, arms, hub_flash
@@ -84,8 +91,9 @@ def main():
     hide_cursor()
     hud = MetricsHud()          # no-op unless the sensor overlay is switched on
     cog = CogHud()              # the settings cog, bottom-right
-    base, arms, hub_flash = build(fb.w, fb.h)
-    spark_col = np.array([210, 240, 255], dtype=np.float32)
+    ramp = theme.ramp()
+    base, arms, hub_flash = build(fb.w, fb.h, ramp=ramp)
+    spark_col = np.array(ramp.at(0.78), dtype=np.float32)
     flash_col = np.array([255, 255, 255], dtype=np.float32)
     npix = fb.w * fb.h
 

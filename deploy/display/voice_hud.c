@@ -76,14 +76,20 @@
 
 typedef struct { float r, g, b; } rgb_t;
 
-static const rgb_t CYAN  = { 90.f, 210.f, 255.f };
-static const rgb_t GREEN = { 90.f, 255.f, 150.f };
-static const rgb_t AMBER = { 255.f, 180.f,  60.f };
-static const rgb_t WHITE = { 225.f, 245.f, 255.f };
+/* The palette is the theme's, chosen at startup — see apply_theme(). Not const
+ * any more, and not written by hand: theme_colors.h is generated from theme.py
+ * by tools/gen_theme_colors.py, which is also where voice_hud.py gets these,
+ * so the two renderers cannot drift. tools/verify_voice_hud.py checks it. */
+static rgb_t CYAN  = { 90.f, 210.f, 255.f };
+static rgb_t GREEN = { 90.f, 255.f, 150.f };
+static rgb_t AMBER = { 255.f, 180.f,  60.f };
+static rgb_t WHITE = { 225.f, 245.f, 255.f };
 
-static const rgb_t TITLE_RGB = {  90.f, 150.f, 190.f };
-static const rgb_t VALUE_RGB = { 120.f, 210.f, 255.f };
-static const rgb_t ALERT_RGB = { 230.f, 120.f,  90.f };
+static rgb_t TITLE_RGB = {  90.f, 150.f, 190.f };
+static rgb_t VALUE_RGB = { 120.f, 210.f, 255.f };
+static rgb_t ALERT_RGB = { 230.f, 120.f,  90.f };
+
+#include "theme_colors.h"
 
 enum { ST_IDLE, ST_LISTENING, ST_THINKING, ST_SPEAKING };
 /* The state word is the point of this screen; everything else is texture.
@@ -335,6 +341,39 @@ static int js_num_array(const char *v, float *out, int cap)
         v = js_skip_ws(v);
         if (*v == ',') v++;
     }
+}
+
+/* ------------------------------------------------------------------- theme
+ * The chest panel remembers its theme in state.json beside the animation pick,
+ * and the daemon stops this process to hand the screen to the settings menu —
+ * so by the time the menu has changed the theme, this renderer has already
+ * exited. Reading it once at startup is therefore live, and costs one open(). */
+
+static void apply_theme(const char *name)
+{
+    for (size_t i = 0; i < THEME_COLORS_N; i++) {
+        if (strcmp(THEME_COLORS[i].name, name)) continue;
+        const theme_colors_t *t = &THEME_COLORS[i];
+        CYAN = t->base;  WHITE = t->white;
+        GREEN = t->green; AMBER = t->amber;
+        TITLE_RGB = t->title; VALUE_RGB = t->value; ALERT_RGB = t->alert;
+        return;
+    }
+    /* An unknown name keeps the compiled-in defaults rather than failing: a
+     * panel that cannot read its own preferences should still draw. */
+}
+
+static void theme_from_state(const char *path, char *out, size_t cap)
+{
+    out[0] = '\0';
+    FILE *f = fopen(path, "rb");
+    if (!f) return;
+    char buf[4096];
+    size_t n = fread(buf, 1, sizeof buf - 1, f);
+    fclose(f);
+    buf[n] = '\0';
+    const char *v = js_find(buf, "theme");
+    if (v) js_str(v, out, cap);
 }
 
 /* ------------------------------------------------------------- shm doc feeds
@@ -780,6 +819,7 @@ int main(int argc, char **argv)
     long sim_start = 0, max_frames = 0;
     const char *sim_docs = NULL;   /* per-frame voice docs, harness only */
     int sim_w = 800, sim_h = 480;
+    const char *theme_name = NULL;   /* NULL = whatever state.json says */
 
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--seconds") && i + 1 < argc) seconds = atof(argv[++i]);
@@ -792,9 +832,20 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--sim-start-frame") && i + 1 < argc) sim_start = atol(argv[++i]);
         else if (!strcmp(argv[i], "--sim-docs") && i + 1 < argc) sim_docs = argv[++i];
         else if (!strcmp(argv[i], "--frames") && i + 1 < argc) max_frames = atol(argv[++i]);
+        else if (!strcmp(argv[i], "--theme") && i + 1 < argc) theme_name = argv[++i];
         else { fprintf(stderr, "unknown option: %s\n", argv[i]); return 2; }
     }
     if (fps <= 0.0) fps = 30.0;
+
+    /* Colours before anything is drawn. --theme is for the equivalence
+     * harness, which has to render all three without disturbing the
+     * panel's actual preference. */
+    char themebuf[32];
+    if (!theme_name) {
+        theme_from_state("state.json", themebuf, sizeof themebuf);
+        theme_name = themebuf[0] ? themebuf : "soft";
+    }
+    apply_theme(theme_name);
 
     fb_t fb = { .fd = -1, .mm = NULL };
     canvas_t c = { 0 };
