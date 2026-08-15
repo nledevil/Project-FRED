@@ -223,6 +223,65 @@ def empty(frame: np.ndarray, message: str, y: int = CONTENT_Y,
     text(frame, message, X0, y, BAD_INK, scale)
 
 
+class Pager:
+    """Somewhere for a list to go when it does not fit one screen.
+
+    Every page here assumed its content fitted, and two of them were one item
+    away from being wrong in different ways: the animation grid divided the
+    space by however many presets there were, so a ninth shrank the buttons
+    below what a thumb can hit; the servo list drew at a fixed row pitch with no
+    bound, so an eighth servo was simply drawn off the bottom of the panel and
+    became invisible. Shrinking and vanishing are both worse than a second page.
+
+    The controls sit on one line and only appear when there is more than one
+    page — a pager on a list that fits is chrome that never does anything.
+    """
+
+    def __init__(self, per_page: int, y: int, x_right: int | None = None):
+        self.per_page = max(1, int(per_page))
+        self.page = 0
+        x1 = X1 if x_right is None else x_right
+        w, h, gap = 62, 34, 8
+        self._next = Button(x1 - w, y, x1, y + h, ">", scale=2)
+        self._prev = Button(x1 - w * 2 - gap, y, x1 - w - gap, y + h, "<", scale=2)
+        self._y, self._x_right = y, x1 - w * 2 - gap - 10
+
+    def pages(self, total: int) -> int:
+        return max(1, -(-int(total) // self.per_page))      # ceil
+
+    def slice(self, items: list) -> list:
+        """The visible window, clamping the page if the list shrank under it.
+
+        Clamped here rather than when the list changes because the list arrives
+        from a poll: a preset removed on the brain would otherwise leave this
+        showing an empty page with no way back.
+        """
+        self.page = max(0, min(self.page, self.pages(len(items)) - 1))
+        start = self.page * self.per_page
+        return items[start:start + self.per_page]
+
+    def on_touch(self, kind: str, x: int, y: int, total: int) -> bool:
+        """True if the tap was the pager's, so the page can stop looking."""
+        if kind != "down" or self.pages(total) < 2:
+            return False
+        if self._prev.hit(x, y):
+            self.page = (self.page - 1) % self.pages(total)
+            return True
+        if self._next.hit(x, y):
+            self.page = (self.page + 1) % self.pages(total)
+            return True
+        return False
+
+    def draw(self, frame: np.ndarray, total: int) -> None:
+        n = self.pages(total)
+        if n < 2:
+            return
+        self._prev.draw(frame, ink=INK)
+        self._next.draw(frame, ink=INK)
+        text_right(frame, f"{self.page + 1}/{n}", self._x_right,
+                   self._y + (34 - line_height(2)) // 2, DIM_INK, 2)
+
+
 def readout(frame: np.ndarray, x0: int, y0: int, x1: int, y1: int,
             weight: int = 1, face=None) -> None:
     """A surface that shows something and cannot be tapped.

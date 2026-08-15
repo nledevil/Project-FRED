@@ -31,6 +31,20 @@ import menu_ui as ui
 
 ROW_Y0 = 100                    # first slider row
 ROW_H = 52
+# Rows were drawn at ROW_Y0 + i * ROW_H with nothing stopping them: the seventh
+# ran past the bottom of a 480px panel and the eighth was drawn entirely off it.
+# Six wired servos hid that, but arms and hands are more, and a servo you cannot
+# see is one you cannot centre.
+PER_PAGE = 6
+# Left of centre, because REST already owns the bottom right (648..776) and the
+# pager landed exactly on top of it — REST is checked first, so the pager would
+# have been undrawable *and* untappable in the same spot.
+# Squeezed between the last row (ends 412) and REST, which owns 648..776 at
+# 404..452. Right-aligned to 640 keeps it clear of REST horizontally; the hint
+# below moves down to 456 so the two do not share a line — in the widest theme
+# that hint runs to x=509 and would have sat under the buttons.
+PAGER_Y = 418
+PAGER_X_RIGHT = 640
 LABEL_X = 24
 TRACK_X0, TRACK_X1 = 232, 640   # the draggable span
 VALUE_X = 776
@@ -65,6 +79,8 @@ class ServosPage:
         self._pending: dict[str, float] = {}
         self._rest = ui.Button(*REST_BTN, "REST", scale=2)
         self._rows: list[tuple[str, int]] = []   # (name, row y) from the last draw
+        self._pager = ui.Pager(PER_PAGE, PAGER_Y, x_right=PAGER_X_RIGHT)
+        self._total = 0                          # servos the brain reported
 
     # ---- helpers ----------------------------------------------------------
     @staticmethod
@@ -117,6 +133,8 @@ class ServosPage:
                 net.post_rest()
                 self._local.clear()          # the robot is about to disagree
                 return
+            if self._paged(kind, x, y):
+                return                       # paging is not the start of a drag
             self._drag = self._row_at(y)
         if self._drag is None:
             return                           # a move/up that never started on a row
@@ -144,6 +162,11 @@ class ServosPage:
             if name in self._pending:
                 self._send(name, self._pending.pop(name), net)
             self._drag = None
+
+    def _paged(self, kind: str, x: int, y: int) -> bool:
+        """True if the pager took the tap. Checked before the sliders, because a
+        press that starts on the pager must not also capture a slider."""
+        return self._pager.on_touch(kind, x, y, self._total)
 
     def _row_at(self, y: int) -> str | None:
         for name, row_y in self._rows:
@@ -180,8 +203,9 @@ class ServosPage:
         order = [n for n in LABELS if n in servos] + \
                 [n for n in sorted(servos) if n not in LABELS]
 
+        self._total = len(order)
         self._rows = []
-        for i, name in enumerate(order):
+        for i, name in enumerate(self._pager.slice(order)):
             s = servos[name]
             y = ROW_Y0 + i * ROW_H
             self._rows.append((name, y))
@@ -210,8 +234,9 @@ class ServosPage:
                     ui.DIM_INK if blocked else ui.INK, 2)
 
         self._rest.draw(frame, ink=ui.DIM_INK if blocked else ui.INK)
+        self._pager.draw(frame, self._total)
         if blocked:
             ui.text(frame, blocked, LABEL_X, 424, ui.BAD_INK, 2)
         else:
             ui.text(frame, "DRAG TO MOVE - LIMITS ARE THE CALIBRATED ONES",
-                    LABEL_X, 428, ui.DIM_INK, 1)
+                    LABEL_X, 456, ui.DIM_INK, 1)

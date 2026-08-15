@@ -20,6 +20,10 @@ import menu_ui as ui
 import theme as theme_mod
 
 COLS, ROWS = 2, 4
+# Four rows of two is what fits at a size a thumb can hit. Beyond eight presets
+# the grid used to divide the same space by more rows and quietly shrink the
+# buttons — at twelve they were 33px tall. It pages instead.
+PER_PAGE = COLS * ROWS
 GRID_X0, GRID_X1 = ui.X0, ui.X1
 GRID_Y0, GRID_Y1 = 104, 362
 GAP = 12
@@ -38,6 +42,7 @@ class DisplayPage:
         self._buttons: list[tuple[str, ui.Button]] = []
         self._pending: str | None = None
         self._built_for: tuple | None = None
+        self._snap: dict = {}
         n = len(theme_mod.ORDER)
         w = (GRID_X1 - GRID_X0 - GAP * (n - 1)) // n
         self._themes = [
@@ -45,6 +50,9 @@ class DisplayPage:
                              GRID_X0 + i * (w + GAP) + w, THEME_Y1,
                              theme_mod.THEMES[name].label, scale=2))
             for i, name in enumerate(theme_mod.ORDER)]
+        # Shares the status line: the pager only draws when it is needed, so on
+        # the usual six presets that row is just the status text as before.
+        self._pager = ui.Pager(PER_PAGE, STATUS_Y - 6)
 
     # ---- layout ------------------------------------------------------------
     def _build(self, animations: list[dict]) -> None:
@@ -60,16 +68,22 @@ class DisplayPage:
         # kept the scales picked for the narrower one and long labels ran off
         # the ends of their buttons.
         key = ([a.get("id", "") for a in animations],
-               ui.THEME.name if ui.THEME else None)
+               ui.THEME.name if ui.THEME else None, self._pager.page)
         if key == self._built_for:
             return
         self._built_for = key
         self._buttons = []
+        shown = self._pager.slice(animations)
+        # Geometry comes from the whole list, not the visible slice: a last page
+        # with four items on it would otherwise trip the one-column rule and the
+        # buttons would change size and shape as you paged, which reads as a
+        # different screen rather than as more of the same one.
+        paged = len(animations) > PER_PAGE
         cols = COLS if len(animations) > ROWS else 1
-        rows = max(1, -(-len(animations) // cols))       # ceil
+        rows = ROWS if paged else max(1, -(-len(shown) // cols))
         w = (GRID_X1 - GRID_X0 - GAP * (cols - 1)) // cols
         h = (GRID_Y1 - GRID_Y0 - GAP * (rows - 1)) // rows
-        for i, anim in enumerate(animations):
+        for i, anim in enumerate(shown):
             col, row = i % cols, i // cols
             x0 = GRID_X0 + col * (w + GAP)
             y0 = GRID_Y0 + row * (h + GAP)
@@ -92,6 +106,8 @@ class DisplayPage:
                 ui.apply_theme(name)
                 theme_mod.save_name(name)
                 return
+        if self._pager.on_touch(kind, x, y, len(net_animations(self._snap))):
+            return
         for anim, button in self._buttons:
             if button.hit(x, y):
                 self._pending = anim
@@ -100,6 +116,9 @@ class DisplayPage:
 
     # ---- drawing -----------------------------------------------------------
     def draw(self, frame, snap: dict) -> None:
+        # Kept so on_touch can ask how many pages there are; the touch handler
+        # runs before draw() on the frame a tap lands in.
+        self._snap = snap
         animations = net_animations(snap)
         self._build(animations)
         display = (snap.get("chest") or {}).get("display") or {}
@@ -128,6 +147,8 @@ class DisplayPage:
             if on:
                 ink = ui.DIM_INK if anim == "off" else ui.OK_INK
             button.draw(frame, on=on, ink=ink)
+
+        self._pager.draw(frame, len(animations))
 
         if self._pending:
             ui.text(frame, "STARTING...", GRID_X0, STATUS_Y, ui.DIM_INK, 2)
