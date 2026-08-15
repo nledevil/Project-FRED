@@ -154,7 +154,7 @@ DEFAULT_SETTINGS = {
         # accurate on the case that actually fails — children, at distance, in a
         # noisy hall — at a real CPU cost on a machine already giving ~4 cores
         # to the wide camera. Measure with tools/bench_asr.py before switching.
-        "asr_model": "vosk-model-small-en-us-0.15",
+        "asr_model": "vosk-model-en-us-0.22-lgraph",
         "model": "claude-haiku-4-5-20251001",   # Claude model behind FRED's replies.
                                       # Haiku answers in ~0.7s vs Opus's ~1.7s; for one- or
                                       # two-sentence spoken replies that trade is worth it.
