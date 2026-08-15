@@ -13,6 +13,9 @@ root: /home/dietpi/inmoov
 flatten: no
 
 # --- the three services this Pi actually runs -------------------------------
+# servo_server also carries /api/poweroff: the chest touchscreen asks this Pi to
+# switch itself off *first* when packing up, because the NUC is the switch for
+# the robot LAN and once it is down nothing can reach here to ask.
 deploy/servo_server.py
 deploy/camera_stream.py
 deploy/led_server.py

@@ -47,6 +47,7 @@ deploy/display/fonts/exo2-28.npz
 deploy/display/fonts/exo2-38.npz
 deploy/display/settings_menu.py
 deploy/display/menu_ui.py
+deploy/display/power_menu.py
 deploy/display/pin_gate.py
 deploy/display/keyboard.py
 deploy/display/page_status.py
@@ -64,6 +65,8 @@ deploy/display/voice_hud.py
 deploy/display/voice_hud.c
 deploy/display/Makefile
 deploy/display/tools/verify_voice_hud.py
+deploy/display/tools/test_power_menu.py
+deploy/display/tools/render_pages.py
 
 # --- cart bring-up: the real Pico, not the simulated one -----------------
 deploy/display/tools/ps2_probe.py
