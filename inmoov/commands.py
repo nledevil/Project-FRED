@@ -117,6 +117,80 @@ def _speak_ago(sec: float) -> str:
     return f"{round(sec)} seconds ago" if sec < 90 else f"{round(sec / 60)} minutes ago"
 
 
+# Displays that show FRED's voice state — listening, thinking, speaking — as
+# opposed to the ones that are only decorative. At an event this is the panel a
+# child reads to know whether he heard them, so event mode will not let him
+# swap it for a flourish. See _set_chest_display.
+VOICE_STATE_DISPLAYS = ("voice-hud", "voice-hud-c", "face", "face-talk")
+
+
+def _set_chest_display(ctx, animation: str) -> str:
+    """Put something on the screen in FRED's chest, as part of an answer."""
+    display = getattr(ctx, "display", None)
+    if display is None or not display.configured():
+        return "I don't have a chest screen wired up."
+    try:
+        available = display.animations()
+    except Exception as exc:  # noqa: BLE001 - an unreachable panel is a spoken answer
+        return f"I can't reach my chest screen: {exc}"
+
+    ids = [str(a.get("id") or "") for a in available if a.get("id")]
+    want = (animation or "").strip().lower()
+    if want not in ids:
+        # Enumerated rather than guessed at: the presets live on the chest Pi and
+        # a hardcoded list here would go stale the moment one is added.
+        return ("I can't show that. I can show: " + ", ".join(ids) + ".") if ids \
+            else "My chest screen isn't offering anything to show."
+
+    event = getattr(ctx, "event", None)
+    if getattr(event, "enabled", False) and want not in VOICE_STATE_DISPLAYS:
+        # The turn-taking signal outranks the flourish. A child in a queue reads
+        # that panel to know whether he is listening to them or to someone else,
+        # and swapping it for an arc reactor takes that away at exactly the
+        # moment it is load-bearing.
+        return ("Not while there's a queue — my chest is showing whether I'm "
+                "listening, and people need to see that.")
+
+    try:
+        display.select(want)
+    except Exception as exc:  # noqa: BLE001
+        return f"That didn't take: {exc}"
+    label = next((str(a.get("label") or want) for a in available
+                  if a.get("id") == want), want)
+    return f"Chest screen is showing {label} now."
+
+
+def _play_sound(ctx, name: str) -> str:
+    """Play one of the clips on the robot, as punctuation to an answer."""
+    sound = getattr(ctx, "sound", None)
+    if sound is None or not sound.available():
+        return "I don't have any audio to play it through."
+    names = []
+    try:
+        names = [str(n) for n in sound.list()]
+    except Exception:  # noqa: BLE001 - fall through to attempting it anyway
+        pass
+    # Matched loosely on purpose. Asked for "your startup sound", Claude passes
+    # "startup sound", and an exact compare against the file stem missed it —
+    # it then tried twice and told the person it did not know which one they
+    # meant, about a clip it had.
+    want = (name or "").strip().lower()
+    for suffix in (" sound", " clip", ".wav"):
+        if want.endswith(suffix):
+            want = want[: -len(suffix)].strip()
+    match = next((n for n in names if n.lower() == want), None)
+    if match is None:
+        match = next((n for n in names if want and want in n.lower()), None)
+    if match is None:
+        return ("I don't have that one. I have: " + ", ".join(names) + "."
+                if names else "I don't have any sounds loaded.")
+    if not sound.play(match):
+        return f"I couldn't play {match}."
+    # Terse rather than empty: an empty tool result read as a failure and got
+    # the tool called a second time.
+    return f"Played {match}."
+
+
 def _speak_uptime(sec: float) -> str:
     """Uptime as something sayable. Nobody wants "27143 seconds"."""
     if sec < 60:                 # only ever true just after a reboot
@@ -393,6 +467,10 @@ def execute_action(ctx, name: str, **args) -> str:
         return _cart_stop(ctx)
     if name == "check_health":
         return _health_report(ctx)
+    if name == "set_chest_display":
+        return _set_chest_display(ctx, str(args.get("animation", "")))
+    if name == "play_sound":
+        return _play_sound(ctx, str(args.get("sound", "")))
 
     if name == "open_mouth":
         _jaw(ctx, True)
@@ -635,6 +713,27 @@ CLAUDE_TOOLS = [
                         "at once: better for counting people or finding "
                         "something off to one side, but it only works when it "
                         "is already running, and says so if it isn't."}}}},
+    {"name": "set_chest_display", "description":
+        "Change what the screen in FRED's chest is showing, as part of an "
+        "answer. Use it when the picture is the point — someone asks what else "
+        "he can display, or the moment wants a flourish. Ask for an animation "
+        "by its id; if you name one he does not have, he will tell you what he "
+        "does have, so guess and correct rather than refusing. Note the chest "
+        "screen is also how a person in a queue sees whether he is listening, "
+        "thinking or speaking, so do not leave it on a decorative one at an "
+        "event — he will refuse there anyway.",
+     "input_schema": {"type": "object", "properties": {
+         "animation": {"type": "string",
+                       "description": "The animation id, e.g. reactor, flux, "
+                                      "face, voice-hud, off."}},
+         "required": ["animation"]}},
+    {"name": "play_sound", "description":
+        "Play one of the sound clips on the robot. Punctuation for an answer — "
+        "not speech, which you do by replying normally. Name a clip; if it is "
+        "not one he has, he will list the ones he does.",
+     "input_schema": {"type": "object", "properties": {
+         "sound": {"type": "string", "description": "The clip name, without .wav"}},
+         "required": ["sound"]}},
     {"name": "check_health", "description":
         "Check how FRED himself is doing: how long he has been running, how hot "
         "his processor is, and what his drive base reports about its battery "
@@ -674,6 +773,15 @@ def run_tool(ctx, tool_name: str, tool_input: dict) -> str:
         return execute_action(ctx, "cart_stop")
     if tool_name == "check_health":
         return execute_action(ctx, "check_health")
+    if tool_name == "set_chest_display":
+        return execute_action(ctx, "set_chest_display",
+                              animation=ti.get("animation", ""))
+    if tool_name == "play_sound":
+        # Not `name=`: execute_action's own first parameter is called name, and
+        # passing the clip under that key raised "multiple values for argument
+        # 'name'" — which reached Claude as a tool failure, so it retried with
+        # different "parameter formats" for a tool whose schema was fine.
+        return execute_action(ctx, "play_sound", sound=ti.get("sound", ""))
     if tool_name == "reset_pose":
         return execute_action(ctx, "reset")
     if tool_name == "relax":

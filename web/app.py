@@ -49,6 +49,7 @@ from inmoov import cart as cart_mod  # noqa: E402
 from inmoov.cart import CartClient, CartError  # noqa: E402
 from inmoov.display import DisplayClient, DisplayError, VoicePusher  # noqa: E402
 from inmoov.greeter import Greeter  # noqa: E402
+from inmoov import commands as cmd_mod  # noqa: E402
 from inmoov.event import EventMode  # noqa: E402
 from inmoov.settings import load_settings, save_settings  # noqa: E402
 from inmoov import auth  # noqa: E402
@@ -228,6 +229,10 @@ _assistant.ctx.camera = _camera
 # never starts it, because that costs about four cores.
 _assistant.ctx.spotter = _spotter
 _assistant.ctx.event = _event
+# The chest screen, so Claude can put something on it as part of an answer.
+# Same object the admin dropdown drives, so the two never disagree about what
+# is showing.
+_assistant.ctx.display = _display
 # The cart asks event mode for its ceiling on every command rather than being
 # told when it changes — one source of truth, and no way for the two to drift.
 _cart.speed_ceiling = lambda: _event.cart_speed
@@ -752,6 +757,19 @@ def api_event():
         _settings.setdefault("event", {})["enabled"] = _event.enabled
         save_settings(_settings)
         _log.event(f"event mode {'on' if _event.enabled else 'off'}")
+        if _event.enabled:
+            # Put the turn-taking signal up rather than only defending it. The
+            # guard in commands.py stops Claude switching *away* from a voice
+            # display, which does nothing if the chest was already showing a
+            # decorative one when the switch was thrown — and at that point the
+            # queue has no way to tell whether he is listening to them.
+            try:
+                if _display.configured() and \
+                        _display.state().get("animation") not in cmd_mod.VOICE_STATE_DISPLAYS:
+                    _display.select("voice-hud-c")
+                    _log.event("chest switched to the voice indicator for the event")
+            except Exception as exc:  # noqa: BLE001 - never fail the toggle over this
+                _log.event(f"could not switch the chest display: {exc}")
     return jsonify(_event.status())
 
 
