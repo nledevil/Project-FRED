@@ -73,6 +73,14 @@ would be false precision. No matcher pattern for it on purpose — "how are you
 feeling?" deserves warmth, and a regex hands back the same flat recitation
 every time.
 
+**Also cleared (2026-08-14): long lists have somewhere to go.** ui.Pager, used
+by the animation grid and the servo list. The grid used to divide its space by
+however many presets there were, shrinking buttons to 33px at twelve; the servo
+list drew at a fixed pitch with no bound, so the eighth servo was drawn off the
+panel entirely and six wired servos were all that hid it. The pager draws
+nothing when there is one page, and clamps itself when a poll shrinks the list
+underneath it.
+
 ### Finish first
 
 Nothing. The two items that were here — driving the cart from the hand
@@ -144,17 +152,13 @@ and it shows:
    fourth mode button) and nothing but care prevents the next one. Worth stating
    in `menu_ui` and auditing the other pages against.
 
-10. **Long lists have nowhere to go.** Every page assumes its content fits one
-    screen. The display picker already computes its grid from the preset list; a
-    ninth preset would shrink the buttons rather than paginate.
-
 ### Other
 
-11. **Which questions he failed to understand.** Logging the transcriptions that
+10. **Which questions he failed to understand.** Logging the transcriptions that
     matched nothing turns a fair into a tuning set for item 1 — the real
     vocabulary of real children, rather than guesses.
 
-12. **A crowd speed cap for the cart.** `SPEED_LIMIT` is 300 and the same in a
+11. **A crowd speed cap for the cart.** `SPEED_LIMIT` is 300 and the same in a
     workshop as in a hall full of children. An event mode that caps it far lower
     is a small change to a machine that weighs 350 lb.
 
