@@ -81,6 +81,22 @@ panel entirely and six wired servos were all that hid it. The pager draws
 nothing when there is one page, and clamps itself when a poll shrinks the list
 underneath it.
 
+**Also cleared (2026-08-15): expression as an action.** `set_chest_display`
+and `play_sound`, both over APIs that already existed. Each enumerates what is
+actually available when asked for something that is not, because the animation
+list lives on the chest Pi and a copy here would go stale.
+
+Worth knowing for the kid-height item below: **the chest screen is already the
+turn-taking signal.** `voice-hud-c` is what it normally shows and it draws
+LISTENING / THINKING / SPEAKING from `voice_state.py` — so that item is not
+"build it" but "make it big enough to read across a hall", and the renderer
+that actually runs is the C one. Event mode now raises that display and stops
+Claude swapping it for a flourish.
+
+Also worth knowing: **there is almost nothing to play.** Three utility clips
+(`ok`, `startup`, `test`) and no terminator clips uploaded at all, so the sound
+half of this works but has nothing expressive to say with it.
+
 ### Finish first
 
 Nothing. The two items that were here — driving the cart from the hand
@@ -120,15 +136,9 @@ this is what is *not* already on it.
    misfires and the queue needs managing. Cheap, and the most useful thing on
    this list during an actual event.
 
-### Things worth handing him
-
-5. **Expression as an action.** He can already set his mouth and switch to
-   terminator mode; letting him pick the chest animation or play a sound as part
-   of an answer costs one tool each over APIs that already exist.
-
 ### Other
 
-6. **Which questions he failed to understand.** Logging the transcriptions that
+5. **Which questions he failed to understand.** Logging the transcriptions that
    matched nothing turns a fair into a tuning set for item 1 — the real
    vocabulary of real children, rather than guesses.
 
