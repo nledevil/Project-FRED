@@ -26,6 +26,7 @@ import numpy as np                                      # noqa: E402
 
 import keyboard as kbmod                                # noqa: E402
 from font5x7 import FONT                                # noqa: E402
+import page_display                                     # noqa: E402
 from page_display import DisplayPage                    # noqa: E402
 from page_info import InfoPage                          # noqa: E402
 from page_wireless import WirelessPage                  # noqa: E402
@@ -191,14 +192,23 @@ def main() -> int:
     check("...and lights immediately", page._pending == "reactor")
 
     # Built from the list, so a daemon that grows or loses a preset still works.
+    # A list longer than one page is *supposed* to stop at PER_PAGE now — the
+    # grid used to grow until it walked off the bottom of the panel, which is
+    # what the pager was added to fix. This asserted len == n from before that,
+    # so it read the fix as a fault.
     for n in (1, 3, 8, 11):
+        shown = min(n, page_display.PER_PAGE)
         p2 = DisplayPage()
         p2.draw(frame, {"chest": {"animations": [{"id": f"a{i}", "label": f"Anim {i}"}
                                                  for i in range(n)]}})
-        check(f"lays out {n} animation(s)", len(p2._buttons) == n,
+        check(f"lays out {n} animation(s) as {shown}", len(p2._buttons) == shown,
               f"{len(p2._buttons)}")
         check(f"...{n} stays on screen",
               all(b.rect[3] <= H for _a, b in p2._buttons))
+        # And the way to the rest of them exists, exactly when there is a rest.
+        check(f"...{n} shows a pager only when it needs one",
+              (p2._pager.pages(n) > 1) == (n > page_display.PER_PAGE),
+              f"pages={p2._pager.pages(n)}")
 
     print("the info page")
     who = {"hostname": "fred", "uptime_s": 7800,

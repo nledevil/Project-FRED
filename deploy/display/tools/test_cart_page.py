@@ -227,15 +227,20 @@ def main() -> int:
               float(frame[sy0:sy1, sx0:sx1].max()) > 0.0)
 
     # The armed face must actually look different, or the confirm is invisible.
+    # Sampled 20px in, not 5: the themes gave buttons a corner radius of 14, so
+    # 5px from the corner is outside the shape and reads background in every
+    # state. This check compared black to black and failed for months while the
+    # button itself was fine — it is amber armed and red latched.
+    inset = 20
     page.draw(frame, latched)
     page.on_touch("down", *stop_xy, net)
     frame[:] = 0.0
     page.draw(frame, latched)
-    armed_face = frame[sy0 + 5, sx0 + 5].copy()
+    armed_face = frame[sy0 + inset, sx0 + inset].copy()
     clock.advance(page_cart.CONFIRM_S + 0.1)
     frame[:] = 0.0
     page.draw(frame, latched)
-    idle_face = frame[sy0 + 5, sx0 + 5].copy()
+    idle_face = frame[sy0 + inset, sx0 + inset].copy()
     check("the armed stop button looks different from the latched one",
           not np.array_equal(armed_face, idle_face),
           f"{tuple(armed_face)} vs {tuple(idle_face)}")
