@@ -42,6 +42,9 @@ GATED = [
     # speed ceiling back up, which is not a thing a passer-by should be able to
     # do to a 350 lb machine in a room full of children.
     "/api/event",
+    # Powering the brain down mid-demo is the most disruptive thing a stranger
+    # on the access point could do with one request.
+    "/api/poweroff",
     "/api/cart/drive", "/api/cart/controller", "/api/hotspot",
     "/api/display", "/api/display/metrics", "/api/led", "/api/track",
     "/api/voice", "/api/command", "/api/log/clear", "/api/move", "/api/rest",

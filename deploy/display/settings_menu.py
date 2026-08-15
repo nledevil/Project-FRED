@@ -42,6 +42,7 @@ from fb import Framebuffer, hide_cursor     # noqa: E402
 from page_cart import CartPage              # noqa: E402
 from page_display import DisplayPage        # noqa: E402
 from page_info import InfoPage              # noqa: E402
+from power_menu import PowerMenu            # noqa: E402
 from page_wireless import WirelessPage      # noqa: E402
 from page_servos import ServosPage          # noqa: E402
 from page_status import StatusPage          # noqa: E402
@@ -65,6 +66,7 @@ TITLE_H = 56
 TAB_Y, TAB_H, TAB_GAP = 56, 34, 8
 TAB_X0, TAB_X1 = 24, 776        # the strip's span; tabs divide it evenly
 CLOSE = (700, 8, 792, 48)
+POWER = (596, 8, 692, 48)       # left of the X; see power_menu.py
 
 
 def _get(url: str, timeout: float = NET_TIMEOUT) -> dict | None:
@@ -220,6 +222,20 @@ class Net:
         exactly when the brain or the wire to it may be part of what is wrong."""
         self._fire(f"{LOCAL}/api/cart/stop", {"estop": True})
 
+    def post_poweroff(self, machine: str) -> bool:
+        """Ask a machine to power itself off. True if it accepted.
+
+        Synchronous, unlike every other write here, because the caller is
+        stepping through the machines in a required order and needs to know each
+        one took the request before it takes away that machine's network. A
+        failure has to be visible too — a head that quietly 401s is a head left
+        running in a crate, which is the whole thing this is meant to prevent.
+        """
+        url = {"nuc": f"{NUC}/api/poweroff", "head": f"{HEAD}/api/poweroff"}.get(machine)
+        if url is None:
+            return False
+        return _post(url, {}, timeout=6.0) is not None
+
     def post_cart_clear_estop(self) -> None:
         self._fire(f"{LOCAL}/api/cart/stop", {"clear_estop": True})
 
@@ -270,6 +286,8 @@ def main() -> int:
                       p.title, scale=tab_scale)
             for i, p in enumerate(pages)]
     close = ui.Button(*CLOSE, "X", scale=3)
+    power = ui.Button(*POWER, "POWER", scale=2)
+    power_menu = PowerMenu(log=log)
 
     net = Net()
     net.start()
@@ -297,7 +315,12 @@ def main() -> int:
                 # The chrome only reacts to a press. Everything else — including
                 # 'move' and 'up', which a slider needs and a button does not —
                 # goes to the page, which decides what it cares about.
+                if power_menu.on_touch(kind, x, y, net):
+                    continue
                 if kind == "down":
+                    if gate.unlocked and power.hit(x, y):
+                        power_menu.show()
+                        continue
                     if close.hit(x, y):
                         leaving = True
                         running[0] = False
@@ -326,12 +349,15 @@ def main() -> int:
             ui.text(frame, "FRED SETTINGS", 24, 16, ui.INK, 3)
             close.draw(frame, ink=ui.INK)
             if gate.unlocked:
+                power.draw(frame, ink=ui.INK)
+            if gate.unlocked:
                 for i, tab in enumerate(tabs):
                     tab.draw(frame, on=(i == current),
                              ink=ui.INK if i == current else ui.DIM_INK)
                 pages[current].draw(frame, snap)
             else:
                 gate.draw(frame, snap)
+            power_menu.draw(frame, snap)
             # Clip before the blit, exactly as every animation does. Text is
             # *added* into the frame, so ink on a panel background runs past 255
             # (120+18, 210+40, 255+54) and astype(uint8) wraps rather than

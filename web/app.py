@@ -21,6 +21,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from functools import wraps
 from pathlib import Path
 
@@ -707,6 +708,28 @@ def api_handoff():
 def api_brain_status():
     """Which LLM backend answers open questions, and what's actually reachable."""
     return jsonify(_assistant.brain.status())
+
+
+@app.post("/api/poweroff")
+@protected
+def api_poweroff():
+    """Power this machine down. Used by the chest touchscreen when packing up.
+
+    Deferred by a couple of seconds rather than called inline, because the reply
+    has to reach the panel first: a shutdown that races the HTTP response looks
+    to the toucher like the button did nothing, and the second press lands on a
+    machine that is already going down.
+
+    Only power off — never reboot. The one thing this is for is the end of an
+    event, and a robot that comes back up in a packed crate is worse than one
+    that does not."""
+    def _go():
+        time.sleep(2.0)
+        subprocess.run(["sudo", "-n", "systemctl", "poweroff"], check=False)
+
+    _log.event("power off requested from the touchscreen")
+    threading.Thread(target=_go, name="poweroff", daemon=True).start()
+    return jsonify({"ok": True, "machine": "nuc"})
 
 
 @app.get("/api/event")

@@ -55,7 +55,9 @@ import json
 import os
 import socket
 import sys
+import subprocess
 import threading
+import time
 from http import server
 from pathlib import Path
 
@@ -350,6 +352,21 @@ class _Handler(server.BaseHTTPRequestHandler):
                 # A rejected calibration must say why — this is the one endpoint
                 # whose failure the operator will otherwise read as "saved fine".
                 return self._send(400, {"error": str(exc)})
+
+        if path == "/api/poweroff":
+            # Packing up at an event. Deferred so the reply gets out first — a
+            # shutdown that races its own response looks, to whoever tapped, like
+            # the button did nothing.
+            #
+            # This must happen BEFORE the NUC goes down, not after: the NUC
+            # bridges both wired NICs, so once it is off nothing can reach this
+            # Pi to ask. The chest menu orders it that way; this end just obeys.
+            def _go():
+                time.sleep(1.5)
+                subprocess.run(["sudo", "-n", "systemctl", "poweroff"], check=False)
+
+            threading.Thread(target=_go, name="poweroff", daemon=True).start()
+            return self._send(200, {"ok": True, "machine": "head"})
 
         if path == "/api/relax":
             name = body.get("name")
