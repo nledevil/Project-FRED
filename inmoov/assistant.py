@@ -23,14 +23,19 @@ import wave
 
 import numpy as np
 
+from pathlib import Path
+
 from .brain import LOOK_MIN_SECS, Brain
 from .listener import Listener
+
+MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
 
 
 class Assistant:
     def __init__(self, controller, led, tracker, sound, *, api_key: str | None = None,
                  device: str = "plughw:0,0", log=None, mic_gain: float = 1.0,
-                 model: str | None = None, sensors=None, brain_cfg: dict | None = None):
+                 model: str | None = None, sensors=None, brain_cfg: dict | None = None,
+                 asr_model: str | None = None):
         # sensors is the SensorHub, or None on a build with no sensor node — the
         # read_sensors action degrades to saying so rather than failing.
         self._ctx = types.SimpleNamespace(controller=controller, led=led,
@@ -47,8 +52,14 @@ class Assistant:
                            vision=bool(bc.get("vision", True)),
                            look_min_secs=float(bc.get("vision_min_seconds",
                                                       LOOK_MIN_SECS)))
+        listener_kw = {}
+        if asr_model:
+            # A name under models/, not a path: the setting is edited by a human
+            # in a JSON file and should not be a chance to point the recogniser
+            # anywhere on disk.
+            listener_kw["model_path"] = MODELS_DIR / str(asr_model)
         self.listener = Listener(on_command=self._on_command, on_wake=self._on_wake,
-                                 device=device, gain=mic_gain)
+                                 device=device, gain=mic_gain, **listener_kw)
         self._speaking = False
         # True from "FRED heard you" until the first audio of his reply — the
         # Claude round-trip made visible. The chest display shows it as a state.

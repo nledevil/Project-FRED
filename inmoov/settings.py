@@ -149,6 +149,12 @@ DEFAULT_SETTINGS = {
         "enabled": False,             # start the "Hey FRED" wake-word listener at boot
         "gain": 1.0,                  # software mic boost (analog capture is already
                                       # maxed); 1.0 = off, ~2-3 for quiet/distant speech
+        # Which Vosk model transcribes what he hears. A directory name under
+        # models/. The small one is 68 MB and fast; the larger ones are more
+        # accurate on the case that actually fails — children, at distance, in a
+        # noisy hall — at a real CPU cost on a machine already giving ~4 cores
+        # to the wide camera. Measure with tools/bench_asr.py before switching.
+        "asr_model": "vosk-model-small-en-us-0.15",
         "model": "claude-haiku-4-5-20251001",   # Claude model behind FRED's replies.
                                       # Haiku answers in ~0.7s vs Opus's ~1.7s; for one- or
                                       # two-sentence spoken replies that trade is worth it.
