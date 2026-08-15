@@ -53,6 +53,41 @@ SNAP = {
 }
 
 
+def chrome(frame, page_title: str) -> int:
+    """Draw the title bar and tab strip over ``frame``; return the tab scale.
+
+    This is the one part of the menu no page owns — settings_menu.main() draws
+    it — which for a long time meant nothing rendered it but the panel itself.
+    Both of the layout faults found on 2026-08-15 were here: the tab row sharing
+    an edge with the title bar (invisible in the outlined themes, and reading as
+    part of the header in the soft one), and Orbitron labels crowding their own
+    borders. Geometry is imported rather than copied, so this cannot drift from
+    what actually runs.
+    """
+    import settings_menu as sm
+
+    titles = [t for t, _ in _PAGES]
+    n = len(titles)
+    tab_w = (sm.TAB_X1 - sm.TAB_X0 - sm.TAB_GAP * (n - 1)) // n
+    scale = ui.scale_to_fit_all(titles, tab_w, 2)
+    ui.fill(frame, 0, 0, W, sm.TITLE_H, ui.PANEL)
+    ui.text(frame, "FRED SETTINGS", 24, 16, ui.INK, 3)
+    ui.Button(*sm.CLOSE, "X", scale=3).draw(frame, ink=ui.INK)
+    ui.Button(*sm.POWER, "POWER", scale=2).draw(frame, ink=ui.INK)
+    for i, t in enumerate(titles):
+        x = sm.TAB_X0 + i * (tab_w + sm.TAB_GAP)
+        ui.Button(x, sm.TAB_Y, x + tab_w, sm.TAB_Y + sm.TAB_H, t, scale=scale).draw(
+            frame, on=(t == page_title), ink=ui.INK if t == page_title else ui.DIM_INK)
+    return scale
+
+
+# Tab order as the menu builds it, so the strip drawn here is the real one.
+_PAGES = [("STATUS", "status"), ("VOICE", "voice"), ("SERVOS", "servos"),
+          ("CART", "cart"), ("DISPLAY", "display"), ("WIRELESS", "wireless"),
+          ("INFO", "info")]
+_TITLE_OF = {short: title for title, short in _PAGES}
+
+
 def pages():
     import page_cart, page_display, page_info, page_servos, page_status, page_voice, page_wireless
     return [("display", page_display.DisplayPage()), ("status", page_status.StatusPage()),
@@ -76,6 +111,10 @@ def main() -> int:
             frame = np.zeros((H, W, 3), np.float32)
             frame[:] = ui.BG
             try:
+                # Chrome first, then the page, exactly as the menu's loop does —
+                # so a page whose first row rides up under the tab strip shows
+                # it here instead of on the robot.
+                chrome(frame, _TITLE_OF.get(page_name, ""))
                 page.draw(frame, SNAP)
             except Exception as exc:                 # noqa: BLE001
                 print(f"  {name}/{page_name}: RAISED {type(exc).__name__}: {exc}")

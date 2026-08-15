@@ -347,6 +347,38 @@ def line_height(scale: int = 2) -> int:
     return f.height if f is not None else CHAR_H * scale
 
 
+# Breathing room between a label and the edge of the control it sits in. The
+# themes do not share metrics — Orbitron is about 60% wider than Rajdhani at the
+# same scale — so a label chosen to fit one typeface crowds its own border in
+# another, and the HUD theme draws its outline exactly where the crowding
+# happens. 8 is the smallest gap that still reads as a margin rather than a
+# collision on this panel.
+PAD = 8
+
+
+def scale_to_fit(s: str, width_px: int, scale: int = 2, pad: int = PAD,
+                 preserve_case: bool = False) -> int:
+    """Largest scale <= ``scale`` whose text fits ``width_px`` minus padding.
+
+    Returns 1 when even that overflows: there is no atlas below scale 1, so the
+    honest options are to draw it slightly tight or to cut the word, and a tab
+    reading "WIRELES" is worse than a tab that is snug.
+    """
+    while scale > 1 and text_width(s, scale, preserve_case) > width_px - 2 * pad:
+        scale -= 1
+    return scale
+
+
+def scale_to_fit_all(labels, width_px: int, scale: int = 2, pad: int = PAD) -> int:
+    """One scale for a row of controls: the largest that fits *every* label.
+
+    A row of tabs at mixed sizes looks broken rather than tidy, so the widest
+    label sets the size for all of them.
+    """
+    return min((scale_to_fit(s, width_px, scale, pad) for s in labels),
+               default=scale)
+
+
 class Button:
     """A rectangle that knows whether it was tapped.
 
@@ -392,9 +424,15 @@ class Button:
                   PANEL_ON if on else PANEL, EDGE, self.phase())
         s = self.label if label is None else label
         if s:
+            # Fitted at draw time, not at construction: the theme can change
+            # while the menu is open, and the scale that fits Rajdhani runs into
+            # the border in Orbitron. A button that is handed a scale it cannot
+            # honour should shrink rather than overflow.
+            sc = scale_to_fit(s, x1 - x0, self.scale,
+                              preserve_case=self.preserve_case)
             text_centred(frame, s, x0, x1,
-                         y0 + ((y1 - y0) - line_height(self.scale)) // 2,
-                         ink or INK, self.scale,
+                         y0 + ((y1 - y0) - line_height(sc)) // 2,
+                         ink or INK, sc,
                          preserve_case=self.preserve_case)
 
 

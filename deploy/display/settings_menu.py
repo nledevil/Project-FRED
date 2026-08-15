@@ -63,8 +63,15 @@ FPS = 30
 
 # Chrome layout, 800x480.
 TITLE_H = 56
-TAB_Y, TAB_H, TAB_GAP = 56, 34, 8
+# The tabs start 8px *below* the title bar, not on its last pixel. At TAB_Y=56
+# they shared an edge with it, and in the soft theme — where both the bar and a
+# tab are filled panels in nearly the same tone — the row read as part of the
+# header rather than as controls under it. The outlined themes got away with it.
+TAB_Y, TAB_H, TAB_GAP = 64, 34, 4
 TAB_X0, TAB_X1 = 24, 776        # the strip's span; tabs divide it evenly
+# The gap between tabs is 4 rather than 8 to buy each tab 4 more pixels of
+# label: the side margins stay at 24 because they line up with "FRED SETTINGS"
+# above them, and losing that alignment to fit a word is the worse trade.
 CLOSE = (700, 8, 792, 48)
 POWER = (596, 8, 692, 48)       # left of the X; see power_menu.py
 
@@ -277,10 +284,9 @@ def main() -> int:
     # page added (five tabs at the old fixed 150px ran off the panel); the
     # labels did not, so the next tab would have overflowed its box onto its
     # neighbour instead — visibly wrong, and silently so in a test that only
-    # checked geometry.
-    tab_scale = max(1, min(2, *(next((sc for sc in (2, 1)
-                                      if ui.text_width(p.title, sc) <= tab_w - 8), 1)
-                                for p in pages)))
+    # checked geometry. One scale for the whole row: tabs at mixed sizes look
+    # broken rather than tidy, so the widest label sets the size for all seven.
+    tab_scale = ui.scale_to_fit_all([p.title for p in pages], tab_w, 2)
     tabs = [ui.Button(TAB_X0 + i * (tab_w + TAB_GAP), TAB_Y,
                       TAB_X0 + i * (tab_w + TAB_GAP) + tab_w, TAB_Y + TAB_H,
                       p.title, scale=tab_scale)
