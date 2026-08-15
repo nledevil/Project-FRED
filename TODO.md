@@ -102,13 +102,7 @@ this is what is *not* already on it.
    thinking he ignored them. A larger Vosk model is a download and a path change.
    Worth measuring before building anything else on this list.
 
-2. **He is deaf while he talks, and a kid cannot interrupt.** The mic is paused
-   during playback because the USB codec wedges if capture and playback overlap
-   (see `listener.pause`). So a long answer cannot be cut short by voice, only by
-   a button. Cap answer length in event mode rather than relying on the person
-   giving up.
-
-3. **Say who is talking, on the screen at kid height.** The chest panel is at a
+2. **Say who is talking, on the screen at kid height.** The chest panel is at a
    child's eyeline and currently shows an animation. A large LISTENING /
    THINKING / SPEAKING state there would do more for turn-taking in a crowd than
    anything in the web panel — the planned kiosk view is a *laptop* screen, which
@@ -116,51 +110,27 @@ this is what is *not* already on it.
 
 ### Driving him when you are not next to him
 
-4. **An operator page shaped like a phone.** The panel is a desktop layout and at
+3. **An operator page shaped like a phone.** The panel is a desktop layout and at
    an event you are holding a phone one-handed: stop speaking, mute the mic,
    reset the conversation, volume, and the live transcript. Distinct from the
    kiosk view below, which faces outward at visitors.
 
-5. **A deck of one-tap things to say.** `/api/say` already exists. "Ask me about
+4. **A deck of one-tap things to say.** `/api/say` already exists. "Ask me about
    my servos", "Let me think about that one", "Who is next?" — for when he
    misfires and the queue needs managing. Cheap, and the most useful thing on
    this list during an actual event.
 
 ### Things worth handing him
 
-6. **Expression as an action.** He can already set his mouth and switch to
+5. **Expression as an action.** He can already set his mouth and switch to
    terminator mode; letting him pick the chest animation or play a sound as part
    of an answer costs one tool each over APIs that already exist.
 
-### The touchscreen menu
-
-Ryan's read, and it holds up under inspection — the menu grew a page at a time
-and it shows:
-
-7. **No shared page frame.** `_fit()` is written out in three pages, and five
-   pages each declare their own margins that happen to agree. A small
-   `page_frame` helper (margins, heading, truncation, empty state) would make the
-   next page consistent by construction rather than by copying.
-
-8. **Nothing acknowledges a tap.** There is no pressed state anywhere; the only
-   feedback is the optimistic "lit" behaviour on the cart and display pages. On
-   a resistive-feeling panel that is the difference between confident and
-   hesitant tapping.
-
-9. **The affordance rule is real but unwritten** — a filled box with a border
-   means tappable. It was broken once already (the cart telemetry read as a
-   fourth mode button) and nothing but care prevents the next one. Worth stating
-   in `menu_ui` and auditing the other pages against.
-
 ### Other
 
-10. **Which questions he failed to understand.** Logging the transcriptions that
-    matched nothing turns a fair into a tuning set for item 1 — the real
-    vocabulary of real children, rather than guesses.
-
-11. **A crowd speed cap for the cart.** `SPEED_LIMIT` is 300 and the same in a
-    workshop as in a hall full of children. An event mode that caps it far lower
-    is a small change to a machine that weighs 350 lb.
+6. **Which questions he failed to understand.** Logging the transcriptions that
+   matched nothing turns a fair into a tuning set for item 1 — the real
+   vocabulary of real children, rather than guesses.
 
 ## STEM event readiness (planned 2026-07-08)
 
