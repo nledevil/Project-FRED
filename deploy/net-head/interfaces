@@ -1,0 +1,25 @@
+# Location: /etc/network/interfaces
+# Please modify network settings via: dietpi-config
+# Or create your own drop-ins in: /etc/network/interfaces.d/
+
+# Drop-in configs
+source interfaces.d/*
+
+# Ethernet
+# Robot LAN: the switch behind the NUC. The NUC (10.0.0.1) serves DHCP
+# with a MAC reservation for this Pi, so the address is stable.
+#
+# It hands out a gateway too, and as of 2026-08-15 that gateway works: the
+# NUC masquerades 10.0.0.0/24 out its uplink (deploy/hotspot-nuc/fred-nat.nft).
+# So the default route belongs here now, not on wlan0 - which is the only
+# uplink this Pi has when its WiFi is down, which is most of the time.
+allow-hotplug eth0
+iface eth0 inet dhcp
+
+# WiFi
+allow-hotplug wlan0
+iface wlan0 inet dhcp
+#dns-nameservers 1.1.1.1 8.8.8.8
+pre-up iw dev wlan0 set power_save off
+post-down iw dev wlan0 set power_save on
+wpa-conf /etc/wpa_supplicant/wpa_supplicant.conf

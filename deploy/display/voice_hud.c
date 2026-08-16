@@ -173,6 +173,7 @@ typedef struct {
     size_t size;
     int fd;
     uint8_t *mm;
+    char dev[64];          /* kept so the periodic unblank in blit() can name it */
 } fb_t;
 
 static int sysfs_int(const char *fbname, const char *attr, int *out)
@@ -227,6 +228,7 @@ static int fb_open(fb_t *fb, const char *dev)
         return -1;
     }
     fb_unblank(dev);
+    snprintf(fb->dev, sizeof fb->dev, "%s", dev);
     fb->size = (size_t)fb->stride * fb->h;
     fb->fd = open(dev, O_RDWR);
     if (fb->fd < 0) { perror(dev); return -1; }
@@ -781,6 +783,20 @@ static void cog_draw(canvas_t *c)
 
 static void blit(canvas_t *c, fb_t *fb)
 {
+    /* The panel can be blanked while this is running — the kernel's console
+     * blanking fires after consoleblank seconds of keyboard input, of which
+     * this panel has none, ever. Unblanking only at startup therefore fixes
+     * the handoff case and not the timer, and the screen goes dark every
+     * fifteen minutes of a perfectly busy animation. One sysfs write every
+     * five seconds is nothing next to the frame it rides along with. */
+    static double next_unblank = 0.0;
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    double nowd = ts.tv_sec + ts.tv_nsec * 1e-9;
+    if (nowd >= next_unblank) {
+        fb_unblank(fb->dev);
+        next_unblank = nowd + 5.0;
+    }
     for (int y = 0; y < c->H; y++) {
         /* A row that changed neither this frame nor last still holds the right
          * pixels on the panel; packing it again would be pure bandwidth. */

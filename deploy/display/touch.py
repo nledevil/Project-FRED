@@ -30,7 +30,45 @@ import os
 import select
 import struct
 
-DEVICE = "/dev/input/event0"
+DEVICE = "/dev/input/event0"      # only the fallback; see find_device()
+
+
+def find_device(default: str = DEVICE) -> str:
+    """The touchscreen's event node, found by what it *is* rather than by index.
+
+    This was hard-coded to event0 for as long as event0 was the touchscreen.
+    Loading vc4-kms-v3d for the GPU added four HDMI input devices — CEC remotes
+    and jack-detect switches — which took event0 through event3 and pushed the
+    panel to event4. The cog then stopped responding, because the daemon was
+    faithfully reading an HDMI remote control.
+
+    A touchscreen is the device with absolute axes; the things that displaced it
+    are keyboards and switches. That is a property of the hardware and does not
+    renumber, so match on it.
+    """
+    try:
+        blocks = open("/proc/bus/input/devices").read().split("\n\n")
+    except OSError:
+        return default
+    for block in blocks:
+        name = handlers = abs_bits = ""
+        for line in block.splitlines():
+            if line.startswith("N: Name="):
+                name = line[8:].strip().strip('"').lower()
+            elif line.startswith("H: Handlers="):
+                handlers = line[12:]
+            elif line.startswith("B: ABS="):
+                abs_bits = line[7:].strip()
+        node = next((h for h in handlers.split() if h.startswith("event")), "")
+        if not node or not abs_bits or abs_bits.strip("0 ") == "":
+            continue                      # no event node, or no absolute axes
+        if "kbd" in handlers.split():
+            continue                      # a remote with a d-pad, not a panel
+        path = f"/dev/input/{node}"
+        if path != default:
+            print(f"[touch] using {path} ({name})", flush=True)
+        return path
+    return default
 
 # struct input_event { struct timeval time; __u16 type, code; __s32 value; }
 # 24 bytes on 64-bit Linux (two 8-byte time fields). Checked at import rather
@@ -168,10 +206,11 @@ class Touch:
         return False
 
 
-def open_touch(path: str = DEVICE, **kw) -> Touch | None:
+def open_touch(path: str | None = None, **kw) -> Touch | None:
     """``Touch(path)`` or None if it isn't there. For callers to whom a missing
     touchscreen is a missing feature rather than an error — the daemon keeps
     animating without a cog, and says so once in its log."""
+    path = path or find_device()
     try:
         return Touch(path, **kw)
     except OSError as exc:

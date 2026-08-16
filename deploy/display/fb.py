@@ -15,6 +15,8 @@ stopped every animation on the panel.
 """
 import os
 import mmap
+import time
+
 import numpy as np
 
 
@@ -58,6 +60,7 @@ class Framebuffer:
                                f"RGB565 (16bpp) and XRGB8888 (32bpp)")
 
         unblank(dev)
+        self._unblank_at = 0.0              # re-checked in show(); see unblank()
         self.size = self.stride * self.h
         self.fd = os.open(dev, os.O_RDWR)
         self.mm = mmap.mmap(self.fd, self.size)
@@ -66,6 +69,12 @@ class Framebuffer:
 
     def show(self, rgb):
         """Blit an (H, W, 3) uint8 RGB array to the screen."""
+        # One tiny sysfs write every 5s, against a panel that is otherwise dark
+        # until someone notices. Cheaper than the frame it accompanies.
+        now = time.monotonic()
+        if now >= self._unblank_at:
+            unblank(self.dev)
+            self._unblank_at = now + 5.0
         raw = pack(rgb, self.bpp).tobytes()
         if not self._padded:
             self.mm[:] = raw
@@ -103,8 +112,15 @@ def unblank(dev="/dev/fb0"):
     exactly like a crash and is not one: the panel was dark while voice_hud was
     drawing 16,000 lit pixels a frame into it.
 
-    Called whenever a Framebuffer is opened, because a process opening this to
-    draw always wants the result visible.
+    Called when a Framebuffer is opened and then every few seconds while it is
+    in use, because the panel can be blanked *while* a renderer is running and
+    unblanking only at startup fixes one of the two ways this happens:
+
+      - something takes DRM master and hands the fbdev back blanked (a Qt eglfs
+        app, a GL demo)
+      - the kernel's console blanking fires. consoleblank defaults to 900s and
+        counts keyboard input, of which this panel has none ever, so it blanks
+        every fifteen minutes of a perfectly busy animation.
     """
     name = os.path.basename(dev)
     try:
