@@ -25,6 +25,13 @@
 # here would mean a silent loss of internet the day the card is replaced or the
 # uplink moves to a cable.
 
+# Careful with `nft -f` on a running machine: the flush below drops *every*
+# table, including the ip/ip6 filter and nat tables that Tailscale installs
+# through the iptables-nft compatibility layer. At boot that is harmless —
+# nftables.service runs before tailscaled — but reloading this by hand takes the
+# tailnet's routing with it until tailscaled reinstates it. To change a rule on
+# a live machine, add or replace that rule rather than reloading the file.
+
 flush ruleset
 
 table inet fred {
@@ -48,6 +55,18 @@ table inet fred {
     # this the subnet route resolves, hands out no error, and every packet dies
     # on the policy below.
     iifname "tailscale0" oifname "br0" counter accept comment "tailnet: robot LAN"
+
+    # The robot LAN's own way out. The Pis are ours rather than guests, and both
+    # of them need the archive occasionally — the chest has no pip by design, so
+    # apt is the only way anything gets installed there. Without this they have
+    # no route to it at all: the policy below is drop, so 10.0.0/24 was being
+    # discarded here long before the missing masquerade mattered.
+    #
+    # They do not get the AP, for the same reason the AP does not get them.
+    # Redundant against the policy, and explicit anyway so that "can the robot
+    # see the guest WiFi?" has a counter to answer it rather than an argument.
+    iifname "br0" oifname "wlo1" counter drop comment "robot LAN: no AP guests"
+    iifname "br0" oifname != { "wlo1", "br0" } counter accept comment "robot LAN: uplink only"
   }
 }
 
@@ -55,5 +74,9 @@ table ip fred-nat {
   chain postrouting {
     type nat hook postrouting priority srcnat; policy accept;
     ip saddr 192.168.50.0/24 oifname != { "wlo1", "br0" } counter masquerade
+    # ...and the same for the robot LAN. Outbound only: this lets the Pis reach
+    # the internet and lets nothing reach them, which is the same trade the line
+    # above makes for AP clients.
+    ip saddr 10.0.0.0/24 oifname != { "wlo1", "br0" } counter masquerade
   }
 }
