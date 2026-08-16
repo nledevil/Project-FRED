@@ -58,6 +58,18 @@ deploy/display/page_display.py
 deploy/display/page_info.py
 deploy/display/page_wireless.py
 
+# --- GPU animations ---------------------------------------------------------
+# The reactor, flux and face run as fragment shaders now; the numpy modules
+# above are kept as the reference tools/verify_shaders.py checks them against,
+# the same arrangement voice_hud.py has with voice_hud.c. The .qsb files are
+# baked from the .frag on this Pi at first run and are git-ignored.
+deploy/display/gpu_anim.py
+deploy/display/anim.qml
+deploy/display/shaders/reactor.frag
+deploy/display/shaders/flux.frag
+deploy/display/shaders/face.frag
+deploy/display/tools/verify_shaders.py
+
 # --- voice HUD, both renderers ----------------------------------------------
 # The native one is what actually runs. The binary is built ON this Pi (`make`)
 # and is git-ignored, so it is a keep: below, not a deploy.

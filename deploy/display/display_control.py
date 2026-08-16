@@ -95,13 +95,18 @@ def write_state(**changes) -> None:
 # The dropdown the head shows is exactly this list, flattened so each entry is
 # one concrete look: variants (--copper, --talk) are presets, not extra widgets.
 PRESETS = [
-    {"id": "reactor",        "label": "Arc Reactor",          "argv": ["reactor.py"]},
-    {"id": "reactor-copper", "label": "Arc Reactor (Copper)", "argv": ["reactor.py", "--copper"]},
-    {"id": "flux",           "label": "Flux Capacitor",       "argv": ["flux.py"]},
-    {"id": "face",           "label": "Face (live voice)",    "argv": ["face.py"]},
+    # These four run on the GPU. reactor.py, flux.py and face.py are still in
+    # the tree and still the definition of what they look like — they are what
+    # tools/verify_shaders.py checks the shaders against — but they are not
+    # launched: they cost 77%, 100% and 100% of a core, and the last two were
+    # saturated, which is why they never reached 30fps. See gpu_anim.py.
+    {"id": "reactor",        "label": "Arc Reactor",          "argv": ["gpu_anim.py", "reactor"]},
+    {"id": "reactor-copper", "label": "Arc Reactor (Copper)", "argv": ["gpu_anim.py", "reactor", "--copper"]},
+    {"id": "flux",           "label": "Flux Capacitor",       "argv": ["gpu_anim.py", "flux"]},
+    {"id": "face",           "label": "Face (live voice)",    "argv": ["gpu_anim.py", "face"]},
     {"id": "voice-hud",      "label": "Voice HUD",            "argv": ["voice_hud.py"]},
     {"id": "voice-hud-c",    "label": "Voice HUD (native)",   "argv": ["voice_hud"]},
-    {"id": "face-talk",      "label": "Face (demo talk)",     "argv": ["face.py", "--talk"]},
+    {"id": "face-talk",      "label": "Face (demo talk)",     "argv": ["gpu_anim.py", "face", "--talk"]},
     {"id": "off",            "label": "Off (blank screen)",   "argv": None},
     # The settings menu is a child like any other — it owns the framebuffer and
     # dies on SIGTERM — but it is not a *look*, so it is hidden from the head's

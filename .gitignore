@@ -18,3 +18,4 @@ deploy/display/voice_hud
 # Generated from theme.py by the Makefile, beside the binary above.
 deploy/display/theme_colors.h
 verify-*.raw
+deploy/display/shaders/*.qsb
