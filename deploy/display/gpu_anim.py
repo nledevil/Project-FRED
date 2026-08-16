@@ -260,6 +260,11 @@ def main() -> int:
 
     os.environ.setdefault("QT_QPA_PLATFORM", "eglfs")
     os.environ.setdefault("QT_QPA_EGLFS_KMS_ATOMIC", "1")
+    # No mouse pointer. eglfs draws one as soon as it finds a pointing device,
+    # and the touchscreen presents itself as mouse0 as well as event4 — so a
+    # panel nobody has ever pointed a mouse at grew an arrow in the corner the
+    # moment the animations became Qt. The framebuffer renderers never had one.
+    os.environ.setdefault("QT_QPA_EGLFS_HIDECURSOR", "1")
     os.environ.setdefault("QT_LOGGING_RULES", "qt.qpa.*=false")
 
     ramp = theme.ramp(args.theme)
