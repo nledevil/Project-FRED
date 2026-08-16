@@ -119,6 +119,9 @@ class Net:
     def __init__(self):
         self._lock = threading.Lock()
         self._snap: dict = {}
+        self._networks: list = []
+        self._scanning = False
+        self._scanned_at = 0.0
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._loop, name="net-poll",
                                         daemon=True)
@@ -152,6 +155,8 @@ class Net:
                 # switched off in settings, and then nothing drives it.
                 snap["nuc_cart"] = _get(f"{NUC}/api/cart", timeout=1.5)
                 snap["hotspot"] = _get(f"{NUC}/api/hotspot", timeout=1.5)
+                # The other radio: what FRED has joined, not what he hosts.
+                snap["uplink"] = _get(f"{NUC}/api/uplink", timeout=1.5)
                 # Names, addresses, versions and the inference device,
                 # for the INFO tab. Brain-side because only it knows.
                 snap["whoami"] = _get(f"{NUC}/api/whoami", timeout=1.5)
@@ -221,6 +226,39 @@ class Net:
         the config and the radio are both there."""
         self._fire(f"{NUC}/api/hotspot/config",
                    {"ssid": str(ssid), "passphrase": str(passphrase)})
+
+    def post_uplink_join(self, ssid: str, password: str) -> None:
+        """Join a WiFi network. Brain-side: the client radio is the NUC's."""
+        self._fire(f"{NUC}/api/uplink/join",
+                   {"ssid": str(ssid), "password": str(password)})
+
+    def post_uplink_forget(self, ssid: str) -> None:
+        self._fire(f"{NUC}/api/uplink/forget", {"ssid": str(ssid)})
+
+    def scan_uplink(self) -> None:
+        """Start a scan on its own thread.
+
+        A scan sweeps the band and takes seconds. Doing it on the drawing path
+        would freeze the panel mid-tap, and doing it on the poller would make
+        every page wait for something only one page cares about — so it runs
+        when asked and leaves its answer where the page can pick it up.
+        """
+        with self._lock:
+            if self._scanning:
+                return
+            self._scanning = True
+        def work():
+            got = _get(f"{NUC}/api/uplink/scan", timeout=40.0) or {}
+            with self._lock:
+                self._networks = got.get("networks") or []
+                self._scanned_at = time.monotonic()
+                self._scanning = False
+        threading.Thread(target=work, name="uplink-scan", daemon=True).start()
+
+    def scan_state(self) -> dict:
+        with self._lock:
+            return {"busy": self._scanning, "networks": list(self._networks),
+                    "at": self._scanned_at}
 
     def post_animation(self, animation: str) -> None:
         """Switch what the chest screen is showing. Local, like the cart mode:

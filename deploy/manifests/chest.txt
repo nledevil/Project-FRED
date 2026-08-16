@@ -74,6 +74,7 @@ deploy/display/DisplayPage.qml
 deploy/display/ServosPage.qml
 deploy/display/CartPage.qml
 deploy/display/WifiPage.qml
+deploy/display/UplinkView.qml
 deploy/display/Keyboard.qml
 deploy/display/PinGate.qml
 deploy/display/PowerMenu.qml

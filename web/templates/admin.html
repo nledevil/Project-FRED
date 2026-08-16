@@ -83,6 +83,10 @@
            border-radius:10px; opacity:0; transition:opacity .25s; pointer-events:none; font-weight:600; }
   #toast.show { opacity:1; }
   #toast.err { background:#3a0d0d; color:#f87171; border-color:#a33; }
+  .wifilist { display:flex; flex-direction:column; gap:6px; width:100%; }
+  .wifirow { display:flex; align-items:center; gap:10px; padding:6px 10px;
+             border:1px solid var(--edge, #2a2f3a); border-radius:8px; }
+  .wifirow .grow { flex:1 1 auto; }
 </style>
 <link rel="stylesheet" href="/static/pin.css">
 <script src="/static/pin.js"></script>
@@ -260,6 +264,38 @@
     </div>
     <p class="hint">When off, the camera never touches the LED — control it manually
        with the 🔴 LED toggle on the control panel.</p>
+  </section>
+
+  <section class="panel">
+    <p class="phead">WiFi</p>
+    <div class="row">
+      <div class="label"><b>FRED&rsquo;s hotspot</b><span>the network he hosts, for a phone</span></div>
+      <input type="text" id="apSsid" class="wide" spellcheck="false" placeholder="fred">
+      <input type="password" id="apPass" class="wide" spellcheck="false" placeholder="new password">
+      <div class="grow"></div>
+      <button onclick="saveAp()">Save hotspot</button>
+    </div>
+    <p class="hint">Renaming the hotspot or changing its password <b>restarts it</b>, so
+       anything joined to it drops for a few seconds. The password must be 8&ndash;63
+       characters. It is never sent back to this page &mdash; the field is blank because
+       the brain does not hand it out, not because it is unset.</p>
+
+    <div class="row">
+      <div class="label"><b>Connected to</b><span>the network FRED joins, for internet</span></div>
+      <span class="linkstat"><span class="dot" id="upDot"></span>
+        <span id="upStat">checking&hellip;</span></span>
+      <div class="grow"></div>
+      <button onclick="scanWifi()" id="upScanBtn">↻ Scan</button>
+    </div>
+    <div class="row" id="upListRow">
+      <div class="label"><b>In range</b><span>tap Join; saved networks need no password</span></div>
+      <div class="grow"><div id="upList" class="wifilist"></div></div>
+    </div>
+    <p class="hint">Joining <b>adds</b> a network rather than replacing: the workshop&rsquo;s
+       stays saved, so he finds his way home from an event without anyone typing anything.
+       A scan takes a couple of seconds because the radio has to sweep the band. Forgetting
+       the last saved network is refused &mdash; a robot that has forgotten every network
+       needs a keyboard and a monitor at the venue to get back on.</p>
   </section>
 
   <section class="panel">
@@ -533,6 +569,116 @@ async function loadAnimations(selected) {
   if (selected) sel.value = selected;
 }
 
+// ---- WiFi: the one FRED hosts, and the one he joins ---------------------
+
+async function saveAp() {
+  const ssid = document.getElementById('apSsid').value.trim();
+  const pass = document.getElementById('apPass').value;
+  if (!ssid) { toast('\u26a0 The hotspot needs a name', true); return; }
+  if (pass && (pass.length < 8 || pass.length > 63)) {
+    toast('\u26a0 A WPA password is 8\u201363 characters', true); return;
+  }
+  const r = await api('/api/hotspot/config', { ssid: ssid, passphrase: pass });
+  if (r.error) { toast('\u26a0 ' + r.error, true); return; }
+  // Never keep the passphrase in the DOM after it has been sent: it was typed
+  // once and the brain does not hand it back.
+  document.getElementById('apPass').value = '';
+  toast('Hotspot saved \u2014 it is restarting');
+}
+
+async function seedApName() {
+  const s = await api('/api/hotspot');
+  if (s && s.ssid) document.getElementById('apSsid').value = s.ssid;
+}
+
+async function refreshUplink() {
+  const dot = document.getElementById('upDot'), st = document.getElementById('upStat');
+  const s = await api('/api/uplink');
+  window._upSaved = s.saved || [];
+  window._upCurrent = s.ssid || '';
+  if (!s.available) {
+    dot.className = 'dot'; st.textContent = s.error || 'unavailable';
+    return;
+  }
+  if (s.ssid) {
+    dot.className = 'dot on';
+    st.textContent = s.ssid + ' \u00b7 ' + (s.address || 'no address')
+                   + (s.signal != null ? ' \u00b7 ' + s.signal + ' dBm' : '');
+  } else {
+    dot.className = 'dot off';
+    st.textContent = 'not connected';
+  }
+  renderWifi(window._upNets || []);
+}
+
+function renderWifi(nets) {
+  const box = document.getElementById('upList');
+  if (!nets.length) {
+    box.innerHTML = '<span class="hint">Scan to see what is in range.</span>';
+    return;
+  }
+  const saved = window._upSaved || [], current = window._upCurrent || '';
+  box.innerHTML = nets.map(n => {
+    const isSaved = saved.indexOf(n.ssid) >= 0, isOn = n.ssid === current;
+    const bits = [n.signal + ' dBm'];
+    if (!n.secure) bits.push('open');
+    if (isSaved) bits.push('saved');
+    // A saved or open network needs no password, so the button is the whole
+    // interaction — which is the point when you are standing at a venue.
+    const act = isOn ? '<span class="hint">connected</span>'
+      : '<button onclick="joinWifi(' + JSON.stringify(n.ssid).replace(/"/g, '&quot;')
+        + ',' + (n.secure && !isSaved) + ')">Join</button>';
+    const forget = isSaved && !isOn
+      ? ' <button onclick="forgetWifi(' + JSON.stringify(n.ssid).replace(/"/g, '&quot;')
+        + ')">Forget</button>' : '';
+    return '<div class="wifirow"><b>' + escapeHtml(n.ssid) + '</b>'
+         + '<span class="hint">' + bits.join(' \u00b7 ') + '</span>'
+         + '<span class="grow"></span>' + act + forget + '</div>';
+  }).join('');
+}
+
+function escapeHtml(t) {
+  return String(t).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;',
+                                               '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+async function scanWifi() {
+  const btn = document.getElementById('upScanBtn');
+  btn.disabled = true; btn.textContent = 'Scanning\u2026';
+  try {
+    const r = await api('/api/uplink/scan');
+    window._upNets = r.networks || [];
+    renderWifi(window._upNets);
+    if (!window._upNets.length) toast('Nothing in range');
+  } finally {
+    btn.disabled = false; btn.textContent = '\u21bb Scan';
+  }
+}
+
+async function joinWifi(ssid, needsPassword) {
+  let pass = '';
+  if (needsPassword) {
+    pass = prompt('Password for "' + ssid + '"') || '';
+    if (!pass) return;
+    if (pass.length < 8 || pass.length > 63) {
+      toast('\u26a0 A WPA password is 8\u201363 characters', true); return;
+    }
+  }
+  toast('Joining ' + ssid + '\u2026');
+  const r = await api('/api/uplink/join', { ssid: ssid, password: pass });
+  if (!r.ok) { toast('\u26a0 ' + (r.error || 'could not join'), true); return; }
+  toast('Joined \u2014 the network may drop for a moment');
+  // The radio takes a few seconds to associate and get an address.
+  setTimeout(refreshUplink, 6000);
+}
+
+async function forgetWifi(ssid) {
+  const r = await api('/api/uplink/forget', { ssid: ssid });
+  if (!r.ok) { toast('\u26a0 ' + (r.error || 'could not forget'), true); return; }
+  toast('Forgot ' + ssid);
+  refreshUplink();
+}
+
 async function refreshDisplay() {
   const dot = document.getElementById('dispDot'), st = document.getElementById('dispStat');
   const s = await api('/api/display');
@@ -765,6 +911,8 @@ loadBrain();
 loadEvent();
 load();
 refreshDisplay();
+refreshUplink();
+seedApName();
 </script>
 </body>
 </html>

@@ -207,6 +207,8 @@ class Panel(QObject):
         self._servos_view = {}
         self._cart_view = {}
         self._wifi_view = {}
+        self._uplink_view = {}
+        self._uplink_page = 0
         self._gate_view = {}
         self._power_view = {}
         self._net = Net()
@@ -279,6 +281,7 @@ class Panel(QObject):
         self._servos_view = self._servos_page.view(self._snap)
         self._cart_view = self._cart_page.view(self._snap)
         self._wifi_view = self._wifi_page.view(self._snap)
+        self._uplink_view = self._uplink()
         self._gate_view = self._gate.view()
         self._power_view = self._power.view()
         self._rows = [{"name": n, "where": w, "state": st,
@@ -365,6 +368,40 @@ class Panel(QObject):
     def wifiView(self):
         return self._wifi_view
 
+    # The other radio. Assembled here rather than in a page class because it
+    # is the brain's state plus a scan the panel asked for, and neither belongs
+    # to the numpy page that draws the access point.
+    PER_PAGE = 5
+
+    def _uplink(self) -> dict:
+        up = self._snap.get("uplink") or {}
+        scan = self._net.scan_state()
+        nets = scan["networks"]
+        saved = set(up.get("saved") or [])
+        rows = [{"ssid": n["ssid"], "signal": int(n.get("signal") or 0),
+                 "secure": bool(n.get("secure")), "saved": n["ssid"] in saved,
+                 "current": n["ssid"] == up.get("ssid")}
+                for n in nets]
+        pages = max(1, -(-len(rows) // self.PER_PAGE))
+        page = max(0, min(self._uplink_page, pages - 1))
+        start = page * self.PER_PAGE
+        return {
+            "available": bool(up.get("available")),
+            "ssid": up.get("ssid") or "",
+            "signal": up.get("signal"),
+            "address": up.get("address") or "",
+            "saved": up.get("saved") or [],
+            "error": up.get("error") or "",
+            "busy": scan["busy"],
+            "scanned": scan["at"] > 0,
+            "rows": rows[start:start + self.PER_PAGE],
+            "page": page, "pages": pages,
+        }
+
+    @Property("QVariantMap", notify=changed)
+    def uplinkView(self):
+        return self._uplink_view
+
     @Property("QVariantMap", notify=changed)
     def gateView(self):
         return self._gate_view
@@ -429,6 +466,10 @@ class Panel(QObject):
     def openMenu(self):
         self.scene = "menu"
 
+    def unlock_for_testing(self) -> None:
+        """Open the gate without a PIN. Only reachable from --no-gate."""
+        self._gate.unlocked = True
+
     @Slot()
     def closeMenu(self):
         """Leaving the menu is a scene change now.
@@ -454,6 +495,22 @@ class Panel(QObject):
     @Slot(str)
     def powerTap(self, key):
         self._power.tap(key, self._net)
+
+    @Slot()
+    def scanUplink(self):
+        self._net.scan_uplink()
+
+    @Slot(str, str)
+    def joinUplink(self, ssid, password):
+        self._net.post_uplink_join(ssid, password)
+
+    @Slot(str)
+    def forgetUplink(self, ssid):
+        self._net.post_uplink_forget(ssid)
+
+    @Slot(int)
+    def turnUplinkPage(self, delta):
+        self._uplink_page = max(0, self._uplink_page + delta)
 
     @Slot()
     def toggleHotspot(self):
@@ -527,6 +584,13 @@ def main() -> int:
                     help="seconds to let the scene settle before grabbing")
     ap.add_argument("--page", type=int, default=0,
                     help="open the menu on this tab (0-6), for grabbing one page")
+    ap.add_argument("--no-gate", action="store_true",
+                    help="skip the PIN, for grabbing pages. Weakens nothing that "
+                         "matters: the brain gates its own writes by PIN and "
+                         "trusts the robot LAN either way, and anyone who can "
+                         "pass this flag already has a shell on the Pi.")
+    ap.add_argument("--wifi-half", type=int, default=0,
+                    help="which half of the WIFI tab to open on, for grabbing")
     ap.add_argument("--power", action="store_true",
                     help="open the power overlay, for grabbing it")
     ap.add_argument("--menu", action="store_true",
@@ -565,6 +629,8 @@ def main() -> int:
     overlay = Overlay()
     panel = Panel(args.anim, "menu" if args.menu else "anim")
     panel.page = args.page
+    if args.no_gate:
+        panel.unlock_for_testing()
     if args.power:
         panel.showPower()
 
@@ -577,6 +643,7 @@ def main() -> int:
     ctx.setContextProperty("OkCol", QColor(*ramp.ok))
     ctx.setContextProperty("WarnCol", QColor(*ramp.warn))
     ctx.setContextProperty("FontFamily", families.get(name, ""))
+    ctx.setContextProperty("StartWifiHalf", int(args.wifi_half))
     # The whole palette as one map, straight off theme.py. QML gets the same
     # numbers the numpy pages read as ui.INK — theme.py stays the one place a
     # theme is defined, as it already is for the C renderer's generated header.

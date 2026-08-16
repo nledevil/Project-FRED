@@ -14,11 +14,44 @@ Item {
     }
 
     property var editing: null
+    property int half: StartWifiHalf   // 0 = the AP we host, 1 = the WiFi we join
+
+    // The switch between them, at the top so it reads as one tab with two
+    // halves rather than two tabs that happen to be about radios.
+    RowLayout {
+        id: picker
+        anchors.top: parent.top
+        anchors.left: parent.left; anchors.right: parent.right
+        height: 44
+        spacing: 8
+        Btn {
+            Layout.fillWidth: true; Layout.fillHeight: true
+            label: "FRED'S HOTSPOT"; on: page.half === 0
+            onTapped: page.half = 0
+        }
+        Btn {
+            Layout.fillWidth: true; Layout.fillHeight: true
+            label: "JOIN A NETWORK"; on: page.half === 1
+            onTapped: { page.half = 1; if (!P.uplinkView.scanned) P.scanUplink() }
+        }
+    }
+
+    UplinkView {
+        // Scanned on arrival rather than on a timer: it costs a couple of
+        // seconds of radio and only matters while somebody is looking.
+        Component.onCompleted: if (page.half === 1 && !P.uplinkView.scanned) P.scanUplink()
+        anchors.top: picker.bottom; anchors.topMargin: 10
+        anchors.left: parent.left; anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        visible: page.half === 1
+    }
 
     ColumnLayout {
-        anchors.fill: parent
+        anchors.top: picker.bottom; anchors.topMargin: 10
+        anchors.left: parent.left; anchors.right: parent.right
+        anchors.bottom: parent.bottom
         spacing: 10
-        visible: page.editing === null
+        visible: page.half === 0 && page.editing === null
 
         RowLayout {
             Layout.fillWidth: true
@@ -89,7 +122,7 @@ Item {
 
     Keyboard {
         anchors.fill: parent
-        visible: page.editing !== null
+        visible: page.half === 0 && page.editing !== null
         title: page.editing ? page.editing.title : ""
         seed: page.editing ? page.editing.value : ""
         maxLen: page.editing ? page.editing.maxLen : 32
