@@ -135,6 +135,23 @@
   .upnow.down { border-color:#7a5a10; }
   .upnow.down .who b { color:var(--warn); }
 
+  .heardlist { display:flex; flex-direction:column; gap:6px; max-height:420px;
+               overflow-y:auto; }
+  .heardrow { display:flex; align-items:baseline; gap:10px; padding:7px 10px;
+              border:1px solid var(--border); border-radius:9px; flex-wrap:wrap; }
+  .heardrow .what { flex:1 1 240px; min-width:0; }
+  .heardrow .when { color:var(--mut); font-size:11px;
+                    font-variant-numeric:tabular-nums; }
+  .heardrow .said { color:var(--mut); font-size:12px; flex:1 0 100%;
+                    overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .hchip { flex:none; font-size:10px; font-weight:700; letter-spacing:.05em;
+           text-transform:uppercase; padding:2px 8px; border-radius:999px;
+           border:1px solid var(--border); color:var(--mut); }
+  .hchip.matched { border-color:#0a5; color:var(--ok); }
+  .hchip.claude { border-color:#3b2f6b; color:#c7b8ff; }
+  .hchip.bad { border-color:#a33; color:var(--bad); }
+  .hchip.ev { border-color:#7a5a10; color:var(--warn); }
+
   .wifilist { display:flex; flex-direction:column; gap:6px; width:100%; }
   .wnet { border:1px solid var(--border); border-radius:10px; overflow:hidden; }
   .wnet.cur { border-color:#0a5; }
@@ -182,6 +199,7 @@
       <a href="#sec-display" data-sec="sec-display">Chest display</a>
       <a href="#sec-voice" data-sec="sec-voice">Voice &amp; AI</a>
       <a href="#sec-clips" data-sec="sec-clips">Sound clips</a>
+      <a href="#sec-heard" data-sec="sec-heard">Heard log</a>
       <a href="#sec-dev" data-sec="sec-dev">Developer</a>
     </nav>
     <div class="content">
@@ -478,6 +496,27 @@
     <div class="cliplist" id="clipList"></div>
   </section>
 
+  <section class="panel" id="sec-heard">
+    <p class="phead">Heard log</p>
+    <div class="row">
+      <div class="label"><b>What he was asked</b>
+        <span>every utterance that reached the brain, and where it went</span></div>
+      <label class="switch"><input type="checkbox" id="hMissed" checked
+             onchange="loadHeard()"> Only misses</label>
+      <label class="switch"><input type="checkbox" id="hVoice" checked
+             onchange="loadHeard()"> Only voice</label>
+      <button onclick="loadHeard()">&#8635;</button>
+      <a class="back" style="margin-left:0" href="/api/heard.jsonl">&#8595; Download</a>
+    </div>
+    <div id="heardList" class="heardlist"><span class="hint">loading&hellip;</span></div>
+    <p class="hint"><b>Misses</b> are what the command matcher did not recognise
+       &mdash; the set to read after an event. A misheard word shows up here as an
+       A.I. round trip that should have been a reflex: he heard
+       &ldquo;servers&rdquo;, the matcher knows &ldquo;servos&rdquo;. Fix the
+       vocabulary or the pattern, not the child. Bystander conversation is never
+       logged &mdash; only what passed the wake word or was typed at the panel.</p>
+  </section>
+
   <section class="panel" id="sec-dev">
     <p class="phead">Developer</p>
     <div class="row">
@@ -661,6 +700,35 @@ async function loadAnimations(selected) {
     sel.appendChild(o);
   }
   if (selected) sel.value = selected;
+}
+
+// ---- heard log ----------------------------------------------------------
+async function loadHeard() {
+  const box = document.getElementById('heardList');
+  const missed = document.getElementById('hMissed').checked ? '1' : '0';
+  const voice = document.getElementById('hVoice').checked ? '1' : '0';
+  const r = await api('/api/heard?limit=200&missed=' + missed + '&voice=' + voice);
+  const rows = (r && r.heard) || [];
+  if (!rows.length) {
+    box.innerHTML = '<span class="hint">Nothing yet \u2014 he logs every '
+      + 'utterance that reaches the brain, so this fills as he is talked to.</span>';
+    return;
+  }
+  box.innerHTML = rows.map(h => {
+    const chip = h.route === 'matched'
+        ? '<span class="hchip matched" title="' + escapeHtml(h.action) + '">matched</span>'
+      : h.route === 'claude' ? '<span class="hchip claude">claude</span>'
+      : h.route === 'local' ? '<span class="hchip">local ai</span>'
+      : '<span class="hchip bad">' + escapeHtml(h.route || '?') + '</span>';
+    return '<div class="heardrow">'
+      + '<span class="when">' + escapeHtml((h.t || '').replace('T', ' ')) + '</span>'
+      + '<b class="what">' + escapeHtml(h.heard) + '</b>'
+      + (h.event ? '<span class="hchip ev">event</span>' : '')
+      + (h.source === 'text' ? '<span class="hchip">typed</span>' : '')
+      + chip
+      + (h.reply ? '<span class="said">\u21b3 ' + escapeHtml(h.reply) + '</span>' : '')
+      + '</div>';
+  }).join('');
 }
 
 // ---- WiFi: the one FRED hosts, and the one he joins ---------------------
@@ -1071,6 +1139,7 @@ load();
 refreshDisplay();
 refreshUplink();
 refreshHotspot();
+loadHeard();
 
 // ---- section tabs -------------------------------------------------------
 // One section shown at a time. Everything stays in the DOM — Save reads

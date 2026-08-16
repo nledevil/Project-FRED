@@ -110,9 +110,16 @@ headroom is the thing to watch.
 **But the question the list asked is still open.** The decision was made on cost
 plus one accuracy win on clean synthetic speech ("my sure" -> "my shirt"). The
 case that actually fails is a child at three feet in a hall of four hundred, and
-nothing here can synthesise it — the failed-transcription item below is what
-collects it. Worth re-running the bench against real recordings before calling
-this settled. And note both models hear "servos" as "servers": that is
+nothing here can synthesise it. **Cleared on 2026-08-16: the collector exists.**
+Every utterance that reaches the brain lands in `logs/heard.jsonl` with the
+route it took — matched / claude / local / error — plus whether event mode was
+on, reviewed on the admin page's Heard tab (misses-only by default) or pulled
+whole as JSONL. What the matcher did not recognise after a fair IS the tuning
+set; feed the suspicious ones back through `tools/bench_asr.py`. Deliberately
+not logged: anything that did not pass the wake word — the mic hears a whole
+room, and bystander conversation is surveillance, not tuning data. The known
+cost: a *misheard wake word* never appears, because it was dropped before
+anything could log it. And note both models hear "servos" as "servers": that is
 vocabulary, not size, and no larger download fixes it.
 
 ### Finish first
@@ -143,10 +150,8 @@ this is what is *not* already on it.
 
 ### Other
 
-3. **Which questions he failed to understand.** Logging the transcriptions that
-   matched nothing turns a fair into a tuning set for the speech model —
-   which is the measurement the cleared note above says is still missing. The real
-   vocabulary of real children, rather than guesses.
+Nothing — the failed-understanding log was the last item here; see the cleared
+note above.
 
 ## STEM event readiness (planned 2026-07-08)
 

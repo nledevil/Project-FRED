@@ -428,7 +428,8 @@ class Brain:
             self.clear_history()
             reply = "Okay, let's start fresh. What would you like to know?"
             emit(reply)
-            return {"reply": reply, "source": "local", "actions": ["new_conversation"]}
+            return {"reply": reply, "source": "local", "matched": "new_conversation",
+                    "actions": ["new_conversation"]}
 
         local = commands.match_local(text)
         if local:
@@ -444,7 +445,11 @@ class Brain:
                         "error": str(exc)}
             if reply:
                 emit(reply)
-            return {"reply": reply, "source": "local", "actions": [name]}
+            # ``matched`` marks the offline fast path for the heard log: a row
+            # without it is a row the matcher recognised nothing in, which is
+            # the set worth reviewing after an event.
+            return {"reply": reply, "source": "local", "matched": name,
+                    "actions": [name]}
 
         choice = self._pick_backend()
         if choice == "none":

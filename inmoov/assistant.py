@@ -25,6 +25,7 @@ import numpy as np
 
 from pathlib import Path
 
+from . import heardlog
 from .brain import LOOK_MIN_SECS, Brain
 from .listener import Listener
 
@@ -186,6 +187,17 @@ class Assistant:
 
         self._last_reply = result.get("reply", "")
         self._last_source = result.get("source", "")
+        # The tuning set a fair produces: what was heard and where it went.
+        # After the reply, so a crash while speaking still logged the hearing.
+        try:
+            heardlog.log().append(
+                heard=text, source=source,
+                route="matched" if result.get("matched") else result.get("source", ""),
+                action=result.get("matched", ""),
+                reply=self._last_reply,
+                event=bool(getattr(getattr(self.ctx, "event", None), "enabled", False)))
+        except Exception as exc:                     # noqa: BLE001
+            print(f"[Assistant] heard log failed: {exc}")
         if self._log and self._last_reply:
             self._log.fred(self._last_reply, source=self._last_source,
                            actions=result.get("actions"))

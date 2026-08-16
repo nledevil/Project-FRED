@@ -19,3 +19,4 @@ deploy/display/voice_hud
 deploy/display/theme_colors.h
 verify-*.raw
 deploy/display/shaders/*.qsb
+logs/                              # heard.jsonl and friends: data, not source

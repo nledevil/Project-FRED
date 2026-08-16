@@ -40,6 +40,7 @@ from inmoov.assistant import Assistant  # noqa: E402
 from inmoov.brain import BACKENDS  # noqa: E402
 from inmoov import hotspot as hotspot_mod  # noqa: E402
 from inmoov import uplink as uplink_mod    # noqa: E402
+from inmoov import heardlog                # noqa: E402
 from inmoov import sysinfo  # noqa: E402
 from inmoov.convlog import ConversationLog  # noqa: E402
 from inmoov.led import Led  # noqa: E402
@@ -1016,6 +1017,32 @@ def api_hotspot_config():
     out = hotspot_mod.configure(str(data.get("ssid", "")),
                                 str(data.get("passphrase", "")))
     return jsonify(out), (400 if out.get("error") else 200)
+
+
+@app.get("/api/heard")
+@protected
+def api_heard():
+    """What FRED has been asked, and where each utterance went.
+
+    ?missed=1 keeps only what the command matcher did not recognise — the
+    review set after an event, where a misheard word ("servers" for "servos")
+    shows up as an LLM round trip that should have been a reflex. ?voice=1
+    drops what was typed, since typed text says nothing about the microphone.
+    Gated: this is a record of what people said to him.
+    """
+    return jsonify({"heard": heardlog.log().tail(
+        limit=min(int(request.args.get("limit", 200)), 1000),
+        only_missed=request.args.get("missed") == "1",
+        only_voice=request.args.get("voice") == "1")})
+
+
+@app.get("/api/heard.jsonl")
+@protected
+def api_heard_download():
+    """The whole log, one JSON object a line — the tuning set, to take away."""
+    return app.response_class(heardlog.log().raw(), mimetype="application/jsonl",
+                              headers={"Content-Disposition":
+                                       "attachment; filename=heard.jsonl"})
 
 
 @app.get("/api/uplink")
