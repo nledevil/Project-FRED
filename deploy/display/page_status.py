@@ -230,12 +230,23 @@ class StatusPage:
                [f"{node} {_age(age)}".strip()]
 
     # ---- drawing ----------------------------------------------------------
+    def rows(self, snap: dict) -> list:
+        """The five rows as data: (name, where, state, ink, detail).
+
+        Split out of draw() so a second renderer can show the same page without
+        a second copy of the logic that decides whether the head is up. What is
+        *drawn* can differ between renderers; what the panel claims about the
+        robot must not.
+        """
+        return [("NUC", "10.0.0.1", *self._nuc_row(snap)),
+                ("HEAD", "10.0.0.10", *self._head_row(snap)),
+                ("CHEST", "LOCAL", *self._chest_row(snap)),
+                ("CART", "DRIVE BASE", *self._cart_row(snap)),
+                ("AUDIO", "MIC / SPEAKER", *self._audio_row(snap))]
+
     def draw(self, frame, snap: dict) -> None:
-        rows = [("NUC", "10.0.0.1", self._nuc_row(snap)),
-                ("HEAD", "10.0.0.10", self._head_row(snap)),
-                ("CHEST", "LOCAL", self._chest_row(snap)),
-                ("CART", "DRIVE BASE", self._cart_row(snap)),
-                ("AUDIO", "MIC / SPEAKER", self._audio_row(snap))]
+        rows = [(name, where, (state, ink, detail))
+                for name, where, state, ink, detail in self.rows(snap)]
 
         for i, (name, where, (state, ink, detail)) in enumerate(rows):
             y = ROW_Y + i * ROW_H

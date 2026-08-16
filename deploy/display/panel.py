@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import math
 import os
 import subprocess
@@ -39,6 +40,17 @@ import cog_hud                                          # noqa: E402
 import metrics_hud                                      # noqa: E402
 import theme                                            # noqa: E402
 from voice_state import VoiceFeed                       # noqa: E402
+# The menu's facts come from the poller the numpy menu already uses. Imported
+# rather than copied; it moves into its own module when that menu is retired at
+# the end of the port, which is the moment it stops having two callers.
+from settings_menu import Net, NUC                       # noqa: E402
+from page_status import StatusPage                       # noqa: E402
+from settings_menu import PAGES as _MENU_PAGES           # noqa: E402
+
+
+def _pages():
+    """The tab classes, from the menu itself — never a second list."""
+    return _MENU_PAGES
 
 from PySide6.QtCore import QObject, QTimer, QUrl, Signal, Property, Qt   # noqa: E402
 from PySide6.QtGui import QColor, QFontDatabase, QGuiApplication, QImage  # noqa: E402
@@ -155,9 +167,18 @@ class Panel(QObject):
     changed = Signal()
     sceneChanged = Signal()
 
-    def __init__(self, forced: str | None):
+    def __init__(self, forced: str | None, scene: str = "anim"):
         super().__init__()
         self._forced = forced
+        self._scene = scene                # "anim" | "menu"
+        self._page = 0
+        self._snap = {}
+        self._rows = []
+        # The numpy page, used for its logic and not its drawing: it is what
+        # decides whether the head is up, and that answer must not exist twice.
+        self._status = StatusPage()
+        self._net = Net()
+        self._net.start()
         self._anim = forced or "reactor"
         self._shader = ""
         self._copper = 0.0
@@ -211,6 +232,15 @@ class Panel(QObject):
     # ---- per-tick state -------------------------------------------------
     def tick(self) -> None:
         t = time.monotonic() - self._start
+        # One snapshot per tick, off the poller's own thread. The network is
+        # never on the drawing path — that rule predates this app and is why a
+        # brain that has gone away makes the page say so rather than freezing
+        # the panel for the length of a TCP timeout.
+        self._snap = self._net.snapshot()
+        self._rows = [{"name": n, "where": w, "state": st,
+                       "ink": "#%02x%02x%02x" % tuple(int(c) for c in ink),
+                       "detail": " ".join(d for d in det if d)}
+                      for n, w, st, ink, det in self._status.rows(self._snap)]
         self._feed.poll()
         name = self._feed.state()
         self._voice = {"idle": 0.0, "listening": 1.0,
@@ -233,6 +263,35 @@ class Panel(QObject):
             else:
                 self._next_blink = t + 3.5 + (math.sin(t) + 1.0)
         self.changed.emit()
+
+    # ---- the menu -------------------------------------------------------
+    @Property(str, notify=sceneChanged)
+    def scene(self):
+        return self._scene
+
+    @scene.setter
+    def scene(self, value):
+        if value != self._scene:
+            self._scene = value
+            self.sceneChanged.emit()
+
+    @Property(int, notify=sceneChanged)
+    def page(self):
+        return self._page
+
+    @page.setter
+    def page(self, value):
+        if value != self._page:
+            self._page = int(value)
+            self.sceneChanged.emit()
+
+    @Property("QVariantMap", notify=changed)
+    def snap(self):
+        return self._snap
+
+    @Property("QVariantList", notify=changed)
+    def statusRows(self):
+        return self._rows
 
     @Property(str, notify=sceneChanged)
     def shader(self):
@@ -277,6 +336,14 @@ def main() -> int:
     ap.add_argument("--anim", default=None,
                     help="show this and ignore state.json (for testing)")
     ap.add_argument("--seconds", type=float, default=0.0)
+    # A GPU animation scans out through DRM, so /dev/fb0 no longer shows what is
+    # on the panel. This is how a screenshot is taken now — and how a ported
+    # page gets compared against the numpy one it replaces.
+    ap.add_argument("--grab", metavar="PNG", default="")
+    ap.add_argument("--grab-after", type=float, default=1.2,
+                    help="seconds to let the scene settle before grabbing")
+    ap.add_argument("--menu", action="store_true",
+                    help="open on the menu scene (the port is not wired to the cog yet)")
     args = ap.parse_args()
 
     os.environ.setdefault("QT_QPA_PLATFORM", "eglfs")
@@ -290,7 +357,7 @@ def main() -> int:
     ramp = theme.ramp(name)
 
     overlay = Overlay()
-    panel = Panel(args.anim)
+    panel = Panel(args.anim, "menu" if args.menu else "anim")
 
     view = QQuickView()
     view.engine().addImageProvider("overlay", overlay)
@@ -301,6 +368,39 @@ def main() -> int:
     ctx.setContextProperty("OkCol", QColor(*ramp.ok))
     ctx.setContextProperty("WarnCol", QColor(*ramp.warn))
     ctx.setContextProperty("FontFamily", families.get(name, ""))
+    # The whole palette as one map, straight off theme.py. QML gets the same
+    # numbers the numpy pages read as ui.INK — theme.py stays the one place a
+    # theme is defined, as it already is for the C renderer's generated header.
+    th = theme.THEMES[name]
+
+    def hexof(rgb):
+        return "#%02x%02x%02x" % tuple(int(v) for v in rgb)
+
+    # The pixel sizes the atlases were baked at, so Qt text is the size the
+    # panel's text has always been. theme.fonts names them — orbitron-18.npz is
+    # scale 2 at 18px — and reading them from there beats a second table that
+    # can drift from the one the numpy pages still use.
+    # String keys: a QVariantMap with integer keys comes back into QML with
+    # nothing at Th.px[2], which shows up as "Unable to assign [undefined]".
+    px = {str(scale): int(re.search(r"-(\d+)\.npz$", f).group(1))
+          for scale, f in th.fonts.items()}
+    # One size for the whole tab row, chosen the way the numpy menu chooses it:
+    # the largest that fits every label, because tabs at mixed sizes look broken
+    # rather than tidy.
+    import menu_ui as _ui
+    _ui.apply_theme(name)
+    tab_w = (776 - 24 - 8 * 6) // 7
+    tab_px = px.get(str(_ui.scale_to_fit_all([c.title for c in _pages()], tab_w, 2)),
+                px["1"])
+
+    ctx.setContextProperty("Th", {
+        "px": px, "tabPx": tab_px,
+        "name": name, "style": th.style, "radius": th.radius,
+        "tracking": th.tracking, "font": families.get(name, ""),
+        **{k.lower().replace("_ink", "Ink").replace("_edge", "Edge")
+             .replace("_on", "On").replace("_panel", "Panel").replace("_arm", "Arm"):
+           hexof(v) for k, v in th.palette.items()},
+    })
     view.setSource(QUrl.fromLocalFile(os.path.join(_HERE, "panel.qml")))
     if view.status() != QQuickView.Ready:
         for e in view.errors():
@@ -327,6 +427,16 @@ def main() -> int:
     watcher.timeout.connect(poll)
     watcher.start(250)
 
+    if args.grab:
+        def grab():
+            img = view.grabWindow()
+            if not img.save(args.grab):
+                print(f"could not write {args.grab}", file=sys.stderr)
+                app.exit(2)
+                return
+            print(f"wrote {args.grab}", flush=True)
+            app.quit()
+        QTimer.singleShot(int(args.grab_after * 1000), grab)
     if args.seconds:
         QTimer.singleShot(int(args.seconds * 1000), app.quit)
     rc = app.exec()

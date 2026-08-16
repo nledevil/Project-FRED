@@ -65,6 +65,9 @@ deploy/display/page_wireless.py
 # baked from the .frag on this Pi at first run and are git-ignored.
 deploy/display/panel.py
 deploy/display/panel.qml
+deploy/display/MenuScene.qml
+deploy/display/Btn.qml
+deploy/display/StatusPage.qml
 deploy/display/gpu_anim.py
 deploy/display/anim.qml
 deploy/display/fonts/ttf/Rajdhani-Medium.ttf

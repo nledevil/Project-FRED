@@ -18,11 +18,22 @@ Item {
 
     Rectangle { anchors.fill: parent; color: "black" }
 
+    // The menu is a scene beside the animation rather than a second process
+    // taking the screen. Switching is a property, so there is no DRM-to-fbdev
+    // handoff and no start-up cost to open the settings.
+    Loader {
+        anchors.fill: parent
+        active: P.scene === "menu"
+        visible: active
+        z: 10
+        sourceComponent: MenuScene {}
+    }
+
     ShaderEffect {
         anchors.fill: parent
         // Rebuilt when the preset changes; empty until the first one loads.
         fragmentShader: P.shader
-        visible: P.shader !== ""
+        visible: P.shader !== "" && P.scene !== "menu"
 
         property color deep: Deep
         property color accent: Accent
@@ -45,6 +56,7 @@ Item {
     // by URL, so the URL has to change or Qt serves the first one forever.
     Image {
         anchors.fill: parent
+        visible: P.scene !== "menu"
         source: "image://overlay/o" + root.overlayGeneration
         cache: false
         smooth: false
