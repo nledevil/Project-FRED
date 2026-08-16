@@ -7,7 +7,32 @@
 <link rel="stylesheet" href="/static/ui.css">
 <style>
   /* Page layout only — what things look like lives in /static/ui.css. */
-  .app { max-width:760px; margin:0 auto; }
+  .app { max-width:1080px; margin:0 auto; }
+
+  /* Desktop: a sticky rail of section links beside the cards, because
+     fifteen sections in one scroll is a place to lose things. The rail is
+     position:sticky so it never needs its own scrollbar plumbing, and the
+     links are plain anchors so everything works with JS off — the scrollspy
+     highlight is decoration on top. On narrow screens the rail disappears
+     and the phone keeps its stack + sticky save bar. */
+  .shell { display:grid; grid-template-columns:190px minmax(0,1fr); gap:26px;
+           align-items:start; }
+  .secnav { position:sticky; top:16px; display:flex; flex-direction:column;
+            gap:2px; padding:8px; background:var(--panel);
+            border:1px solid var(--border); border-radius:14px; }
+  .secnav a { color:var(--mut); text-decoration:none; font-size:13px;
+              font-weight:600; padding:7px 12px; border-radius:8px;
+              border-left:2px solid transparent; }
+  .secnav a:hover { color:var(--fg); background:rgba(255,255,255,.04); }
+  .secnav a.on { color:var(--fg); background:rgba(45,127,249,.14);
+                 border-left-color:var(--accent); }
+  .content { min-width:0; }
+  /* Anchored jumps land with the heading visible, not under the top edge. */
+  section.panel { scroll-margin-top:14px; }
+  @media (max-width:899px) {
+    .shell { display:block; }
+    .secnav { display:none; }
+  }
   .panel { padding:20px 22px; margin-bottom:16px; }
   .phead { margin-bottom:18px; }
 
@@ -91,7 +116,25 @@
     <a class="back" href="/">← Control panel</a>
   </div>
 
-  <section class="panel">
+  <div class="shell">
+    <nav class="secnav" aria-label="Settings sections">
+      <a href="#sec-pin" data-sec="sec-pin">Panel PIN</a>
+      <a href="#sec-handoff" data-sec="sec-handoff">MyRobotLab</a>
+      <a href="#sec-brain" data-sec="sec-brain">Brain</a>
+      <a href="#sec-event" data-sec="sec-event">Event mode</a>
+      <a href="#sec-audit" data-sec="sec-audit">Audit mode</a>
+      <a href="#sec-appearance" data-sec="sec-appearance">Appearance</a>
+      <a href="#sec-camera" data-sec="sec-camera">Camera</a>
+      <a href="#sec-led" data-sec="sec-led">Status LED</a>
+      <a href="#sec-wifi" data-sec="sec-wifi">WiFi</a>
+      <a href="#sec-display" data-sec="sec-display">Chest display</a>
+      <a href="#sec-voice" data-sec="sec-voice">Voice &amp; AI</a>
+      <a href="#sec-clips" data-sec="sec-clips">Sound clips</a>
+      <a href="#sec-dev" data-sec="sec-dev">Developer</a>
+    </nav>
+    <div class="content">
+
+  <section class="panel" id="sec-pin">
     <p class="phead">Panel PIN</p>
     <div class="row" style="margin-bottom:12px">
       <div class="label"><b>Status</b><span>who can reach the controls right now</span></div>
@@ -123,7 +166,7 @@
        Changing or removing the PIN signs out every browser, including this one.</p>
   </section>
 
-  <section class="panel">
+  <section class="panel" id="sec-handoff">
     <p class="phead">MyRobotLab handoff</p>
     <div class="row" style="margin-bottom:12px">
       <div class="label"><b>Release hardware to MyRobotLab</b>
@@ -139,7 +182,7 @@
        live switch (applies immediately, no Save needed) and the choice persists across reboots.</p>
   </section>
 
-  <section class="panel">
+  <section class="panel" id="sec-brain">
     <p class="phead">Brain backend</p>
     <div class="row" style="margin-bottom:12px">
       <div class="label"><b>Which A.I. answers open questions</b>
@@ -171,7 +214,7 @@
        Ollama, on the Intel Arc iGPU. Live switch (no Save needed); persists across reboots.</p>
   </section>
 
-  <section class="panel">
+  <section class="panel" id="sec-event">
     <p class="phead">Event mode</p>
     <div class="row" style="margin-bottom:12px">
       <div class="label"><b>He is in front of the public</b>
@@ -188,7 +231,7 @@
        are. It is how you avoid needing them. Live (no Save needed); persists across reboots.</p>
   </section>
 
-  <section class="panel">
+  <section class="panel" id="sec-audit">
     <p class="phead">Audit mode</p>
     <div class="row" style="margin-bottom:12px">
       <div class="label"><b>Dry run — no sound, no motion</b>
@@ -208,7 +251,7 @@
        persists across reboots.</p>
   </section>
 
-  <section class="panel">
+  <section class="panel" id="sec-appearance">
     <p class="phead">Appearance</p>
     <div class="row">
       <div class="label"><b>Iris colour</b><span>eye colour in the head animation</span></div>
@@ -226,7 +269,7 @@
     </div>
   </section>
 
-  <section class="panel">
+  <section class="panel" id="sec-camera">
     <p class="phead">Camera defaults (applied on load)</p>
     <div class="row">
       <div class="label"><b>Flip 180°</b><span>if the camera is mounted inverted</span></div>
@@ -248,7 +291,7 @@
        defaults every time FRED boots.</p>
   </section>
 
-  <section class="panel">
+  <section class="panel" id="sec-led">
     <p class="phead">Status LED</p>
     <div class="row">
       <div class="label"><b>Camera indicator</b><span>red LED on the head</span></div>
@@ -258,7 +301,7 @@
        with the 🔴 LED toggle on the control panel.</p>
   </section>
 
-  <section class="panel">
+  <section class="panel" id="sec-wifi">
     <p class="phead">WiFi</p>
     <div class="row">
       <div class="label"><b>FRED&rsquo;s hotspot</b><span>the network he hosts, for a phone</span></div>
@@ -290,7 +333,7 @@
        needs a keyboard and a monitor at the venue to get back on.</p>
   </section>
 
-  <section class="panel">
+  <section class="panel" id="sec-display">
     <p class="phead">Chest display</p>
     <div class="row">
       <div class="label"><b>Display Pi</b><span>IP address &amp; control port</span></div>
@@ -324,7 +367,7 @@
        <b>LAN-only — plain HTTP; don't forward this port.</b></p>
   </section>
 
-  <section class="panel">
+  <section class="panel" id="sec-voice">
     <p class="phead">Voice &amp; AI</p>
     <div class="row">
       <div class="label"><b>Wake word at boot</b><span>“Hey FRED” listener</span></div>
@@ -366,7 +409,7 @@
        no reboot needed.</p>
   </section>
 
-  <section class="panel">
+  <section class="panel" id="sec-clips">
     <p class="phead">Terminator clips</p>
     <p class="hint" style="margin:-8px 0 16px">When terminator mode is engaged (red LED),
        FRED plays one of these at random instead of a synthesized catchphrase. Short clips
@@ -378,7 +421,7 @@
     <div class="cliplist" id="clipList"></div>
   </section>
 
-  <section class="panel">
+  <section class="panel" id="sec-dev">
     <p class="phead">Developer</p>
     <div class="row">
       <div class="label"><b>Claude terminal</b><span>browser shell on any of the three</span></div>
@@ -403,6 +446,8 @@
     <button onclick="resetDefaults()">↺ Reset to defaults</button>
     <span class="spacer"></span>
   </div>
+    </div><!-- /.content -->
+  </div><!-- /.shell -->
 </div>
 <div id="toast"></div>
 
@@ -905,6 +950,29 @@ load();
 refreshDisplay();
 refreshUplink();
 seedApName();
+
+// ---- section rail scrollspy --------------------------------------------
+// Decoration on top of plain anchors: the link whose section is nearest the
+// top of the viewport gets lit. IntersectionObserver so it costs nothing
+// while nobody scrolls.
+(function () {
+  const links = document.querySelectorAll('.secnav a[data-sec]');
+  if (!links.length || !('IntersectionObserver' in window)) return;
+  const byId = {};
+  for (const a of links) byId[a.dataset.sec] = a;
+  const seen = new Map();
+  const io = new IntersectionObserver(entries => {
+    for (const e of entries) seen.set(e.target.id, e.isIntersecting ? e.boundingClientRect.top : Infinity);
+    let best = null, bestTop = Infinity;
+    for (const [id, top] of seen) {
+      const t = Math.abs(top);
+      if (top !== Infinity && t < bestTop) { best = id; bestTop = t; }
+    }
+    if (!best) return;
+    for (const a of links) a.classList.toggle('on', a.dataset.sec === best);
+  }, { rootMargin: '-10% 0px -70% 0px' });
+  for (const sec of document.querySelectorAll('section.panel[id]')) io.observe(sec);
+})();
 </script>
 </body>
 </html>
