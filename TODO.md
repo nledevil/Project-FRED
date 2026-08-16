@@ -143,10 +143,14 @@ this is what is *not* already on it.
    actions the transcript tab should carry: stop speaking, mute the mic, reset
    the conversation, volume. Closely related to the one-tap phrase deck below.
 
-2. **A deck of one-tap things to say.** `/api/say` already exists. "Ask me about
-   my servos", "Let me think about that one", "Who is next?" — for when he
-   misfires and the queue needs managing. Cheap, and the most useful thing on
-   this list during an actual event.
+2. **Cleared 2026-08-16: the deck of one-tap things to say.** On the web
+   panel's chat: a Quick say strip above the input — tabs (Crowd, Stalling,
+   About me, Manners to start), one tap speaks through `/api/say`, ✎ Edit adds
+   and removes lines, and the deck lives in `config/phrases.json` on the brain
+   so every browser sees the same one. `?view=talk&deck=1` is the bookmark for
+   the event phone. Deck lines land in the transcript tagged `deck`, so the
+   operator sees them fire. Web only for now — the touchscreen was judged the
+   wrong surface while an operator is holding a phone.
 
 ### Other
 

@@ -211,6 +211,46 @@
   .voice .vrow input { flex:1; background:var(--panel2); }
   .voice .vrow .vbtn { margin-left:0; }
 
+  /* the deck of one-tap things to say. Sits above the input so the phone
+     order is tabs, phrases, keyboard; collapsible because the transcript is
+     the panel's real tenant and the deck is a guest with a lanyard. */
+  .deck { border-top:1px solid var(--border); margin-top:10px; padding-top:8px; }
+  .deck-head { display:flex; align-items:center; gap:8px; }
+  .deck-toggle { border:0; background:transparent; color:var(--mut); padding:6px 4px;
+                 font-size:12px; font-weight:700; letter-spacing:.06em;
+                 text-transform:uppercase; }
+  .deck-toggle:hover { color:var(--fg); background:transparent; }
+  .deck.open .deck-toggle { color:var(--fg); }
+  .deck-editbtn { border:0; background:transparent; color:var(--mut); padding:6px 8px;
+                  font-size:12px; }
+  .deck-editbtn.on { color:var(--accent); }
+  .deck-body { margin-top:6px; }
+  .deck-tabs { display:flex; gap:4px; overflow-x:auto; scrollbar-width:none;
+               -webkit-overflow-scrolling:touch; padding-bottom:6px; }
+  .deck-tabs::-webkit-scrollbar { display:none; }
+  .deck-tabs button { flex:none; border:0; border-bottom:2px solid transparent;
+                      border-radius:8px 8px 0 0; background:transparent;
+                      color:var(--mut); font-size:12.5px; padding:6px 11px; }
+  .deck-tabs button.on { color:var(--fg); border-bottom-color:var(--accent);
+                         background:rgba(45,127,249,.10); }
+  .deck-list { display:flex; flex-wrap:wrap; gap:7px; max-height:170px;
+               overflow-y:auto; padding:2px 0; }
+  .deck-list button { position:relative; font-size:13px; padding:8px 13px;
+                      border-radius:999px; background:var(--panel2); max-width:100%;
+                      text-align:left; }
+  .deck-list button:hover { border-color:var(--accent); }
+  .deck-list button.saying { border-color:var(--ok); color:var(--ok); }
+  /* edit mode: every pill grows a ✕ and taps delete instead of speak */
+  .deck.editing .deck-list button::after { content:"✕"; margin-left:8px;
+                      color:var(--bad); font-weight:700; }
+  .deck-addrow { display:flex; gap:6px; margin-top:8px; flex-wrap:wrap; }
+  /* Must follow the display:flex above: an author display rule outranks the
+     UA's [hidden]{display:none}. Third time this trap has been documented in
+     this file; first time the author walked into it himself. */
+  .deck-addrow[hidden] { display:none; }
+  .deck-addrow input { flex:1 1 160px; background:var(--panel2); }
+  .deck-addrow #deckNewTab { flex:0 1 120px; }
+
   /* chat transcript: grows to fill the panel's column, scrolls inside */
   .voice .chat { flex:1 1 220px; min-height:180px; overflow-y:auto;
       display:flex; flex-direction:column; gap:8px; padding:12px 2px; margin-top:2px;
@@ -230,6 +270,7 @@
       vertical-align:middle; text-transform:uppercase; letter-spacing:.03em; }
   .msg .tag.ai { background:#3b2f6b; color:#c7b8ff; }
   .msg .tag.local { background:#173a2a; color:#7fe0b0; }
+  .msg .tag.say { background:#1c3350; color:#8fc2ff; }
 
   /* face-tracking overlay: reticle wanders (seek animation) while searching,
      and snaps onto the detected face (.locked, driven live from /api/track) */
@@ -413,6 +454,25 @@
           <button id="listenBtn" class="vbtn" onclick="toggleListen()" disabled>🎤 Listen</button>
         </div>
         <div class="chat" id="chatLog"></div>
+        <div class="deck" id="deck">
+          <div class="deck-head">
+            <button class="deck-toggle" id="deckToggle" onclick="toggleDeck()">▸ Quick say</button>
+            <div class="grow"></div>
+            <button class="deck-editbtn" id="deckEditBtn" onclick="deckEditMode()"
+                    title="Add or remove phrases">✎ Edit</button>
+          </div>
+          <div class="deck-body" id="deckBody" hidden>
+            <div class="deck-tabs" id="deckTabs"></div>
+            <div class="deck-list" id="deckList"></div>
+            <div class="deck-addrow" id="deckAddRow" hidden>
+              <input type="text" id="deckNewText" placeholder="New phrase…" maxlength="200"
+                     onkeydown="if(event.key==='Enter')deckAdd()">
+              <input type="text" id="deckNewTab" list="deckTabNames" placeholder="Tab" maxlength="24">
+              <datalist id="deckTabNames"></datalist>
+              <button class="vbtn" onclick="deckAdd()">Add</button>
+            </div>
+          </div>
+        </div>
         <div class="vrow">
           <input type="text" id="cmdBox" placeholder="Message FRED…"
                  onkeydown="if(event.key==='Enter')sendCmd()">
@@ -621,6 +681,7 @@ function appendMsg(item) {
     let tag = '';
     if (role === 'fred' && item.source === 'claude') tag = '<span class="tag ai">AI</span>';
     else if (role === 'fred' && item.source === 'local') tag = '<span class="tag local">cmd</span>';
+    else if (role === 'fred' && item.source === 'say') tag = '<span class="tag say">deck</span>';
     el.innerHTML = '<span class="who">' + who + tag + '</span>' + esc(item.text);
   }
   log.appendChild(el);
@@ -1450,6 +1511,104 @@ syncTrack();
 pollCart();
 setInterval(() => { pollHealth(); syncTrack(); }, 5000);
 setInterval(pollCart, 1000);
+
+// ---- the quick-say deck -------------------------------------------------
+// One tap speaks a canned line through /api/say — for the moments at an event
+// when typing is not an option. Edit mode turns the pills into delete buttons
+// and reveals the add row; the deck itself lives on the brain, so every
+// browser sees the same one.
+let DECK = { deck: {}, tab: '', edit: false };
+
+async function loadDeck() {
+  const r = await api('/api/phrases');
+  DECK.deck = (r && r.deck) || {};
+  const tabs = Object.keys(DECK.deck);
+  if (!tabs.includes(DECK.tab)) DECK.tab = tabs[0] || '';
+  renderDeck();
+}
+
+function renderDeck() {
+  const tabs = Object.keys(DECK.deck);
+  const tabBox = document.getElementById('deckTabs');
+  tabBox.innerHTML = '';
+  for (const t of tabs) {
+    const b = document.createElement('button');
+    b.textContent = t;
+    b.className = t === DECK.tab ? 'on' : '';
+    b.onclick = () => { DECK.tab = t; try { localStorage.setItem('deckTab', t); } catch (e) {} renderDeck(); };
+    tabBox.appendChild(b);
+  }
+  const list = document.getElementById('deckList');
+  list.innerHTML = '';
+  for (const text of (DECK.deck[DECK.tab] || [])) {
+    const b = document.createElement('button');
+    b.textContent = text;
+    b.onclick = () => DECK.edit ? deckRemove(text) : sayPhrase(text, b);
+    list.appendChild(b);
+  }
+  if (!tabs.length) list.innerHTML = '<span class="hint">The deck is empty — ✎ Edit to add a line.</span>';
+  const names = document.getElementById('deckTabNames');
+  names.innerHTML = tabs.map(t => '<option value="' + t.replace(/"/g, '&quot;') + '">').join('');
+  document.getElementById('deck').classList.toggle('editing', DECK.edit);
+  document.getElementById('deckEditBtn').classList.toggle('on', DECK.edit);
+  document.getElementById('deckAddRow').hidden = !DECK.edit;
+}
+
+async function sayPhrase(text, btn) {
+  btn.classList.add('saying');
+  try {
+    const r = await api('/api/say', { text: text });
+    if (r.error) toast('⚠ ' + r.error, true);
+  } finally {
+    setTimeout(() => btn.classList.remove('saying'), 900);
+  }
+}
+
+async function deckAdd() {
+  const text = document.getElementById('deckNewText').value.trim();
+  const tab = document.getElementById('deckNewTab').value.trim() || DECK.tab || 'Misc';
+  if (!text) return;
+  const r = await api('/api/phrases/add', { tab: tab, text: text });
+  if (r.error) { toast('⚠ ' + r.error, true); return; }
+  DECK.deck = r.deck; DECK.tab = tab;
+  document.getElementById('deckNewText').value = '';
+  renderDeck();
+}
+
+async function deckRemove(text) {
+  const r = await api('/api/phrases/remove', { tab: DECK.tab, text: text });
+  if (r.error) { toast('⚠ ' + r.error, true); return; }
+  DECK.deck = r.deck;
+  renderDeck();
+}
+
+function deckEditMode() {
+  DECK.edit = !DECK.edit;
+  // Entering edit with the deck folded would edit an invisible thing.
+  if (DECK.edit && document.getElementById('deckBody').hidden) toggleDeck(true);
+  renderDeck();
+}
+
+function toggleDeck(forceOpen) {
+  const body = document.getElementById('deckBody');
+  const open = forceOpen === true ? true : body.hidden;
+  body.hidden = !open;
+  document.getElementById('deck').classList.toggle('open', open);
+  document.getElementById('deckToggle').textContent = (open ? '▾' : '▸') + ' Quick say';
+  if (!open) { DECK.edit = false; renderDeck(); }
+  try { localStorage.setItem('deckOpen', open ? '1' : '0'); } catch (e) {}
+}
+
+(function () {
+  try {
+    DECK.tab = localStorage.getItem('deckTab') || '';
+    if (localStorage.getItem('deckOpen') === '1') toggleDeck(true);
+  } catch (e) {}
+  // ?deck=1 opens it regardless — for the bookmark on the event phone,
+  // alongside ?view=talk.
+  if (new URLSearchParams(location.search).get('deck') === '1') toggleDeck(true);
+  loadDeck();
+})();
 
 // ---- phone tab bar ------------------------------------------------------
 // One panel at a time on a phone, switched from the bottom bar. Desktop never

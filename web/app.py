@@ -41,6 +41,7 @@ from inmoov.brain import BACKENDS  # noqa: E402
 from inmoov import hotspot as hotspot_mod  # noqa: E402
 from inmoov import uplink as uplink_mod    # noqa: E402
 from inmoov import heardlog                # noqa: E402
+from inmoov import phrases as phrases_mod  # noqa: E402
 from inmoov import sysinfo  # noqa: E402
 from inmoov.convlog import ConversationLog  # noqa: E402
 from inmoov.led import Led  # noqa: E402
@@ -58,6 +59,13 @@ from inmoov import auth  # noqa: E402
 from inmoov import whoami as whoami_mod  # noqa: E402
 
 app = Flask(__name__)
+# Key order is meaning here: the phrase deck's tabs display in the order the
+# operator arranged them, and jsonify alphabetising everything silently broke
+# that ("About me" does not lead a deck that starts with "Crowd").
+try:
+    app.json.sort_keys = False
+except AttributeError:                       # Flask < 2.2
+    app.config["JSON_SORT_KEYS"] = False
 app.config["MAX_CONTENT_LENGTH"] = 32 * 1024 * 1024   # cap clip uploads at 32 MB
 
 # Terminator-mode audio clips live here; uploads are converted to .wav.
@@ -1019,6 +1027,29 @@ def api_hotspot_config():
     return jsonify(out), (400 if out.get("error") else 200)
 
 
+@app.get("/api/phrases")
+def api_phrases():
+    """The deck of one-tap things to say, by tab. Reading it is open, like the
+    transcript; changing it is gated below, like everything else that edits."""
+    return jsonify({"deck": phrases_mod.load()})
+
+
+@app.post("/api/phrases/add")
+@protected
+def api_phrases_add():
+    data = request.get_json(force=True) or {}
+    out = phrases_mod.add(str(data.get("tab", "")), str(data.get("text", "")))
+    return jsonify(out), (400 if out.get("error") else 200)
+
+
+@app.post("/api/phrases/remove")
+@protected
+def api_phrases_remove():
+    data = request.get_json(force=True) or {}
+    out = phrases_mod.remove(str(data.get("tab", "")), str(data.get("text", "")))
+    return jsonify(out), (400 if out.get("error") else 200)
+
+
 @app.get("/api/heard")
 @protected
 def api_heard():
@@ -1271,6 +1302,10 @@ def api_say():
     if not str(text).strip():
         return jsonify({"error": "text required"}), 400
     ok = _assistant.speak(str(text))
+    if ok:
+        # It came out of his speaker; the transcript should say so. "say" is
+        # the tag for lines that bypassed the brain — the deck, the test box.
+        _log.fred(str(text).strip(), source="say")
     return jsonify({"spoke": ok})
 
 

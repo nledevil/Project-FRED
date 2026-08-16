@@ -11,6 +11,7 @@ sounds/terminator/*.wav
 # Machine-local runtime state: persisted bench tuning (face-tracking gains),
 # device paths, and API tokens. Defaults live in inmoov/settings.py, so a fresh
 # checkout still runs without this file.
+config/phrases.json
 config/settings.json
 
 # Compiled chest-panel animations: built per-machine from deploy/display/*.c
