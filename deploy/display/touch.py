@@ -33,6 +33,36 @@ import struct
 DEVICE = "/dev/input/event0"      # only the fallback; see find_device()
 
 
+def display_rotation(cmdline: str = "/proc/cmdline") -> int:
+    """How far the *display* is rotated, in degrees, from the kernel cmdline.
+
+    The digitiser and the panel are glued together, so touch has to be rotated
+    by however much the picture is. Under the old legacy firmware `lcd_rotate=2`
+    turned both at once and nothing in software had to know. Under KMS the
+    picture is turned by `video=DSI-1:...,rotate=180` and the digitiser is not,
+    so a tap on the cog at the bottom right arrives as (37, 42) — the top left —
+    and every control on the panel is 180 degrees from where the finger is.
+
+    Read rather than configured, because a second copy of this number is a
+    second thing to keep true: if the panel is ever un-rotated, the cmdline is
+    what changes, and this follows it.
+    """
+    try:
+        args = open(cmdline).read()
+    except OSError:
+        return 0
+    for token in args.split():
+        if not token.startswith("video="):
+            continue
+        for part in token.split(","):
+            if part.startswith("rotate="):
+                try:
+                    return int(part[7:]) % 360
+                except ValueError:
+                    return 0
+    return 0
+
+
 def find_device(default: str = DEVICE) -> str:
     """The touchscreen's event node, found by what it *is* rather than by index.
 
@@ -93,7 +123,8 @@ class Touch:
     is fatal. For the daemon it isn't: no touchscreen just means no cog.
     """
 
-    def __init__(self, path: str = DEVICE, width: int = 800, height: int = 480):
+    def __init__(self, path: str = DEVICE, width: int = 800, height: int = 480,
+                 rotate: int | None = None):
         self._fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
         self.path = path
         self._buf = b""
@@ -107,6 +138,9 @@ class Touch:
         self._max_x = self._abs_max(_EVIOCGABS_X, width - 1)
         self._max_y = self._abs_max(_EVIOCGABS_Y, height - 1)
         self._w, self._h = width, height
+        # Taken from the same place the *display*'s rotation comes from, so the
+        # two cannot disagree — see display_rotation().
+        self._rot = display_rotation() if rotate is None else rotate % 360
 
     def _abs_max(self, request: int, fallback: int) -> int:
         buf = ctypes.create_string_buffer(24)   # struct input_absinfo
@@ -122,6 +156,8 @@ class Touch:
             x = x * (self._w - 1) // max(1, self._max_x)
         if self._max_y != self._h - 1:
             y = y * (self._h - 1) // max(1, self._max_y)
+        if self._rot == 180:
+            x, y = self._w - 1 - x, self._h - 1 - y
         return x, y
 
     # ---- reading ---------------------------------------------------------

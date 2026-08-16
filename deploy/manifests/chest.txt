@@ -69,6 +69,7 @@ deploy/display/tools/test_power_menu.py
 deploy/display/tools/render_pages.py
 deploy/display/tools/render_anims.py
 deploy/display/tools/test_fb_pack.py
+deploy/display/tools/test_touch_map.py
 # Generates the C renderer's palettes from theme.py. Shipped because the
 # Makefile here calls it, even though this Pi cannot run the compiler.
 deploy/display/tools/gen_theme_colors.py

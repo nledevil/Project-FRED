@@ -69,6 +69,13 @@ Two things worth knowing, both learned the hard way:
 - The fbdev emulation here is **16bpp**, not the 32bpp XRGB8888 that was
   predicted. `fb.py` and `voice_hud.c` learned both depths anyway; that work is
   committed and tested, and it is why enabling KMS did not break the panel.
+- **Touch is not rotated by KMS.** The panel is flipped 180 by
+  `video=DSI-1:...,rotate=180`, which turns the picture and leaves the digitiser
+  alone; `touch.py` compensates in software by reading that same cmdline. A Qt
+  app would *not* inherit that — it reads the evdev device directly — so it
+  would need `dtoverlay=vc4-kms-dsi-7inch,invx,invy` in `config.txt` instead,
+  and `touch.py`'s software rotation would then have to come back out or the two
+  would cancel.
 - Anything that takes DRM master can hand the fbdev back **blanked**. That is
   what left the screen dark while `voice_hud` was drawing normally. Both
   renderers now unblank on open; see `fb.unblank()`.
