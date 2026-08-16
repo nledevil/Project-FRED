@@ -2,29 +2,16 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>FRED · InMoov Control</title>
+<link rel="stylesheet" href="/static/ui.css">
 <style>
-  :root { --bg:#0c0c0e; --panel:#161619; --border:#2a2b31; --fg:#e8e9ec;
-          --head:#f3f4f6; --mut:#868b95; --accent:#2d7ff9; --ok:#22c55e; --warn:#f59e0b; }
-  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
-  body { margin:0; background:var(--bg); color:var(--fg);
-         font:15px/1.45 system-ui,-apple-system,sans-serif; padding:20px; }
-  .app { max-width:1360px; margin:0 auto; }
-  .topbar { display:flex; align-items:baseline; gap:12px; margin:2px 4px 18px; }
-  .topbar h1 { font-size:16px; font-weight:700; letter-spacing:.02em; margin:0; }
-  .topbar .sub { color:var(--mut); font-size:13px; }
-  .health { margin-left:auto; font-size:12px; font-weight:600; padding:5px 11px;
-            border-radius:999px; border:1px solid var(--border); color:var(--mut);
-            font-variant-numeric:tabular-nums; white-space:nowrap; cursor:default; }
-  .health.ok   { background:#04310f; border-color:#0a5; color:var(--ok); }
-  .health.warn { background:#3a2a00; border-color:#7a5a10; color:var(--warn); }
-  .health.bad  { background:#3a0d0d; border-color:#a33; color:#f87171; }
-  .admin-link { font-size:15px; text-decoration:none; color:var(--mut); line-height:1;
-                padding:5px 9px; border:1px solid var(--border); border-radius:999px; }
+  /* Page layout only — what things look like lives in /static/ui.css. */
+  .app { max-width:1560px; margin:0 auto; }
+
   /* Audit banner: deliberately loud. Mistaking a dry run for a live robot (or
      the reverse) is the one confusion this mode can cause. */
-  .auditbar { display:flex; align-items:center; gap:10px; margin:0 4px 16px;
+  .auditbar { display:flex; align-items:center; gap:10px; margin:0 4px 14px;
               padding:9px 14px; border-radius:10px; font-size:13px;
               background:#3a2a00; border:1px solid #7a5a10; color:var(--warn); }
   /* Must come after the display:flex above: an author `display` rule outranks
@@ -41,25 +28,76 @@
   .audit-tog { margin-left:auto; }
   .audit-tog.on { color:var(--warn); font-weight:600; }
   .audit-tog ~ .toggle { margin-left:0; }   /* only the first toggle claims the gap */
-  .admin-link:hover { color:var(--fg); background:rgba(255,255,255,.04); }
 
-  .app { max-width:1500px; }
-  /* One-screen layout: live camera (big) top-left, animated head below it,
-     servo controls down the right side. */
-  .wrap { display:grid; gap:16px; align-items:start;
-          grid-template-columns:minmax(0,1.55fr) minmax(0,380px);
-          grid-template-areas:"cam controls" "face controls"; }
-  .cam { grid-area:cam; } .face { grid-area:face; } .controls { grid-area:controls; }
-  @media (max-width:900px){ .wrap { grid-template-columns:1fr;
-          grid-template-areas:"cam" "face" "controls"; } }
+  /* ---- the layout -------------------------------------------------------
+     Placement is by NAMED AREA on every panel, never by DOM order: theater
+     mode physically moves panels out and re-appends them at the end of .wrap,
+     and named areas are what make that round trip invisible.
 
-  .panel { background:var(--panel); border:1px solid var(--border); border-radius:14px; padding:18px; }
-  .phead { display:flex; align-items:center; gap:10px; text-transform:uppercase;
-           letter-spacing:.09em; font-size:12.5px; font-weight:700; color:#d7dae0; margin-bottom:16px; }
+     Three shapes, chosen by what the screen has room for:
+       wide desktop  — camera | conversation | servos, three columns, because
+                       the transcript is how FRED is actually used and it
+                       deserves a column, not a box under the sliders
+       desktop       — camera left, conversation + servos stacked right
+       tablet        — one column, ordered by how often each panel is touched
+       phone         — one panel at a time behind a thumb-reach tab bar */
+  .wrap { display:grid; gap:14px; align-items:stretch;
+          grid-template-columns:minmax(0,1fr);
+          grid-template-areas:"cam" "talk" "cart" "controls" "face"; }
+  .cam { grid-area:cam; } .talk { grid-area:talk; } .controls { grid-area:controls; }
+  .face { grid-area:face; } .cart { grid-area:cart; }
+
+  @media (min-width:1100px) {
+    .wrap { grid-template-columns:minmax(0,1.6fr) minmax(360px,1fr);
+            grid-template-areas:"cam talk" "cart talk" "face controls"; }
+  }
+  @media (min-width:1500px) {
+    .wrap { grid-template-columns:minmax(0,1.5fr) minmax(340px,430px) minmax(320px,400px);
+            grid-template-areas:"cam  talk controls"
+                               "cart talk controls"
+                               "face talk controls"; }
+  }
+
+  /* ---- phone: a tab bar, not a scroll ----------------------------------
+     One panel at a time, switched from a fixed bar at the bottom where a
+     thumb already is. The estop keeps its own tab the moment the cart
+     exists, so stopping the base is never behind a scroll. */
+  #tabbar { display:none; }
+  @media (max-width:699px) {
+    .wrap { display:block; }
+    .wrap > .panel { display:none; margin-bottom:12px; }
+    body[data-view=cam]    .wrap > .cam:not([hidden])      { display:block; }
+    body[data-view=talk]   .wrap > .talk:not([hidden])     { display:flex; }
+    body[data-view=servos] .wrap > .controls:not([hidden]) { display:block; }
+    body[data-view=face]   .wrap > .face:not([hidden])     { display:flex; }
+    body[data-view=cart]   .wrap > .cart:not([hidden])     { display:block; }
+    /* the conversation fills the screen so the input box rides just above
+       the tab bar instead of somewhere down a scroll */
+    body[data-view=talk] .wrap > .talk {
+      min-height:calc(100dvh - 74px - 64px - env(safe-area-inset-bottom,0px)); }
+    body { padding-bottom:calc(66px + env(safe-area-inset-bottom,0px)); }
+
+    #tabbar { position:fixed; left:0; right:0; bottom:0; z-index:80;
+      display:flex; gap:2px; background:rgba(15,15,18,.94);
+      -webkit-backdrop-filter:blur(10px); backdrop-filter:blur(10px);
+      border-top:1px solid var(--border);
+      padding:6px max(8px, env(safe-area-inset-left))
+              calc(6px + env(safe-area-inset-bottom,0px))
+              max(8px, env(safe-area-inset-right)); }
+    #tabbar button { flex:1; border:0; background:transparent; border-radius:10px;
+      display:flex; flex-direction:column; align-items:center; gap:2px;
+      font-size:10.5px; font-weight:600; color:var(--mut); padding:5px 2px;
+      min-height:48px; letter-spacing:.04em; }
+    #tabbar button .ico { font-size:19px; line-height:1; }
+    #tabbar button.on { color:var(--fg); background:rgba(45,127,249,.16); }
+    #tabbar button[hidden] { display:none; }
+    body.theater #tabbar { display:none; }
+  }
 
   /* face preview */
   .face { background:#0a0a0b; display:flex; align-items:center; justify-content:center;
           min-height:300px; perspective:1050px; padding:20px; }
+  @media (max-width:699px) { .face { min-height:230px; } }
   #head { position:relative; width:min(97%,860px); line-height:0; filter:drop-shadow(0 18px 36px #000c);
           transform-origin:50% 50%; transition:transform .12s ease; }
   #head svg { width:100%; height:auto; display:block; }
@@ -72,17 +110,12 @@
   #head #cam-led { opacity:0; transition:opacity .18s ease; }
   body.led-on #head #cam-led { opacity:1; filter:drop-shadow(0 0 5px #ff1a1a); }
 
-  .badge { margin-left:auto; font-size:11px; font-weight:700; padding:3px 9px;
-           border-radius:999px; letter-spacing:.05em; }
-  .badge.mock { background:#3a2a00; color:var(--warn); }
-  .badge.live { background:#04310f; color:var(--ok); }
-
   /* slider control */
   .ctl { margin-bottom:22px; }
   .ctl-head { display:flex; justify-content:space-between; align-items:baseline; margin-bottom:8px; }
   .ctl-label { text-transform:uppercase; letter-spacing:.06em; font-size:13px; font-weight:600; color:#cfd3d9; }
   .ctl-val { color:var(--accent); font-weight:700; font-size:14px; font-variant-numeric:tabular-nums; }
-  input[type=range] { width:100%; height:26px; accent-color:var(--accent); cursor:pointer; margin:0; }
+  .ctl input[type=range], #servos input[type=range] { width:100%; }
   .ctl-foot { display:flex; justify-content:space-between; align-items:center; margin-top:5px;
               color:var(--mut); font-size:12px; font-variant-numeric:tabular-nums; }
   .ctl-ch { color:#5f636c; font-size:11px; letter-spacing:.02em; }
@@ -96,22 +129,7 @@
   .map.hidden { display:none; }
   .map .ch-pick { display:flex; align-items:center; gap:7px; color:var(--mut);
                   font-size:12px; text-transform:uppercase; letter-spacing:.05em; }
-  .map select { font:inherit; font-weight:600; color:var(--fg); background:var(--panel);
-                border:1px solid var(--border); border-radius:8px; padding:6px 9px; cursor:pointer; }
   .map button { padding:7px 11px; font-size:12px; }
-
-  button { font:inherit; font-weight:600; color:var(--fg); background:transparent;
-           border:1px solid var(--border); border-radius:9px; padding:9px 16px; cursor:pointer; }
-  button:hover { background:rgba(255,255,255,.04); }
-  button:active { transform:translateY(1px); }
-  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
-  button.hidden { display:none; }
-  .actions { display:flex; gap:10px; flex-wrap:wrap; align-items:center;
-             margin-top:20px; padding-top:16px; border-top:1px solid var(--border); }
-  .toggle { display:flex; align-items:center; gap:8px; margin-left:auto; color:var(--mut);
-            font-size:13px; cursor:pointer; }
-  .toggle input { accent-color:var(--accent); }
-  .hint { color:var(--mut); font-size:13px; line-height:1.5; margin:14px 0 0; }
 
   /* drive base — hold-to-drive pad. Sized for a thumb, because the realistic
      way anyone drives this is one-handed on a phone while walking beside it. */
@@ -133,6 +151,9 @@
   .cart .pad .padhint { position:absolute; left:0; right:0; bottom:10px; text-align:center;
       color:var(--mut); font-size:11.5px; letter-spacing:.04em; pointer-events:none; }
   .cart .side { flex:1 1 200px; display:flex; flex-direction:column; gap:10px; }
+  /* Phone: estop above, pad below — the pad wants to live under the thumb,
+     and the stop must be visible without scrolling while driving. */
+  @media (max-width:699px) { .cart .padwrap { flex-direction:column-reverse; } }
   .cart .estop { font:inherit; font-weight:800; letter-spacing:.06em; color:#fff;
       background:#7f1d1d; border:1px solid #b91c1c; border-radius:12px;
       padding:18px 14px; cursor:pointer; font-size:15px; }
@@ -142,17 +163,16 @@
   .cart .tel b { color:var(--fg); font-weight:600; justify-self:end;
       font-variant-numeric:tabular-nums; }
   .cart .ctrlmode { display:flex; align-items:center; justify-content:space-between;
-                    gap:10px; font-size:13px; color:var(--muted); }
-  .cart .ctrlmode select { font:inherit; padding:6px 8px; border-radius:8px;
-                    background:var(--panel2); color:var(--fg);
-                    border:1px solid var(--line); }
+                    gap:10px; font-size:13px; color:var(--mut); }
   .cart .warn { background:#3a2a00; color:var(--warn); border-radius:9px;
-      padding:9px 12px; font-size:12.5px; }
+      padding:9px 12px; font-size:12.5px; margin-bottom:12px; }
   .cart .warn[hidden] { display:none; }
 
   /* live camera */
-  .cam .phead .cam-hbtns { margin-left:auto; display:flex; gap:8px; }
-  .cam .phead button { padding:7px 14px; font-size:12px; }
+  .cam-toolbar { display:flex; gap:8px; flex-wrap:wrap; align-items:center;
+                 margin-bottom:12px; }
+  .cam-toolbar button { padding:7px 14px; font-size:12px; }
+  #camBtn { margin-left:auto; }
   /* Which camera. A segmented pair rather than two loose buttons, because these
      are one choice with two answers, not two independent actions. */
   .cam-src { display:flex; border:1px solid var(--border); border-radius:8px; overflow:hidden; }
@@ -162,28 +182,25 @@
   .cam-src button.on { background:var(--accent); color:#fff; }
   .cam-src button:disabled { opacity:.4; cursor:not-allowed; }
   .cam-view { position:relative; background:#000; border:1px solid var(--border);
-              border-radius:12px; overflow:hidden; min-height:240px;
+              border-radius:12px; overflow:hidden; min-height:200px;
               display:flex; align-items:center; justify-content:center; }
   /* Cap the feed so starting the camera doesn't grow the panel and shove the
-     animation off-screen — it stays parked in its top-left tile. */
-  .cam-view img { width:100%; height:auto; max-height:44vh; object-fit:contain; display:block; }
+     rest of the page around. */
+  .cam-view img { width:100%; height:auto; max-height:48vh; object-fit:contain; display:block; }
+  @media (max-width:699px) { .cam-view img { max-height:58vh; } }
   .cam-msg { color:var(--mut); font-size:13px; padding:48px 20px; text-align:center; }
-  .cam-ctls { display:flex; gap:16px; align-items:center; flex-wrap:wrap; margin-top:14px; }
+  .cam-ctls { display:flex; gap:14px; align-items:center; flex-wrap:wrap; margin-top:14px; }
   .cam-ctls label { color:var(--mut); font-size:12px; text-transform:uppercase;
                     letter-spacing:.05em; display:flex; align-items:center; gap:7px; }
-  .cam-ctls select { font:inherit; font-weight:600; color:var(--fg); background:var(--panel);
-                     border:1px solid var(--border); border-radius:8px; padding:6px 9px; cursor:pointer; }
   .cam-ctls .lens { flex:1; min-width:180px; }
-  .cam-ctls .lens input[type=range] { flex:1; height:22px; accent-color:var(--accent); }
+  .cam-ctls .lens input[type=range] { flex:1; }
   .cam-ctls .lens .ctl-ch { min-width:56px; text-align:right; }
   .cam-ctls .flip { margin-left:auto; cursor:pointer; }
-  .cam-ctls .flip input { accent-color:var(--accent); }
   .cam-ctls .ledtog { cursor:pointer; }
   .cam-ctls .ledtog input { accent-color:#ff3b3b; }
 
-  /* Talk-to-FRED voice/AI panel (inside the controls panel) */
-  .voice { margin-top:16px; border-top:1px solid var(--border); padding-top:14px; }
-  .voice .phead { display:flex; align-items:center; gap:10px; }
+  /* Talk-to-FRED — its own panel now, not a box under the sliders */
+  .talk { display:flex; flex-direction:column; }
   .voice .vbtn { margin-left:auto; font:inherit; font-weight:600; color:var(--fg);
       background:var(--panel); border:1px solid var(--border); border-radius:9px;
       padding:7px 13px; cursor:pointer; }
@@ -191,13 +208,13 @@
   .voice .vbtn:disabled { opacity:.4; cursor:not-allowed; }
   #listenBtn.on { background:#7f1d1d; border-color:#b91c1c; color:#fff; }
   .voice .vrow { display:flex; gap:8px; margin:10px 0 0; }
-  .voice .vrow input { flex:1; font:inherit; color:var(--fg); background:#0e0e11;
-      border:1px solid var(--border); border-radius:9px; padding:9px 12px; }
+  .voice .vrow input { flex:1; background:var(--panel2); }
   .voice .vrow .vbtn { margin-left:0; }
 
-  /* chat transcript */
-  .voice .chat { max-height:260px; overflow-y:auto; display:flex; flex-direction:column;
-      gap:8px; padding:12px 2px; margin-top:10px; }
+  /* chat transcript: grows to fill the panel's column, scrolls inside */
+  .voice .chat { flex:1 1 220px; min-height:180px; overflow-y:auto;
+      display:flex; flex-direction:column; gap:8px; padding:12px 2px; margin-top:2px;
+      overscroll-behavior:contain; }
   .voice .chat:empty::before { content:"No messages yet — say “Hey FRED…” or type below.";
       color:var(--mut); font-size:12.5px; }
   .msg { max-width:88%; padding:8px 11px; border-radius:13px; font-size:13px; line-height:1.4;
@@ -235,7 +252,7 @@
       50%{ left:57%; top:52%; } 75%{ left:47%; top:50%; } }
   @media (prefers-reduced-motion: reduce){ .track-ov .reticle { animation:none; } }
 
-  /* ---- theater / picture-in-picture mode -------------------------------
+  /* ---- theater / picture-in-picture -------------------------------------
      "Enlarge" blows the camera up to fill the viewport and floats ONE
      translucent overlay panel (condensed head + controls) on top, which
      can be dragged anywhere so it never blocks the video. */
@@ -255,8 +272,9 @@
   #pip { display:none; }
   body.theater #pip {
     display:block; position:fixed; z-index:60; top:18px; right:18px;
-    width:330px; max-height:calc(100vh - 36px); overflow:auto;
-    background:rgba(20,20,23,.8); backdrop-filter:blur(10px);
+    width:330px; max-width:calc(100vw - 24px); max-height:calc(100vh - 36px);
+    overflow:auto; background:rgba(20,20,23,.8);
+    -webkit-backdrop-filter:blur(10px); backdrop-filter:blur(10px);
     border:1px solid var(--border); border-radius:14px;
     box-shadow:0 16px 48px #000b; resize:both; }
   .pip-head {
@@ -278,8 +296,8 @@
   body.theater #pip .controls .hint { display:none; }
   body.theater #pip .ctl { margin-bottom:15px; }
 
-  /* ---- mic level meter -------------------------------------------------- */
-  /* Six seconds of what the microphone actually heard. It exists because no
+  /* ---- mic level meter --------------------------------------------------
+     Six seconds of what the microphone actually heard. It exists because no
      number here can honestly be turned into "muted" -- this hardware gates a
      quiet room to exact zeros too -- but a person watching this while they
      talk settles it instantly. */
@@ -295,16 +313,12 @@
              margin-top:4px; font-size:11px; color:var(--mut); }
   .micfoot .warn { color:#e0b05f; }
 
-  #toast { position:fixed; left:50%; bottom:24px; transform:translateX(-50%);
-           background:#04310f; color:var(--ok); border:1px solid #0a5; padding:10px 18px;
-           border-radius:10px; opacity:0; transition:opacity .25s; pointer-events:none; font-weight:600; }
-  #toast.show { opacity:1; }
   @media (prefers-reduced-motion: reduce) { #head { transition:none; } }
 </style>
 <link rel="stylesheet" href="/static/pin.css">
 <script src="/static/pin.js"></script>
 </head>
-<body>
+<body data-view="cam">
 <div class="app">
   <div class="topbar">
     <h1>FRED</h1>
@@ -324,18 +338,18 @@
     <section class="panel cam" id="camPanel">
       <div class="phead">Live camera
         <span id="camState" class="badge">…</span>
-        <span class="cam-hbtns">
-          <span class="cam-src" id="camSrc">
-            <button id="srcHead" class="on" onclick="setCamSource('head')"
-                    title="The camera in FRED's head — it moves as he looks around">👁 Head</button>
-            <button id="srcWide" onclick="setCamSource('wide')" disabled
-                    title="The wide camera on the chest">🌐 Wide 180°</button>
-          </span>
-          <button id="trackBtn" onclick="toggleTrack()" disabled
-                  title="Face tracking (not yet connected)">◎ Track face</button>
-          <button id="bigBtn" onclick="toggleBig()">⛶ Enlarge</button>
-          <button id="camBtn" onclick="toggleCam()" disabled>▶ Start camera</button>
+      </div>
+      <div class="cam-toolbar">
+        <span class="cam-src" id="camSrc">
+          <button id="srcHead" class="on" onclick="setCamSource('head')"
+                  title="The camera in FRED's head — it moves as he looks around">👁 Head</button>
+          <button id="srcWide" onclick="setCamSource('wide')" disabled
+                  title="The wide camera on the chest">🌐 Wide 180°</button>
         </span>
+        <button id="trackBtn" onclick="toggleTrack()" disabled
+                title="Face tracking (not yet connected)">◎ Track face</button>
+        <button id="bigBtn" onclick="toggleBig()">⛶ Enlarge</button>
+        <button id="camBtn" onclick="toggleCam()" disabled>▶ Start camera</button>
       </div>
       <div class="cam-view">
         <img id="camImg" alt="live camera feed" hidden>
@@ -390,7 +404,9 @@
       <p class="hint">Drag the sliders to move the eyes left/right and up/down, and open the jaw.
          Changes drive the servos live (or a mock, when no hardware is attached).</p>
 
-      <div class="voice" id="voice">
+    </section>
+
+    <section class="panel talk voice" id="voice">
         <div class="phead">Talk to FRED
           <span id="voiceState" class="badge">…</span>
           <button id="clearLogBtn" class="vbtn" onclick="clearLog()" title="Clear transcript">🗑</button>
@@ -407,8 +423,7 @@
           <div class="micfoot"><span id="micRead">—</span><span id="micNote"></span></div>
         </div>
         <p class="hint" id="voiceHint">Say “Hey FRED, open your mouth”, or type above.</p>
-      </div>
-    </section>
+      </section>
 
     <section class="panel cart" id="cartPanel" hidden>
       <div class="phead">Drive base <span id="cartState" class="badge">…</span></div>
@@ -444,6 +459,18 @@
          <b>Controller only</b> refuses this pad entirely.</p>
     </section>
   </div>
+
+  <!-- phone navigation: fixed to the bottom, where the thumb already is.
+       Hidden entirely on wide screens, where everything is visible at once.
+       The Drive tab appears only while the cart feature is enabled — same
+       rule as the cart panel itself. -->
+  <nav id="tabbar" aria-label="Panel sections">
+    <button data-view="cam"    onclick="setView('cam')"><span class="ico">📷</span>Camera</button>
+    <button data-view="talk"   onclick="setView('talk')"><span class="ico">💬</span>Chat</button>
+    <button data-view="servos" onclick="setView('servos')"><span class="ico">🎚</span>Servos</button>
+    <button data-view="cart"   onclick="setView('cart')" hidden><span class="ico">🕹</span>Drive</button>
+    <button data-view="face"   onclick="setView('face')"><span class="ico">🙂</span>Face</button>
+  </nav>
 
   <!-- theater overlay: the .face and .controls panels get moved in here while
        the video is enlarged, then moved back to the grid on exit -->
@@ -1423,6 +1450,45 @@ syncTrack();
 pollCart();
 setInterval(() => { pollHealth(); syncTrack(); }, 5000);
 setInterval(pollCart, 1000);
+
+// ---- phone tab bar ------------------------------------------------------
+// One panel at a time on a phone, switched from the bottom bar. Desktop never
+// runs this path visually (the bar is display:none), but the state is set
+// anyway and is harmless: the wide layouts show every panel regardless.
+function setView(v) {
+  document.body.dataset.view = v;
+  try { localStorage.setItem('fredView', v); } catch (e) {}
+  for (const b of document.querySelectorAll('#tabbar button'))
+    b.classList.toggle('on', b.dataset.view === v);
+}
+(function () {
+  let WANTED = '';
+  const cart = document.getElementById('cartPanel');
+  const driveTab = document.querySelector('#tabbar [data-view=cart]');
+  // The Drive tab exists exactly when the cart panel does. The panel's hidden
+  // attribute is flipped by the cart poller, so mirror it rather than keeping
+  // a second copy of "is the cart enabled".
+  const sync = () => {
+    driveTab.hidden = cart.hidden;
+    if (cart.hidden && document.body.dataset.view === 'cart') setView('cam');
+    // A deep link or remembered tab can ask for Drive before the first cart
+    // poll has unhidden the panel — honour it as soon as the cart shows up,
+    // unless the user has navigated somewhere else in the meantime.
+    else if (!cart.hidden && WANTED === 'cart'
+             && document.body.dataset.view === 'cam') { setView('cart'); WANTED = ''; }
+  };
+  new MutationObserver(sync).observe(cart, { attributes: true, attributeFilter: ['hidden'] });
+  // ?view=talk beats the remembered tab: it makes the chat bookmarkable,
+  // which is how a phone on a lanyard at an event should open this page.
+  let v = 'cam';
+  try { v = localStorage.getItem('fredView') || 'cam'; } catch (e) {}
+  v = new URLSearchParams(location.search).get('view') || v;
+  if (!document.querySelector('#tabbar [data-view=' + CSS.escape(v) + ']')) v = 'cam';
+  WANTED = v;
+  if (v === 'cart' && cart.hidden) v = 'cam';
+  setView(v);
+  sync();
+})();
 </script>
 </body>
 </html>

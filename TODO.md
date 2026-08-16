@@ -129,10 +129,12 @@ this is what is *not* already on it.
 
 ### Driving him when you are not next to him
 
-1. **An operator page shaped like a phone.** The panel is a desktop layout and at
-   an event you are holding a phone one-handed: stop speaking, mute the mic,
-   reset the conversation, volume, and the live transcript. Distinct from the
-   kiosk view below, which faces outward at visitors.
+1. **One-tap operator actions on the phone layout.** The panel itself became a
+   phone layout on 2026-08-16 — a bottom tab bar, the transcript filling the
+   Chat tab, the estop one tap away on Drive — so the "page shaped like a
+   phone" half of this is done and lives at the same URL. What remains is the
+   actions the transcript tab should carry: stop speaking, mute the mic, reset
+   the conversation, volume. Closely related to the one-tap phrase deck below.
 
 2. **A deck of one-tap things to say.** `/api/say` already exists. "Ask me about
    my servos", "Let me think about that one", "Who is next?" — for when he

@@ -2,68 +2,65 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>FRED · Admin</title>
+<link rel="stylesheet" href="/static/ui.css">
 <style>
-  :root { --bg:#0c0c0e; --panel:#161619; --border:#2a2b31; --fg:#e8e9ec;
-          --mut:#868b95; --accent:#2d7ff9; --ok:#22c55e; }
-  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
-  body { margin:0; background:var(--bg); color:var(--fg);
-         font:15px/1.45 system-ui,-apple-system,sans-serif; padding:20px; }
-  .app { max-width:720px; margin:0 auto; }
-  .topbar { display:flex; align-items:baseline; gap:12px; margin:2px 4px 22px; }
-  .topbar h1 { font-size:16px; font-weight:700; letter-spacing:.02em; margin:0; }
-  .topbar .sub { color:var(--mut); font-size:13px; }
-  .back { margin-left:auto; color:var(--mut); font-size:13px; text-decoration:none;
-          padding:6px 12px; border:1px solid var(--border); border-radius:999px; }
-  .back:hover { color:var(--fg); background:rgba(255,255,255,.04); }
+  /* Page layout only — what things look like lives in /static/ui.css. */
+  .app { max-width:760px; margin:0 auto; }
+  .panel { padding:20px 22px; margin-bottom:16px; }
+  .phead { margin-bottom:18px; }
 
-  .panel { background:var(--panel); border:1px solid var(--border); border-radius:14px;
-           padding:20px 22px; margin-bottom:16px; }
-  .phead { text-transform:uppercase; letter-spacing:.09em; font-size:12.5px;
-           font-weight:700; color:#d7dae0; margin:0 0 18px; }
-
-  .row { display:flex; align-items:center; gap:14px; margin-bottom:20px; }
+  /* A settings row: label on the left, controls to the right — until the
+     screen is too narrow for both, when the label becomes a heading and the
+     controls take the full width underneath it. Squeezing them side by side
+     on a phone made every input 60px wide and every label two words a line. */
+  .row { display:flex; align-items:center; gap:14px; margin-bottom:20px;
+         flex-wrap:wrap; row-gap:10px; }
   .row:last-child { margin-bottom:0; }
   .row .label { min-width:170px; }
   .row .label b { display:block; font-weight:600; font-size:14px; }
   .row .label span { color:var(--mut); font-size:12px; }
-  .grow { flex:1; }
 
-  input[type=color] { width:46px; height:34px; padding:0; border:1px solid var(--border);
-                      border-radius:8px; background:var(--panel); cursor:pointer; }
-  input[type=text], input[type=password] {
-                     font:inherit; color:var(--fg); background:#0e0e11; width:110px;
-                     border:1px solid var(--border); border-radius:8px; padding:8px 10px;
+  input[type=text], input[type=password] { width:110px;
                      font-variant-numeric:tabular-nums; }
   input.wide { width:154px; }
   input.narrow { width:78px; }
-  select { font:inherit; font-weight:600; color:var(--fg); background:var(--panel);
-           border:1px solid var(--border); border-radius:8px; padding:8px 11px; cursor:pointer; }
-  input[type=range] { flex:1; height:26px; accent-color:var(--accent); cursor:pointer; }
-  .switch { display:flex; align-items:center; gap:9px; cursor:pointer; }
-  .switch input { width:18px; height:18px; accent-color:var(--accent); }
+  input[type=range] { flex:1; }
   .lensval { min-width:64px; text-align:right; color:var(--accent); font-weight:700;
              font-variant-numeric:tabular-nums; }
-  .hint { color:var(--mut); font-size:12px; margin:2px 0 0; }
+
+  @media (max-width:639px) {
+    .row { align-items:stretch; }
+    .row .label { flex:1 0 100%; min-width:0; }
+    .row input[type=text], .row input[type=password], .row select,
+    .row input.wide, .row input.narrow { flex:1 1 130px; width:auto; }
+    .row .switch, .row .toggle { flex:1 0 100%; }
+    .row button { flex:1 0 auto; }
+    .row .linkstat { margin-left:0; }
+  }
 
   /* chest display link status */
   .linkstat { display:flex; align-items:center; gap:8px; color:var(--mut); font-size:12.5px; }
   .dot { width:8px; height:8px; border-radius:50%; background:var(--mut); flex:none; }
   .dot.on { background:var(--ok); box-shadow:0 0 7px var(--ok); }
-  .dot.off { background:#f87171; }
+  .dot.off { background:var(--bad); }
 
   /* live iris preview */
   .eyes { display:flex; gap:10px; }
   .eyes svg { width:74px; height:54px; border:1px solid var(--border); border-radius:8px;
               background:#0a0a0b; }
 
-  .actions { display:flex; gap:10px; align-items:center; margin-top:6px; }
-  button { font:inherit; font-weight:600; color:var(--fg); background:transparent;
-           border:1px solid var(--border); border-radius:9px; padding:10px 18px; cursor:pointer; }
-  button:hover { background:rgba(255,255,255,.04); }
-  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
-  .actions .spacer { flex:1; }
+  /* Save is the exit of every visit here. On a phone it rides the bottom of
+     the screen instead of living below fifteen sections of scroll. */
+  .actions { border-top:0; padding-top:0; margin-top:6px; }
+  @media (max-width:639px) {
+    .actions button { flex:1 1 auto; }   /* Save and Reset share the row */
+    .actions { position:sticky; bottom:0; z-index:50; background:var(--bg);
+               margin:8px calc(-1 * var(--pad)) 0; padding:12px var(--pad)
+               calc(12px + env(safe-area-inset-bottom, 0px));
+               border-top:1px solid var(--border); }
+  }
 
   .dropzone { border:1.5px dashed var(--border); border-radius:12px; padding:22px 18px;
               text-align:center; color:var(--mut); font-size:13.5px; cursor:pointer;
@@ -71,21 +68,16 @@
   .dropzone.drag { border-color:var(--accent); background:rgba(45,127,249,.08); color:var(--fg); }
   .dropzone .link { color:var(--accent); font-weight:600; text-decoration:underline; }
   .cliplist { margin-top:14px; display:flex; flex-direction:column; gap:8px; }
-  .clip { display:flex; align-items:center; gap:10px; background:#0e0e11;
+  .clip { display:flex; align-items:center; gap:10px; background:var(--panel2);
           border:1px solid var(--border); border-radius:9px; padding:8px 12px; }
   .clip .name { flex:1; font-variant-numeric:tabular-nums; word-break:break-all; }
   .clip button { padding:6px 12px; font-size:13px; }
-  .clip .del:hover { border-color:#a33; color:#f87171; background:rgba(160,40,40,.12); }
+  .clip .del:hover { border-color:#a33; color:var(--bad); background:rgba(160,40,40,.12); }
   .clipnote { color:var(--mut); font-size:12px; }
 
-  #toast { position:fixed; left:50%; bottom:24px; transform:translateX(-50%);
-           background:#04310f; color:var(--ok); border:1px solid #0a5; padding:10px 18px;
-           border-radius:10px; opacity:0; transition:opacity .25s; pointer-events:none; font-weight:600; }
-  #toast.show { opacity:1; }
-  #toast.err { background:#3a0d0d; color:#f87171; border-color:#a33; }
   .wifilist { display:flex; flex-direction:column; gap:6px; width:100%; }
   .wifirow { display:flex; align-items:center; gap:10px; padding:6px 10px;
-             border:1px solid var(--edge, #2a2f3a); border-radius:8px; }
+             border:1px solid var(--border); border-radius:8px; flex-wrap:wrap; }
   .wifirow .grow { flex:1 1 auto; }
 </style>
 <link rel="stylesheet" href="/static/pin.css">
