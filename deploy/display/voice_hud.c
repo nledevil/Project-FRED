@@ -189,6 +189,23 @@ static int sysfs_int(const char *fbname, const char *attr, int *out)
     return 0;
 }
 
+/* Under KMS the fbdev is an emulation, and anything that takes DRM master —
+ * a Qt eglfs app, a screen blanker — can hand it back blanked. This renderer
+ * then draws 16,000 lit pixels a frame into a panel nobody can see, which is
+ * indistinguishable from a crash and is not one. Matches fb.unblank(). */
+static void fb_unblank(const char *dev)
+{
+    const char *base = strrchr(dev, '/');
+    base = base ? base + 1 : dev;
+    char p[256];
+    snprintf(p, sizeof p, "/sys/class/graphics/%s/blank", base);
+    int fd = open(p, O_WRONLY);
+    if (fd < 0) return;                 /* no sysfs, or not root */
+    ssize_t n = write(fd, "0", 1);
+    (void)n;
+    close(fd);
+}
+
 static int fb_open(fb_t *fb, const char *dev)
 {
     const char *base = strrchr(dev, '/');
@@ -209,6 +226,7 @@ static int fb_open(fb_t *fb, const char *dev)
                 "XRGB8888 (32bpp)\n", dev, fb->bpp);
         return -1;
     }
+    fb_unblank(dev);
     fb->size = (size_t)fb->stride * fb->h;
     fb->fd = open(dev, O_RDWR);
     if (fb->fd < 0) { perror(dev); return -1; }

@@ -57,6 +57,7 @@ class Framebuffer:
             raise RuntimeError(f"{dev} is {self.bpp}bpp; this helper does "
                                f"RGB565 (16bpp) and XRGB8888 (32bpp)")
 
+        unblank(dev)
         self.size = self.stride * self.h
         self.fd = os.open(dev, os.O_RDWR)
         self.mm = mmap.mmap(self.fd, self.size)
@@ -91,6 +92,26 @@ class Framebuffer:
 
     def __exit__(self, *a):
         self.close()
+
+
+def unblank(dev="/dev/fb0"):
+    """Take the framebuffer out of DPMS blank.
+
+    Under KMS the fbdev is an emulation, and anything that takes DRM master —
+    a Qt eglfs app, a GL demo, a screen blanker — can hand it back blanked. The
+    renderer then runs happily, writing pixels nobody can see, which looks
+    exactly like a crash and is not one: the panel was dark while voice_hud was
+    drawing 16,000 lit pixels a frame into it.
+
+    Called whenever a Framebuffer is opened, because a process opening this to
+    draw always wants the result visible.
+    """
+    name = os.path.basename(dev)
+    try:
+        with open(f"/sys/class/graphics/{name}/blank", "w") as f:
+            f.write("0")
+    except OSError:
+        pass                     # no sysfs, or not root: nothing to undo
 
 
 def hide_cursor():
