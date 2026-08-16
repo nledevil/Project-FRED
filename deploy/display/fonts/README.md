@@ -12,9 +12,21 @@ notice travels with them because the licence asks that it does.
 
 | Face | Used by | Copyright |
 |---|---|---|
-| Orbitron | `hud` theme | Copyright The Orbitron Project Authors |
-| Rajdhani | `soft` theme | Copyright The Rajdhani Project Authors |
-| Exo 2 | `neon` theme | Copyright The Exo 2 Project Authors |
+| Orbitron (variable) | `hud` theme | Copyright The Orbitron Project Authors |
+| Rajdhani **Medium** | `soft` theme | Copyright The Rajdhani Project Authors |
+| Exo 2 (variable) | `neon` theme | Copyright The Exo 2 Project Authors |
+
+The originals are in `ttf/`, with each family's `OFL.txt`. They were not here
+until 2026-08-15, which meant these atlases could not be re-baked and no other
+renderer could use the panel's typefaces at all — a Qt build of the menu would
+have fallen back to DejaVu and quietly changed how the whole panel reads.
+
+The exact weight was recovered rather than guessed: `tools/bake_font.py` was run
+against each candidate and the result compared to the shipped atlas. Rajdhani
+**Medium** matches byte for byte and Regular does not, and the two variable
+fonts match at their default instance. If a face is ever replaced, re-run that
+comparison — the atlases are the record of what the panel is supposed to look
+like.
 
 Full licence text: <https://openfontlicense.org> — and each family's own
 `OFL.txt` at <https://github.com/google/fonts>.
