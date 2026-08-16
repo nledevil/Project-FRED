@@ -100,13 +100,17 @@ PRESETS = [
     # tools/verify_shaders.py checks the shaders against — but they are not
     # launched: they cost 77%, 100% and 100% of a core, and the last two were
     # saturated, which is why they never reached 30fps. See gpu_anim.py.
-    {"id": "reactor",        "label": "Arc Reactor",          "argv": ["gpu_anim.py", "reactor"]},
-    {"id": "reactor-copper", "label": "Arc Reactor (Copper)", "argv": ["gpu_anim.py", "reactor", "--copper"]},
-    {"id": "flux",           "label": "Flux Capacitor",       "argv": ["gpu_anim.py", "flux"]},
-    {"id": "face",           "label": "Face (live voice)",    "argv": ["gpu_anim.py", "face"]},
+    # All four are the same child — panel.py, which stays running and reads the
+    # chosen preset out of state.json. Switching between them is a property
+    # change and a frame, where spawning a fresh Qt process cost ~1.2s of
+    # start-up every time somebody tried a different look.
+    {"id": "reactor",        "label": "Arc Reactor",          "argv": ["panel.py"]},
+    {"id": "reactor-copper", "label": "Arc Reactor (Copper)", "argv": ["panel.py"]},
+    {"id": "flux",           "label": "Flux Capacitor",       "argv": ["panel.py"]},
+    {"id": "face",           "label": "Face (live voice)",    "argv": ["panel.py"]},
     {"id": "voice-hud",      "label": "Voice HUD",            "argv": ["voice_hud.py"]},
     {"id": "voice-hud-c",    "label": "Voice HUD (native)",   "argv": ["voice_hud"]},
-    {"id": "face-talk",      "label": "Face (demo talk)",     "argv": ["gpu_anim.py", "face", "--talk"]},
+    {"id": "face-talk",      "label": "Face (demo talk)",     "argv": ["panel.py"]},
     {"id": "off",            "label": "Off (blank screen)",   "argv": None},
     # The settings menu is a child like any other — it owns the framebuffer and
     # dies on SIGTERM — but it is not a *look*, so it is hidden from the head's
@@ -223,7 +227,17 @@ class Supervisor:
         """Switch to ``preset_id`` now. Raises KeyError if it isn't a preset."""
         preset = PRESET_BY_ID[preset_id]
         with self._lock:
-            self._kill_child()
+            # Presets that share a child do not restart it. panel.py hosts every
+            # shader animation and follows state.json, so moving between them is
+            # a write and a frame — killing it would put the ~1.2s of Qt
+            # start-up back on every change, which is the whole point of it
+            # being long-lived.
+            live = self._proc is not None and self._proc.poll() is None
+            shared = (live
+                      and preset.get("argv") == ["panel.py"]
+                      and PRESET_BY_ID.get(self._preset, {}).get("argv") == ["panel.py"])
+            if not shared:
+                self._kill_child()
             self._preset = preset_id
             # Track the last real *look*, so the menu always has somewhere to go
             # back to. Recording it on the way in here (rather than remembering
@@ -236,11 +250,14 @@ class Supervisor:
             if preset["argv"] is None:
                 self._started_at = 0.0
                 _blank_screen()
-            else:
+            elif not shared:
                 self._spawn(preset)
             # A hidden preset is never the boot pick: the menu is somewhere you
             # go, not something the panel should come up sitting in.
-            if persist and not preset.get("hidden"):
+            # Written even when this pick is not being persisted as the boot
+            # default: state.json is also how the running panel is told what to
+            # show, so skipping it would leave the screen on the old animation.
+            if not preset.get("hidden"):
                 self._save_choice(preset_id)
             return self._state_locked()
 

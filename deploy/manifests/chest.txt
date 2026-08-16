@@ -63,8 +63,13 @@ deploy/display/page_wireless.py
 # above are kept as the reference tools/verify_shaders.py checks them against,
 # the same arrangement voice_hud.py has with voice_hud.c. The .qsb files are
 # baked from the .frag on this Pi at first run and are git-ignored.
+deploy/display/panel.py
+deploy/display/panel.qml
 deploy/display/gpu_anim.py
 deploy/display/anim.qml
+deploy/display/fonts/ttf/Rajdhani-Medium.ttf
+deploy/display/fonts/ttf/Orbitron[wght].ttf
+deploy/display/fonts/ttf/Exo2[wght].ttf
 deploy/display/shaders/reactor.frag
 deploy/display/shaders/flux.frag
 deploy/display/shaders/face.frag
