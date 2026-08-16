@@ -59,7 +59,32 @@ class InfoPage:
     def on_touch(self, kind: str, x: int, y: int, net) -> None:
         """Nothing to press — the page is a readout. The poller refreshes it."""
 
-    def draw(self, frame, snap: dict) -> None:
+    # How many lines fit between the heading and the bottom of the panel. The
+    # numpy renderer stops drawing past y=470 and says nothing about what it
+    # dropped; this page has twelve lines today and grows a line per network
+    # interface, so it was one address away from losing something quietly.
+    PER_PAGE = 13
+
+    def view(self, snap: dict) -> dict:
+        """The page, split into screenfuls, so nothing is silently truncated."""
+        rows = self.rows(snap)
+        pages = max(1, -(-len(rows) // self.PER_PAGE))
+        self._page = max(0, min(getattr(self, "_page", 0), pages - 1))
+        start = self._page * self.PER_PAGE
+        return {"rows": rows[start:start + self.PER_PAGE],
+                "page": self._page, "pages": pages}
+
+    def turn_page(self, delta: int, total: int) -> None:
+        pages = max(1, -(-total // self.PER_PAGE))
+        self._page = max(0, min(pages - 1, getattr(self, "_page", 0) + delta))
+
+    def rows(self, snap: dict) -> list:
+        """The page as data: (label, value, ink) per line.
+
+        Split out of draw() so the Qt panel shows the same page without a second
+        copy of the logic that decides, for instance, that inference fell back
+        to the CPU — a 25x slowdown that is silent everywhere else.
+        """
         who = snap.get("whoami") or {}
         rows: list[tuple[str, str, tuple]] = []
 
@@ -127,6 +152,12 @@ class InfoPage:
             elif not on:
                 detail += " - OFF"
             rows.append(("ACCESS POINT", detail, ui.OK_INK if on else ui.DIM_INK))
+
+        return rows
+
+    def draw(self, frame, snap: dict) -> None:
+        who = snap.get("whoami") or {}
+        rows = self.rows(snap)
 
         ui.text(frame, "WHAT THIS ROBOT IS", X0, HEAD_Y, ui.INK, 3)
         if not who:

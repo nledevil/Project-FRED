@@ -186,6 +186,62 @@ class ServosPage:
         net.post_move(name, angle)
 
     # ---- drawing ----------------------------------------------------------
+    def view(self, snap: dict) -> dict:
+        """The page as data: one entry per servo on this page, plus why a move
+        would not reach the hardware.
+
+        Split out of draw() so the Qt panel shows the same rows without a second
+        copy of the ordering rule (known servos in physical order, then anything
+        the brain reports that this page has never heard of, so a new servo
+        appears by itself rather than being invisible until someone edits a
+        list) or of the reasons a drag would do nothing.
+        """
+        servos = self._servos(snap)
+        blocked = self._blocked(snap)
+        if not servos:
+            return {"rows": [], "blocked": blocked or "BRAIN SENT AN EMPTY LIST",
+                    "empty": True, "page": self._pager.page, "pages": 1}
+
+        order = [n for n in LABELS if n in servos] + \
+                [n for n in sorted(servos) if n not in LABELS]
+        self._total = len(order)
+        rows = []
+        for name in self._pager.slice(order):
+            sv = servos[name]
+            rows.append({
+                "name": name,
+                "label": LABELS.get(name, name.replace("_", "-")),
+                "angle": float(self._angle(name, sv)),
+                "lo": float(sv.get("min_angle", 0)),
+                "hi": float(sv.get("max_angle", 180)),
+                "rest": float(sv.get("rest_angle", self._angle(name, sv))),
+            })
+        pages = max(1, -(-self._total // self._pager.per_page))
+        return {"rows": rows, "blocked": blocked, "empty": False,
+                "page": min(self._pager.page, pages - 1), "pages": pages}
+
+    def set_angle(self, name: str, angle: float, net, final: bool = False) -> None:
+        """Move one servo, wherever the drag came from."""
+        snap = net.snapshot()
+        sv = self._servos(snap).get(name)
+        if not sv or self._blocked(snap):
+            return
+        angle = round(float(angle))
+        self._local[name] = angle
+        self._touched_at[name] = time.monotonic()
+        if final:
+            # Send it outright rather than leaving it to the throttle: a slider
+            # that stops short of where the finger left is the bug everyone
+            # notices.
+            self._send(name, angle, net)
+            self._pending.pop(name, None)
+        else:
+            self._throttled(name, angle, net)
+
+    def turn_page(self, delta: int) -> None:
+        pages = max(1, -(-self._total // self._pager.per_page))
+        self._pager.page = max(0, min(pages - 1, self._pager.page + delta))
+
     def draw(self, frame, snap: dict) -> None:
         servos = self._servos(snap)
         blocked = self._blocked(snap)

@@ -68,27 +68,22 @@ Item {
             Layout.fillWidth: true; Layout.fillHeight: true
             Layout.leftMargin: 24; Layout.rightMargin: 24
             Layout.bottomMargin: 12
-            // Only STATUS exists so far. The rest still live in the numpy menu,
-            // which is what the cog opens until they are all here.
-            sourceComponent: P.page === 0 ? statusPage : notYet
+            sourceComponent: P.page === 0 ? statusPage
+                           : P.page === 1 ? voicePage
+                           : P.page === 2 ? servosPage
+                           : P.page === 3 ? cartPage
+                           : P.page === 4 ? displayPage
+                           : P.page === 5 ? wifiPage
+                           : infoPage
         }
     }
 
-    Component {
-        id: statusPage
-        StatusPage {}
-    }
+    Component { id: statusPage; StatusPage {} }
+    Component { id: voicePage;  VoicePage {} }
+    Component { id: infoPage;   InfoPage {} }
+    Component { id: displayPage; DisplayPage {} }
+    Component { id: servosPage; ServosPage {} }
+    Component { id: cartPage;   CartPage {} }
+    Component { id: wifiPage;   WifiPage {} }
 
-    Component {
-        id: notYet
-        Item {
-            Text {
-                anchors.centerIn: parent
-                text: "NOT PORTED YET"
-                color: Th.dimInk
-                font.pixelSize: Th.px["3"]; font.family: Th.font
-                font.letterSpacing: Th.tracking
-            }
-        }
-    }
 }

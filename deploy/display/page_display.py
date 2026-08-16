@@ -101,18 +101,71 @@ class DisplayPage:
             return
         for name, button in self._themes:
             if button.hit(x, y):
-                # Applied and saved on the spot: the next frame is already in
-                # the new look, which is the only honest preview of a theme.
-                ui.apply_theme(name)
-                theme_mod.save_name(name)
+                self.pick_theme(name)
                 return
         if self._pager.on_touch(kind, x, y, len(net_animations(self._snap))):
             return
         for anim, button in self._buttons:
             if button.hit(x, y):
-                self._pending = anim
-                net.post_animation(anim)
+                self.pick(anim, net)
                 return
+
+    def view(self, snap: dict) -> dict:
+        """The page as data: the animation list, the theme strip, the status.
+
+        Split out of draw() so the Qt panel makes the same calls about what is
+        running — including that "off" lit is a blank screen on purpose and
+        should not be coloured like a healthy animation.
+        """
+        self._snap = snap
+        animations = net_animations(snap)
+        display = (snap.get("chest") or {}).get("display") or {}
+        current = display.get("animation")
+        if current and current == self._pending:
+            self._pending = None                 # the daemon caught up
+        shown = self._pending or current
+        active = ui.THEME.name if ui.THEME else theme_mod.DEFAULT
+
+        if self._pending:
+            status, ink = "STARTING...", "dim"
+        elif display.get("error"):
+            status, ink = str(display["error"])[:44], "bad"
+        elif not display.get("running"):
+            status, ink = "NOTHING RUNNING ON THE SCREEN", "warn"
+        else:
+            status, ink = str(display.get("label") or "").upper(), "dim"
+
+        pages = max(1, -(-len(animations) // PER_PAGE))
+        page = min(self._pager.page, pages - 1)
+        start = page * PER_PAGE
+        return {
+            "animations": [{"id": a.get("id"), "label": str(a.get("label") or ""),
+                            "on": a.get("id") == shown,
+                            "ink": ("dim" if a.get("id") == "off" else "ok")
+                                   if a.get("id") == shown else "ink"}
+                           for a in animations[start:start + PER_PAGE]],
+            "themes": [{"name": n, "label": t.label, "on": n == active}
+                       for n, t in theme_mod.THEMES.items()],
+            "status": status, "statusInk": ink,
+            "page": page, "pages": pages,
+            "empty": not animations,
+        }
+
+    def pick(self, anim: str, net) -> None:
+        """Ask the daemon for an animation, wherever the tap came from."""
+        self._pending = anim
+        net.post_animation(anim)
+
+    @staticmethod
+    def pick_theme(name: str) -> None:
+        """Applied and saved on the spot: the next frame is already in the new
+        look, which is the only honest preview of a theme."""
+        ui.apply_theme(name)
+        theme_mod.save_name(name)
+
+    def turn_page(self, delta: int, total: int) -> None:
+        pages = max(1, -(-total // PER_PAGE))
+        self._pager.page = max(0, min(pages - 1, self._pager.page + delta))
 
     # ---- drawing -----------------------------------------------------------
     def draw(self, frame, snap: dict) -> None:

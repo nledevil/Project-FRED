@@ -105,10 +105,85 @@ class WirelessPage:
         field, self._editing = self._editing, ""
         if kb is None or kb.cancelled:
             return
-        if field == "ssid":
-            self._pending_ssid = kb.text
+        self.commit(field, kb.text, net)
+
+    @staticmethod
+    def _enabled(snap: dict) -> bool:
+        return bool((snap.get("hotspot") or {}).get("enabled"))
+
+    def view(self, snap: dict) -> dict:
+        """The page as data: the switch, the lines under it, and the note.
+
+        Split out of draw() so the Qt panel says the same things about an
+        access point it cannot reach — and keeps the same rule that the
+        password is never seeded from the brain.
+        """
+        ap = snap.get("hotspot")
+        if ap is None:
+            return {"live": False, "label": "NO LINK", "on": False, "ink": "dim",
+                    "rows": [{"text": "CANNOT REACH THE BRAIN", "ink": "dim"},
+                             {"text": "THE ACCESS POINT IS SERVED BY THE NUC, "
+                                      "NOT THIS PI", "ink": "dim"}],
+                    "hint": "", "note": self._note, "editable": False}
+        if not ap.get("configured", True):
+            return {"live": False, "label": "N/A", "on": False, "ink": "dim",
+                    "rows": [{"text": str(ap.get("error") or "NOT INSTALLED").upper(),
+                              "ink": "dim"}],
+                    "hint": "", "note": self._note, "editable": False}
+
+        on = bool(ap.get("enabled"))
+        if self._note.startswith("TURNING") and on == self._note.endswith("ON..."):
+            self._note = ""             # the brain caught up with the request
+
+        rows = [{"text": f"SSID {str(ap.get('ssid') or '?').upper()}", "ink": "ink"}]
+        if on:
+            rows.append({"text": f"PANEL {ap.get('address', '?')}:8080", "ink": "ink"})
+            clients = ap.get("clients")
+            if clients is not None:
+                rows.append({"text": f"{clients} CLIENT"
+                                     f"{'' if clients == 1 else 'S'} JOINED",
+                             "ink": "dim"})
         else:
-            self._pending_psk = kb.text
+            rows.append({"text": "JOIN THIS FROM A PHONE WHEN THERE IS NO WIFI",
+                         "ink": "dim"})
+        if self._pending_ssid:
+            rows.append({"text": f"PENDING NAME {self._pending_ssid.upper()}",
+                         "ink": "warn"})
+        if ap.get("error"):
+            rows.append({"text": str(ap["error"]).upper(), "ink": "bad"})
+
+        return {"live": True, "on": on, "label": "ON" if on else "OFF",
+                "ink": "ok" if on else "ink", "editable": True,
+                "ssidLabel": "NAME" + (" *" if self._pending_ssid else ""),
+                "rows": rows, "note": self._note,
+                "hint": "TAP ON/OFF TO SWITCH IT - NAME AND PASSWORD TO CHANGE THEM"}
+
+    def toggle(self, net) -> None:
+        want = not self._enabled(net.snapshot())
+        net.post_hotspot(want)
+        # The brain takes a few seconds to bring hostapd up (the radio walks
+        # through COUNTRY_UPDATE first), so say something now rather than leave
+        # the button looking ignored until the next poll.
+        self._note = "TURNING THE ACCESS POINT " + ("ON..." if want else "OFF...")
+
+    def editor(self, field: str, snap: dict) -> dict:
+        """What an editor for this field should start with and accept."""
+        ap = snap.get("hotspot") or {}
+        if field == "ssid":
+            return {"field": "ssid", "title": "NETWORK NAME (SSID)",
+                    "value": self._pending_ssid or str(ap.get("ssid") or ""),
+                    "maxLen": SSID_MAX, "minLen": 1}
+        # Never seeded with the current password: the brain does not send it
+        # here, and it should not.
+        return {"field": "psk", "title": f"PASSWORD ({PSK_MIN} TO {PSK_MAX} CHARACTERS)",
+                "value": "", "maxLen": PSK_MAX, "minLen": PSK_MIN}
+
+    def commit(self, field: str, text: str, net) -> None:
+        """Apply an edited value, wherever it was typed."""
+        if field == "ssid":
+            self._pending_ssid = text
+        else:
+            self._pending_psk = text
         if self._pending_ssid and self._pending_psk:
             net.post_hotspot_config(self._pending_ssid, self._pending_psk)
             self._note = "SAVING - THE ACCESS POINT WILL RESTART"
@@ -117,10 +192,6 @@ class WirelessPage:
             self._note = "NOW SET A PASSWORD TO SAVE THE CHANGE"
         else:
             self._note = "NOW CONFIRM THE NETWORK NAME TO SAVE"
-
-    @staticmethod
-    def _enabled(snap: dict) -> bool:
-        return bool((snap.get("hotspot") or {}).get("enabled"))
 
     # ---- drawing ----------------------------------------------------------
     def draw(self, frame, snap: dict) -> None:

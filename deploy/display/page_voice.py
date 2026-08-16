@@ -32,10 +32,7 @@ class VoicePage:
     def on_touch(self, kind: str, x: int, y: int, net) -> None:
         if kind != "down" or not self._button.hit(x, y):
             return
-        want = not self._listening(net.snapshot())
-        self._pending_to = want
-        self._pending_until = time.monotonic() + PENDING_FOR
-        net.post_voice(want)
+        self.toggle(net)
 
     @staticmethod
     def _listening(snap: dict) -> bool:
@@ -45,6 +42,52 @@ class VoicePage:
     def _available(snap: dict) -> bool:
         voice = (snap.get("nuc") or {}).get("voice")
         return bool(voice and voice.get("available"))
+
+    def view(self, snap: dict) -> dict:
+        """The page as data: what the button says and whether it does anything.
+
+        Split out of draw() so the Qt panel reaches the same conclusions — that
+        the brain is unreachable, or that voice is unavailable and pressing
+        would 503 — without a second copy of the reasoning.
+        """
+        reachable = bool(snap.get("nuc"))
+        listening = self._listening(snap)
+        available = self._available(snap)
+        pending = (self._pending_to is not None
+                   and time.monotonic() < self._pending_until
+                   and listening != self._pending_to)
+        if self._pending_to is not None and listening == self._pending_to:
+            self._pending_to = None          # the brain caught up
+
+        if not reachable:
+            return {"label": "NO LINK", "on": False, "ink": "bad", "live": False,
+                    "status": "CANNOT REACH THE BRAIN", "statusInk": "bad", "hint": ""}
+        if not available:
+            return {"label": "N/A", "on": False, "ink": "dim", "live": False,
+                    "status": "VOICE UNAVAILABLE ON BRAIN", "statusInk": "dim",
+                    "hint": ""}
+
+        said = (snap.get("nuc") or {}).get("voice") or {}
+        if said.get("speaking"):
+            status = "SPEAKING"
+        elif said.get("thinking"):
+            status = "THINKING"
+        elif listening:
+            status = "LISTENING FOR HEY FRED"
+        else:
+            status = "NOT LISTENING"
+        return {"label": "PENDING" if pending else ("ON" if listening else "OFF"),
+                "on": bool(listening), "live": True,
+                "ink": "dim" if pending else ("ok" if listening else "ink"),
+                "status": status, "statusInk": "dim",
+                "hint": "TAP TO TURN " + ("OFF" if listening else "ON")}
+
+    def toggle(self, net) -> None:
+        """What a tap on the button does, wherever the tap came from."""
+        want = not self._listening(net.snapshot())
+        self._pending_to = want
+        self._pending_until = time.monotonic() + PENDING_FOR
+        net.post_voice(want)
 
     # ---- drawing ----------------------------------------------------------
     def draw(self, frame, snap: dict) -> None:

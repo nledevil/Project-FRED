@@ -45,6 +45,12 @@ from voice_state import VoiceFeed                       # noqa: E402
 # the end of the port, which is the moment it stops having two callers.
 from settings_menu import Net, NUC                       # noqa: E402
 from page_status import StatusPage                       # noqa: E402
+from page_info import InfoPage                           # noqa: E402
+from page_voice import VoicePage                         # noqa: E402
+from page_display import DisplayPage                     # noqa: E402
+from page_servos import ServosPage                       # noqa: E402
+from page_cart import CartPage                           # noqa: E402
+from page_wireless import WirelessPage                   # noqa: E402
 from settings_menu import PAGES as _MENU_PAGES           # noqa: E402
 
 
@@ -52,7 +58,8 @@ def _pages():
     """The tab classes, from the menu itself — never a second list."""
     return _MENU_PAGES
 
-from PySide6.QtCore import QObject, QTimer, QUrl, Signal, Property, Qt   # noqa: E402
+from PySide6.QtCore import (QObject, QTimer, QUrl, Signal, Slot,  # noqa: E501
+                            Property, Qt)   # noqa: E402
 from PySide6.QtGui import QColor, QFontDatabase, QGuiApplication, QImage  # noqa: E402
 from PySide6.QtQuick import QQuickImageProvider, QQuickView               # noqa: E402
 
@@ -166,6 +173,7 @@ class Panel(QObject):
 
     changed = Signal()
     sceneChanged = Signal()
+    themeChanged = Signal()
 
     def __init__(self, forced: str | None, scene: str = "anim"):
         super().__init__()
@@ -177,6 +185,19 @@ class Panel(QObject):
         # The numpy page, used for its logic and not its drawing: it is what
         # decides whether the head is up, and that answer must not exist twice.
         self._status = StatusPage()
+        self._info = InfoPage()
+        self._voice_page = VoicePage()
+        self._display_page = DisplayPage()
+        self._servos_page = ServosPage()
+        self._cart_page = CartPage()
+        self._wifi_page = WirelessPage()
+        self._info_rows = []
+        self._info_page = {"page": 0, "pages": 1}
+        self._voice_view = {}
+        self._display_view = {}
+        self._servos_view = {}
+        self._cart_view = {}
+        self._wifi_view = {}
         self._net = Net()
         self._net.start()
         self._anim = forced or "reactor"
@@ -237,6 +258,16 @@ class Panel(QObject):
         # brain that has gone away makes the page say so rather than freezing
         # the panel for the length of a TCP timeout.
         self._snap = self._net.snapshot()
+        iv = self._info.view(self._snap)
+        self._info_rows = [{"label": lab, "value": val,
+                            "ink": "#%02x%02x%02x" % tuple(int(c) for c in ink)}
+                           for lab, val, ink in iv["rows"]]
+        self._info_page = {"page": iv["page"], "pages": iv["pages"]}
+        self._voice_view = self._voice_page.view(self._snap)
+        self._display_view = self._display_page.view(self._snap)
+        self._servos_view = self._servos_page.view(self._snap)
+        self._cart_view = self._cart_page.view(self._snap)
+        self._wifi_view = self._wifi_page.view(self._snap)
         self._rows = [{"name": n, "where": w, "state": st,
                        "ink": "#%02x%02x%02x" % tuple(int(c) for c in ink),
                        "detail": " ".join(d for d in det if d)}
@@ -293,6 +324,100 @@ class Panel(QObject):
     def statusRows(self):
         return self._rows
 
+    @Property("QVariantList", notify=changed)
+    def infoRows(self):
+        return self._info_rows
+
+    @Property("QVariantMap", notify=changed)
+    def infoPaging(self):
+        return self._info_page
+
+    @Property("QVariantMap", notify=changed)
+    def voiceView(self):
+        return self._voice_view
+
+    @Property("QVariantMap", notify=changed)
+    def displayView(self):
+        return self._display_view
+
+    @Property("QVariantMap", notify=changed)
+    def servosView(self):
+        return self._servos_view
+
+    @Property("QVariantMap", notify=changed)
+    def cartView(self):
+        return self._cart_view
+
+    @Property("QVariantMap", notify=changed)
+    def wifiView(self):
+        return self._wifi_view
+
+    @Property(bool, notify=changed)
+    def brainReachable(self):
+        return bool(self._snap.get("whoami"))
+
+    # ---- what a tap does. The page classes still decide; QML only reports
+    # that a control was pressed, so a button means the same thing in both
+    # renderers for as long as both exist.
+    @Slot()
+    def toggleVoice(self):
+        self._voice_page.toggle(self._net)
+
+    @Slot(str)
+    def pickAnimation(self, anim):
+        self._display_page.pick(anim, self._net)
+
+    @Slot(str)
+    def pickTheme(self, name):
+        self._display_page.pick_theme(name)
+        # The palette is a context property, so a live theme change means
+        # rebuilding it — the pages bind to Th and will re-read on the change.
+        self.themeChanged.emit()
+
+    def _info_page_turn(self, delta):
+        self._info.turn_page(delta, len(self._info.rows(self._snap)))
+
+    @Slot(str, float, bool)
+    def moveServo(self, name, angle, final):
+        self._servos_page.set_angle(name, angle, self._net, final)
+
+    @Slot()
+    def restServos(self):
+        self._net.post_rest()
+
+    @Slot(int)
+    def turnServoPage(self, delta):
+        self._servos_page.turn_page(delta)
+
+    @Slot(str)
+    def pickCartMode(self, mode):
+        self._cart_page.pick_mode(mode, self._net)
+
+    @Slot()
+    def cartStop(self):
+        self._cart_page.stop_tap(self._net)
+
+    @Slot()
+    def toggleHotspot(self):
+        self._wifi_page.toggle(self._net)
+
+    @Slot(str, result="QVariantMap")
+    def hotspotEditor(self, field):
+        return self._wifi_page.editor(field, self._snap)
+
+    @Slot(str, str)
+    def commitHotspot(self, field, text):
+        self._wifi_page.commit(field, text, self._net)
+
+    @Slot(int)
+    def turnInfoPage(self, delta):
+        self._info_page_turn(delta)
+
+    @Slot(int)
+    def turnPage(self, delta):
+        from page_display import net_animations
+        self._display_page.turn_page(delta, len(net_animations(self._snap)))
+
     @Property(str, notify=sceneChanged)
     def shader(self):
         return self._shader
@@ -342,6 +467,8 @@ def main() -> int:
     ap.add_argument("--grab", metavar="PNG", default="")
     ap.add_argument("--grab-after", type=float, default=1.2,
                     help="seconds to let the scene settle before grabbing")
+    ap.add_argument("--page", type=int, default=0,
+                    help="open the menu on this tab (0-6), for grabbing one page")
     ap.add_argument("--menu", action="store_true",
                     help="open on the menu scene (the port is not wired to the cog yet)")
     args = ap.parse_args()
@@ -358,6 +485,7 @@ def main() -> int:
 
     overlay = Overlay()
     panel = Panel(args.anim, "menu" if args.menu else "anim")
+    panel.page = args.page
 
     view = QQuickView()
     view.engine().addImageProvider("overlay", overlay)

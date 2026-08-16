@@ -10,6 +10,10 @@ Rectangle {
     property bool on: false
     property bool big: false
     property int fontPx: big ? Th.px["3"] : Th.px["2"]
+    // menu_ui.Button upper-cases unless a caller asks otherwise, and almost
+    // none do. The exception is anything showing text a person typed, where
+    // MYPASS instead of MyPass is a lie about what was stored.
+    property bool preserveCase: false
     signal tapped()
 
     implicitHeight: 40
@@ -42,7 +46,7 @@ Rectangle {
         id: txt
         anchors.fill: parent
         anchors.margins: 8
-        text: btn.label
+        text: btn.preserveCase ? btn.label : btn.label.toUpperCase()
         color: btn.on ? Th.ink : Th.dimInk
         font.pixelSize: btn.fontPx
         font.family: Th.font

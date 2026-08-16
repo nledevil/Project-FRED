@@ -68,6 +68,13 @@ deploy/display/panel.qml
 deploy/display/MenuScene.qml
 deploy/display/Btn.qml
 deploy/display/StatusPage.qml
+deploy/display/InfoPage.qml
+deploy/display/VoicePage.qml
+deploy/display/DisplayPage.qml
+deploy/display/ServosPage.qml
+deploy/display/CartPage.qml
+deploy/display/WifiPage.qml
+deploy/display/Keyboard.qml
 deploy/display/gpu_anim.py
 deploy/display/anim.qml
 deploy/display/fonts/ttf/Rajdhani-Medium.ttf

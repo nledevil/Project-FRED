@@ -95,9 +95,7 @@ class CartPage:
             return
         for mode, button in self._buttons:
             if button.hit(x, y):
-                self._armed_at = 0.0    # a tap elsewhere is not a confirmation
-                self._pending = mode    # lit immediately; the poll confirms
-                net.post_cart_controller(mode)
+                self.pick_mode(mode, net)
                 return
 
     def _on_stop_tap(self, net) -> None:
@@ -113,6 +111,78 @@ class CartPage:
 
     def _is_armed(self) -> bool:
         return bool(self._armed_at) and (time.monotonic() - self._armed_at) <= CONFIRM_S
+
+    def view(self, snap: dict) -> dict:
+        """The page as data: the modes, the stop, the telemetry and the reason
+        the cart is not moving.
+
+        Split out of draw() so the Qt panel reaches the same conclusions —
+        which of the three modes hands a moving machine to a hand controller,
+        and why a command would be refused — without a second copy of them.
+        """
+        cart = (snap.get("chest") or {}).get("cart") or {}
+        current = cart.get("controller_mode")
+        if current and current == self._pending:
+            self._pending = None            # the chest caught up
+        shown = self._pending or current
+        reachable = bool(cart)
+
+        self._latched = bool(cart.get("estop"))
+        if not self._latched:
+            self._armed_at = 0.0            # cleared, by us or by anyone else
+
+        modes = []
+        for mode, label, _hint in MODES:
+            on = (mode == shown)
+            ink = "ink" if reachable else "dim"
+            if on and mode != "off":
+                ink = "warn" if mode == "takeover" else "ok"
+            modes.append({"mode": mode, "label": label, "on": on, "ink": ink})
+
+        pad = cart.get("controller") or {}
+        if not pad.get("connected"):
+            pad_line, pad_ink = "CONTROLLER NOT CONNECTED", "dim"
+        elif pad.get("deadman"):
+            # Words, not signed numbers: a sign is something you decode, and
+            # this is read while a 350 lb base is moving.
+            speed, steer = pad.get("speed", 0.0), pad.get("steer", 0.0)
+            way = "FWD" if speed > 0 else ("REV" if speed < 0 else "IDLE")
+            turn = "RIGHT" if steer > 0 else ("LEFT" if steer < 0 else "STRAIGHT")
+            pad_line = f"DRIVING - {way} {abs(speed):.2f} {turn} {abs(steer):.2f}"
+            pad_ink = "ok"
+        else:
+            pad_line, pad_ink = "CONTROLLER CONNECTED - R1 NOT HELD", "ink"
+
+        if self._latched:
+            why, why_ink = "E-STOP LATCHED - NOTHING WILL MOVE", "bad"
+        elif cart.get("host_locked"):
+            why, why_ink = "DEADMAN RELEASED - HOST MUST COMMAND AGAIN", "warn"
+        elif not cart.get("connected"):
+            why, why_ink = "CART PICO NOT PLUGGED IN", "dim"
+        else:
+            why, why_ink = "", "dim"
+
+        return {
+            "modes": modes,
+            "hint": next((h for m, _l, h in MODES if m == shown), ""),
+            "reachable": reachable,
+            "saving": bool(self._pending),
+            "latched": self._latched,
+            "armed": self._is_armed(),
+            "stopLabel": ("TAP AGAIN" if self._is_armed()
+                          else ("CLEAR" if self._latched else "STOP")),
+            "padLine": pad_line, "padInk": pad_ink,
+            "why": why, "whyInk": why_ink,
+            "volts": cart.get("battery_v"), "tempC": cart.get("board_temp_c"),
+        }
+
+    def pick_mode(self, mode: str, net) -> None:
+        self._armed_at = 0.0        # a tap elsewhere is not a confirmation
+        self._pending = mode        # lit immediately; the poll confirms
+        net.post_cart_controller(mode)
+
+    def stop_tap(self, net) -> None:
+        self._on_stop_tap(net)
 
     # ---- drawing ----------------------------------------------------------
     def draw(self, frame, snap: dict) -> None:
