@@ -204,9 +204,9 @@ static int fb_open(fb_t *fb, const char *dev)
     if (sscanf(vs, "%d,%d", &fb->w, &fb->h) != 2) return -1;
     if (sysfs_int(base, "bits_per_pixel", &fb->bpp) < 0) return -1;
     if (sysfs_int(base, "stride", &fb->stride) < 0) return -1;
-    if (fb->bpp != 16) {
-        fprintf(stderr, "%s is %dbpp; this renderer only does RGB565 (16bpp)\n",
-                dev, fb->bpp);
+    if (fb->bpp != 16 && fb->bpp != 32) {
+        fprintf(stderr, "%s is %dbpp; this renderer does RGB565 (16bpp) and "
+                "XRGB8888 (32bpp)\n", dev, fb->bpp);
         return -1;
     }
     fb->size = (size_t)fb->stride * fb->h;
@@ -768,14 +768,24 @@ static void blit(canvas_t *c, fb_t *fb)
          * pixels on the panel; packing it again would be pure bandwidth. */
         if (!c->dirty[y] && !c->prev_dirty[y]) continue;
         const float *p = c->frame + (size_t)y * c->W * 3;
-        uint16_t *row = (uint16_t *)(fb->mm + (size_t)y * fb->stride);
+        uint8_t *rowb = fb->mm + (size_t)y * fb->stride;
+        uint16_t *row16 = (uint16_t *)rowb;
+        uint32_t *row32 = (uint32_t *)rowb;
+        const bool deep = fb->bpp == 32;
         for (int x = 0; x < c->W; x++, p += 3) {
             float fr = p[0], fg = p[1], fb_ = p[2];
             if (fr < 0.f) fr = 0.f; else if (fr > 255.f) fr = 255.f;
             if (fg < 0.f) fg = 0.f; else if (fg > 255.f) fg = 255.f;
             if (fb_ < 0.f) fb_ = 0.f; else if (fb_ > 255.f) fb_ = 255.f;
             unsigned r = (unsigned)fr, g = (unsigned)fg, b = (unsigned)fb_;
-            row[x] = (uint16_t)(((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3));
+            /* 16bpp is what the panel comes up in; 32bpp is what the fbdev
+             * emulation gives once vc4-kms-v3d is loaded. Same quantisation
+             * either way — only the store differs, so --dump and the
+             * equivalence harness are unaffected by which one is live. */
+            if (deep)
+                row32[x] = 0xFF000000u | (r << 16) | (g << 8) | b;
+            else
+                row16[x] = (uint16_t)(((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3));
         }
     }
 }
