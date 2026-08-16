@@ -39,6 +39,7 @@ from inmoov.wide_spotter import WideSpotter  # noqa: E402
 from inmoov.assistant import Assistant  # noqa: E402
 from inmoov.brain import BACKENDS  # noqa: E402
 from inmoov import hotspot as hotspot_mod  # noqa: E402
+from inmoov import uplink as uplink_mod    # noqa: E402
 from inmoov import sysinfo  # noqa: E402
 from inmoov.convlog import ConversationLog  # noqa: E402
 from inmoov.led import Led  # noqa: E402
@@ -1015,6 +1016,49 @@ def api_hotspot_config():
     out = hotspot_mod.configure(str(data.get("ssid", "")),
                                 str(data.get("passphrase", "")))
     return jsonify(out), (400 if out.get("error") else 200)
+
+
+@app.get("/api/uplink")
+def api_uplink_status():
+    """The WiFi FRED *joins* — the school's, the workshop's — not the one he
+    hosts. That is /api/hotspot, and the two are different radios."""
+    return jsonify(uplink_mod.state())
+
+
+@app.get("/api/uplink/scan")
+@protected
+def api_uplink_scan():
+    """Networks in range. Takes a couple of seconds: a radio has to sweep.
+
+    Gated, because a scan is a small physical action on a card that is also
+    carrying the robot's internet, and because the list of networks around a
+    school is not something to hand out to anyone who can reach the panel.
+    """
+    return jsonify({"networks": uplink_mod.scan()})
+
+
+@app.post("/api/uplink/join")
+@protected
+def api_uplink_join():
+    """Join a network. Body: {"ssid", "password"}.
+
+    Adds rather than replaces: the workshop's network stays saved, so the robot
+    finds his way home without anyone typing anything. The reply never contains
+    the password.
+    """
+    data = request.get_json(force=True) or {}
+    out = uplink_mod.join(str(data.get("ssid", "")), str(data.get("password", "")))
+    return jsonify(out), (200 if out.get("ok") else 400)
+
+
+@app.post("/api/uplink/forget")
+@protected
+def api_uplink_forget():
+    """Drop a saved network. Refuses the last one — a robot that has forgotten
+    every network needs a keyboard and a screen at the venue to get back."""
+    data = request.get_json(force=True) or {}
+    out = uplink_mod.forget(str(data.get("ssid", "")))
+    return jsonify(out), (200 if out.get("ok") else 400)
 
 
 @app.post("/api/cart/controller")

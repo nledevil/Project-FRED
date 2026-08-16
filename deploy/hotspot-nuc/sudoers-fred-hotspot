@@ -9,3 +9,9 @@ nledevil ALL=(root) NOPASSWD: /usr/bin/systemctl start fred-hotspot.service, /us
 # and edits exactly two keys, rather than a rule that can write anywhere. The
 # passphrase goes in on stdin, so it never appears in argv or in `ps`.
 nledevil ALL=(root) NOPASSWD: /usr/local/sbin/fred-ap-config
+
+# ...and to join a WiFi network from the panel or the web app. Same shape again:
+# one fixed helper, no paths in argv, and the passphrase arrives on stdin so it
+# never shows up in `ps`. It owns 60-fred-uplink.yaml and nothing else — the
+# hand-written netplan file with the bridge in it is never opened for writing.
+nledevil ALL=(root) NOPASSWD: /usr/local/sbin/fred-uplink
