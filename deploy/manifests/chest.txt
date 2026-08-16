@@ -75,6 +75,8 @@ deploy/display/ServosPage.qml
 deploy/display/CartPage.qml
 deploy/display/WifiPage.qml
 deploy/display/Keyboard.qml
+deploy/display/PinGate.qml
+deploy/display/PowerMenu.qml
 deploy/display/gpu_anim.py
 deploy/display/anim.qml
 deploy/display/fonts/ttf/Rajdhani-Medium.ttf

@@ -147,16 +147,42 @@ class PowerMenu:
         if self._doing:
             return True                       # nothing to press while it happens
         if self._cancel.hit(x, y):
-            self.hide()
+            self.tap("cancel", net)
             return True
         if self._all.hit(x, y):
-            self._fire("all", net) if self._is_armed("all") else self._arm("all")
+            self.tap("all", net)
             return True
         for key, button in self._rows:
             if button.hit(x, y):
-                self._fire(key, net) if self._is_armed(key) else self._arm(key)
+                self.tap(key, net)
                 return True
         return True
+
+    def view(self) -> dict:
+        """The overlay as data: what is armed, what is happening, what failed.
+
+        Split out of draw() so the Qt panel keeps the arm-then-confirm and the
+        order — head, then the brain, then this screen last, because the chest
+        taking itself down first would leave nothing able to ask the others.
+        """
+        return {
+            "open": self.open,
+            "doing": self._doing or "",
+            "failed": list(self._failed),
+            "allArmed": self._is_armed("all"),
+            "machines": [{"key": k, "label": label, "why": why,
+                          "armed": self._is_armed(k)}
+                         for k, label, why in MACHINES],
+        }
+
+    def tap(self, key: str, net) -> None:
+        """One tap on a control: arms it, or fires it if it was already armed."""
+        if self._doing:
+            return                            # nothing to press while it happens
+        if key == "cancel":
+            self.hide()
+            return
+        self._fire(key, net) if self._is_armed(key) else self._arm(key)
 
     # ---- drawing ---------------------------------------------------------
     def draw(self, frame, snap: dict) -> None:

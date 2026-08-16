@@ -51,6 +51,19 @@ Item {
         property real glow: P.glow
     }
 
+    // The cog is a control here, not just a picture: this app owns the screen
+    // and its input now, so the tap that opens the settings does not have to go
+    // out to the daemon and come back as a new process.
+    MouseArea {
+        visible: P.scene !== "menu"
+        enabled: visible
+        x: P.cogHotspot[0]; y: P.cogHotspot[1]
+        width: P.cogHotspot[2] - P.cogHotspot[0]
+        height: P.cogHotspot[3] - P.cogHotspot[1]
+        z: 5
+        onClicked: P.openMenu()
+    }
+
     // The cog and the sensor readings, drawn by the same numpy code the
     // framebuffer renderers use and handed over as a texture. Image caching is
     // by URL, so the URL has to change or Qt serves the first one forever.

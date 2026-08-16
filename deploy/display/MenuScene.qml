@@ -18,6 +18,10 @@ Item {
 
     Rectangle { anchors.fill: parent; color: Th.bg }
 
+    // Locked: the pad covers the menu. The X still works — being unable
+    // to leave a screen you cannot get past would be its own trap.
+    readonly property bool locked: !(P.gateView.unlocked)
+
     ColumnLayout {
         anchors.fill: parent
         spacing: 8
@@ -39,13 +43,21 @@ Item {
                     Layout.fillWidth: true
                     verticalAlignment: Text.AlignVCenter
                 }
-                Btn { label: "POWER"; implicitWidth: 96 }
-                Btn { label: "X"; implicitWidth: 92; big: true }
+                Btn {
+                    label: "POWER"; implicitWidth: 96
+                    visible: !root.locked
+                    onTapped: P.showPower()
+                }
+                Btn {
+                    label: "X"; implicitWidth: 92; big: true
+                    onTapped: P.closeMenu()
+                }
             }
         }
 
         // ---- tabs --------------------------------------------------------
         RowLayout {
+            visible: !root.locked
             Layout.fillWidth: true
             Layout.leftMargin: 24; Layout.rightMargin: 24
             spacing: 8
@@ -68,7 +80,8 @@ Item {
             Layout.fillWidth: true; Layout.fillHeight: true
             Layout.leftMargin: 24; Layout.rightMargin: 24
             Layout.bottomMargin: 12
-            sourceComponent: P.page === 0 ? statusPage
+            sourceComponent: root.locked ? pinGate
+                           : P.page === 0 ? statusPage
                            : P.page === 1 ? voicePage
                            : P.page === 2 ? servosPage
                            : P.page === 3 ? cartPage
@@ -85,5 +98,8 @@ Item {
     Component { id: servosPage; ServosPage {} }
     Component { id: cartPage;   CartPage {} }
     Component { id: wifiPage;   WifiPage {} }
+    Component { id: pinGate;    PinGate {} }
 
+
+    PowerMenu { anchors.fill: parent }
 }

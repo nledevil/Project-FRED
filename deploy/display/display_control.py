@@ -187,6 +187,11 @@ class Supervisor:
             proc.kill()                     # a wedged animation still frees the fb
             proc.wait(timeout=2)
 
+    def preset_id(self) -> str:
+        """Which preset is showing. Read by the cog watcher, which stands down
+        while the panel app is up because that app handles its own cog."""
+        return self._preset
+
     def _spawn(self, preset: dict) -> None:
         argv = list(preset["argv"])
         # A ".py" entry runs under this interpreter; anything else is a compiled
@@ -549,6 +554,12 @@ class CogWatcher:
         try:
             while not self._stop.is_set():
                 for kind, x, y in dev.poll(timeout=0.2):
+                    # The panel app draws the cog and handles its own taps —
+                    # it owns the screen and the touchscreen while it runs. This
+                    # watcher is for the animations that do not: the native
+                    # voice HUD, and the numpy menu.
+                    if PRESET_BY_ID.get(self._sup.preset_id(), {}).get("argv") == ["panel.py"]:
+                        continue
                     if kind != "down" or not cog_hud.hit(x, y):
                         continue
                     if PRESET_BY_ID[self._sup.state()["animation"]].get("hidden"):

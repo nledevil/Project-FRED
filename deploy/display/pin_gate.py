@@ -154,24 +154,12 @@ class PinPad:
         if kind != "down":
             return
         if self._stop.hit(x, y):
-            # No confirmation, and no PIN. See the module docstring.
-            net.post_cart_stop()
-            self._message = "CART STOPPED"
+            self.stop(net)
             return
-        if self._wait() > 0:
-            return                              # locked out; keys are dead
         for label, button in self._keys:
-            if not button.hit(x, y):
-                continue
-            if label == "CLEAR":
-                self._entry, self._message = "", ""
-            elif label == "DEL":
-                self._entry, self._message = self._entry[:-1], ""
-            elif len(self._entry) < PIN_LENGTH:
-                self._entry += label
-                if len(self._entry) == PIN_LENGTH:
-                    self._submit()
-            return
+            if button.hit(x, y):
+                self.key(label)
+                return
 
     def _submit(self) -> None:
         if check(self._entry, self._material):
@@ -189,6 +177,37 @@ class PinPad:
 
     def _wait(self) -> float:
         return max(0.0, self._locked_until - time.monotonic())
+
+    def view(self) -> dict:
+        """The gate as data: how many digits are in, and whether keys are dead.
+
+        Split out of draw() so the Qt panel enforces the same lockout — the
+        back-off after repeated wrong guesses is the only thing standing between
+        this panel and a four-digit brute force, and it must not exist twice.
+        """
+        wait = self._wait()
+        return {"filled": len(self._entry), "length": PIN_LENGTH,
+                "message": (f"LOCKED FOR {int(wait) + 1}S" if wait > 0
+                            else self._message),
+                "locked": wait > 0, "unlocked": self.unlocked}
+
+    def key(self, label: str) -> None:
+        """A tap on one key, wherever it came from."""
+        if self._wait() > 0:
+            return                              # locked out; keys are dead
+        if label == "CLEAR":
+            self._entry, self._message = "", ""
+        elif label == "DEL":
+            self._entry, self._message = self._entry[:-1], ""
+        elif len(self._entry) < PIN_LENGTH:
+            self._entry += label
+            if len(self._entry) == PIN_LENGTH:
+                self._submit()
+
+    def stop(self, net) -> None:
+        """The stop is reachable without the PIN. See the module docstring."""
+        net.post_cart_stop()
+        self._message = "CART STOPPED"
 
     # ---- drawing ---------------------------------------------------------
     def draw(self, frame, snap: dict) -> None:

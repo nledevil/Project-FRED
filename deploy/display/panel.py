@@ -51,6 +51,8 @@ from page_display import DisplayPage                     # noqa: E402
 from page_servos import ServosPage                       # noqa: E402
 from page_cart import CartPage                           # noqa: E402
 from page_wireless import WirelessPage                   # noqa: E402
+from power_menu import PowerMenu                         # noqa: E402
+import pin_gate                                          # noqa: E402
 from settings_menu import PAGES as _MENU_PAGES           # noqa: E402
 
 
@@ -191,6 +193,12 @@ class Panel(QObject):
         self._servos_page = ServosPage()
         self._cart_page = CartPage()
         self._wifi_page = WirelessPage()
+        self._power = PowerMenu()
+        # Asked once, here, rather than on every frame — and so a slow answer
+        # costs the menu's opening beat instead of its frame rate.
+        self._gate = pin_gate.PinPad(pin_gate.material(NUC))
+        if not self._gate.unlocked:
+            print("panel: locked - PIN required", flush=True)
         self._info_rows = []
         self._info_page = {"page": 0, "pages": 1}
         self._voice_view = {}
@@ -198,6 +206,8 @@ class Panel(QObject):
         self._servos_view = {}
         self._cart_view = {}
         self._wifi_view = {}
+        self._gate_view = {}
+        self._power_view = {}
         self._net = Net()
         self._net.start()
         self._anim = forced or "reactor"
@@ -268,6 +278,8 @@ class Panel(QObject):
         self._servos_view = self._servos_page.view(self._snap)
         self._cart_view = self._cart_page.view(self._snap)
         self._wifi_view = self._wifi_page.view(self._snap)
+        self._gate_view = self._gate.view()
+        self._power_view = self._power.view()
         self._rows = [{"name": n, "where": w, "state": st,
                        "ink": "#%02x%02x%02x" % tuple(int(c) for c in ink),
                        "detail": " ".join(d for d in det if d)}
@@ -352,6 +364,14 @@ class Panel(QObject):
     def wifiView(self):
         return self._wifi_view
 
+    @Property("QVariantMap", notify=changed)
+    def gateView(self):
+        return self._gate_view
+
+    @Property("QVariantMap", notify=changed)
+    def powerView(self):
+        return self._power_view
+
     @Property(bool, notify=changed)
     def brainReachable(self):
         return bool(self._snap.get("whoami"))
@@ -396,6 +416,43 @@ class Panel(QObject):
     @Slot()
     def cartStop(self):
         self._cart_page.stop_tap(self._net)
+
+    @Property("QVariantList", constant=True)
+    def cogHotspot(self):
+        """Where the cog's touch target is, from cog_hud — never a second copy.
+        The hit area is grown up and left of the drawn icon, because a fingertip
+        is wider than a 48px picture."""
+        return list(cog_hud.hotspot(W, H))
+
+    @Slot()
+    def openMenu(self):
+        self.scene = "menu"
+
+    @Slot()
+    def closeMenu(self):
+        """Leaving the menu is a scene change now.
+
+        The numpy menu had to ask its own daemon to switch away and then exit,
+        because it held the framebuffer exclusively and the animation could not
+        start until it let go. One app means the animation was never stopped.
+        """
+        self.scene = "anim"
+
+    @Slot(str)
+    def pinKey(self, label):
+        self._gate.key(label)
+
+    @Slot()
+    def pinStop(self):
+        self._gate.stop(self._net)
+
+    @Slot()
+    def showPower(self):
+        self._power.show()
+
+    @Slot(str)
+    def powerTap(self, key):
+        self._power.tap(key, self._net)
 
     @Slot()
     def toggleHotspot(self):
@@ -469,6 +526,8 @@ def main() -> int:
                     help="seconds to let the scene settle before grabbing")
     ap.add_argument("--page", type=int, default=0,
                     help="open the menu on this tab (0-6), for grabbing one page")
+    ap.add_argument("--power", action="store_true",
+                    help="open the power overlay, for grabbing it")
     ap.add_argument("--menu", action="store_true",
                     help="open on the menu scene (the port is not wired to the cog yet)")
     args = ap.parse_args()
@@ -486,6 +545,8 @@ def main() -> int:
     overlay = Overlay()
     panel = Panel(args.anim, "menu" if args.menu else "anim")
     panel.page = args.page
+    if args.power:
+        panel.showPower()
 
     view = QQuickView()
     view.engine().addImageProvider("overlay", overlay)
