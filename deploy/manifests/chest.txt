@@ -24,32 +24,18 @@ deploy/display/face.py
 deploy/display/voice_state.py
 deploy/display/metrics_hud.py
 
-# --- the settings menu, reached by tapping the cog --------------------------
+# --- the settings menu, a scene of the panel app ----------------------------
 # cog_hud is drawn by every animation (and by voice_hud.c, which is compiled);
-# touch is read by the daemon, to open the menu, and by the menu itself.
+# the panel handles its own cog, and the daemon's watcher covers the native
+# voice HUD, which cannot. The page_*.py files carry no drawing since the
+# numpy menu retired — they are the menu's judgements, served to the QML as
+# data, and net_snapshot is the poller those judgements read from.
 deploy/display/cog_hud.py
 deploy/display/touch.py
-# The look of the menu, and the anti-aliased type it is drawn with. The atlases
-# are baked on the NUC by tools/bake_font.py because this Pi has no Pillow and
-# no system fonts — rasterising is the only part that needs a font engine, and
-# it does not need to happen here. menu_ui falls back to the 5x7 bitmap font if
-# they are missing, so a half-finished deploy still boots.
 deploy/display/theme.py
-deploy/display/font_atlas.py
-deploy/display/fonts/rajdhani-20.npz
-deploy/display/fonts/rajdhani-30.npz
-deploy/display/fonts/rajdhani-40.npz
-deploy/display/fonts/orbitron-18.npz
-deploy/display/fonts/orbitron-26.npz
-deploy/display/fonts/orbitron-34.npz
-deploy/display/fonts/exo2-19.npz
-deploy/display/fonts/exo2-28.npz
-deploy/display/fonts/exo2-38.npz
-deploy/display/settings_menu.py
-deploy/display/menu_ui.py
+deploy/display/net_snapshot.py
 deploy/display/power_menu.py
 deploy/display/pin_gate.py
-deploy/display/keyboard.py
 deploy/display/page_status.py
 deploy/display/page_voice.py
 deploy/display/page_servos.py
@@ -95,8 +81,7 @@ deploy/display/voice_hud.py
 deploy/display/voice_hud.c
 deploy/display/Makefile
 deploy/display/tools/verify_voice_hud.py
-deploy/display/tools/test_power_menu.py
-deploy/display/tools/render_pages.py
+deploy/display/tools/test_menu_logic.py
 deploy/display/tools/render_anims.py
 deploy/display/tools/test_fb_pack.py
 deploy/display/tools/test_touch_map.py

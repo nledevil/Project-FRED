@@ -1,23 +1,16 @@
 """The chest panel's three looks, and the one place their differences live.
 
-Every page draws through ``menu_ui``, and every page reaches its colours as
-``ui.INK`` rather than importing the name — an attribute lookup per frame. That
-is what makes switching a theme cheap: rebinding the module's palette re-skins
-all eight pages on the next frame, with no page needing to know themes exist.
+A theme is a palette, a typeface with a type scale, a shape style, and one
+accent colour the animations are built from. Pure data on purpose: the Qt
+panel reads it at startup (and re-execs to change), the shaders get it through
+the Ramp below, and the C voice HUD gets it through the header that
+tools/gen_theme_colors.py generates — so every renderer answers to this file
+and none of them can drift on their own.
 
-A theme is a palette, a set of baked fonts, and a shape style. The shape style
-is a name rather than a function so this module stays pure data — ``menu_ui``
-owns the drawing, because that is where the frame is.
-
-Fonts are per-theme: the typeface is most of what distinguishes these, far more
-than the colours. Sizes are chosen to match the cap heights of the font5x7
-scales they replace, so a label occupies about the space it used to. Scale 1 is
-baked even though no page asks for it directly: pages pick the largest scale a
-label fits at by walking (3, 2, 1), and without a distinct 1 the last step
-shrinks nothing and long labels overflow their button. Scale 8 is the two
-e-stops, which are sized to be hit without looking at them — falling back to
-the scale-4 atlas made the most safety-critical text on the panel 20% smaller
-than it was written to be.
+The type scale (sizes) is indexed 1/2/3/4/8 for history: those were the bitmap
+font's integer scales, and every page still thinks in them. The pixel values
+were chosen to match the cap heights of the 5x7 grid they replaced, and scale
+8 is the e-stops, sized to be hit without being looked at.
 """
 from __future__ import annotations
 
@@ -30,11 +23,12 @@ DEFAULT = "soft"
 
 
 class Theme:
-    def __init__(self, name, label, blurb, style, fonts, palette, radius, tracking,
-                 accent):
+    def __init__(self, name, label, blurb, style, sizes, ttf, palette, radius,
+                 tracking, accent):
         self.name, self.label, self.blurb = name, label, blurb
-        self.style = style           # "soft" | "hud" | "neon" — see menu_ui._SHAPES
-        self.fonts = fonts           # {scale: atlas filename}
+        self.style = style           # "soft" | "hud" | "neon"
+        self.sizes = sizes           # {scale: pixel size} — the type scale
+        self.ttf = ttf               # the face, in fonts/ttf/
         self.palette = palette
         self.radius = radius
         self.tracking = tracking     # extra px between glyphs; caps need it, lowercase doesn't
@@ -96,9 +90,8 @@ THEMES = {
     "soft": Theme(
         "soft", "Soft", "Rounded cards, gentle gradient",
         style="soft",
-        fonts={1: "rajdhani-15.npz", 2: "rajdhani-20.npz",
-               3: "rajdhani-30.npz", 4: "rajdhani-40.npz",
-               8: "rajdhani-58.npz"},
+        sizes={1: 15, 2: 20, 3: 30, 4: 40, 8: 58},
+        ttf="Rajdhani-Medium.ttf",
         radius=14, tracking=0.0,
         # A cooler, softer blue than the HUD's cyan — the same family as
         # this theme's panels, so the reactor belongs to the screen it is on.
@@ -114,9 +107,8 @@ THEMES = {
     "hud": Theme(
         "hud", "HUD", "Glowing hairlines, letterspaced caps",
         style="hud",
-        fonts={1: "orbitron-13.npz", 2: "orbitron-18.npz",
-               3: "orbitron-26.npz", 4: "orbitron-34.npz",
-               8: "orbitron-50.npz"},
+        sizes={1: 13, 2: 18, 3: 26, 4: 34, 8: 50},
+        ttf="Orbitron[wght].ttf",
         radius=10, tracking=2.0,
         # The cyan the animations were written in. This theme is the one
         # they already matched, so it is the one that does not move.
@@ -132,9 +124,8 @@ THEMES = {
     "neon": Theme(
         "neon", "Neon", "Outlines on black, highest contrast",
         style="neon",
-        fonts={1: "exo2-14.npz", 2: "exo2-19.npz",
-               3: "exo2-28.npz", 4: "exo2-38.npz",
-               8: "exo2-52.npz"},
+        sizes={1: 14, 2: 19, 3: 28, 4: 38, 8: 52},
+        ttf="Exo2[wght].ttf",
         radius=4, tracking=1.0,
         # The green everything else in this theme is outlined in.
         accent=(0, 235, 170),
@@ -172,6 +163,17 @@ def hud_colours(name: str | None = None) -> dict:
     # decoration.
     out.update(green=r.ok, amber=r.warn, alert=r.bad)
     return out
+
+
+def palette(name: str | None = None) -> dict:
+    """The active theme's palette, for code that states facts in colour.
+
+    The page classes' rows()/view() methods label their answers with inks —
+    OK green, BAD red — and used to read them from menu_ui's rebindable
+    globals. The numpy renderer retired; the Qt panel re-execs on a theme
+    change, so a read at import time is always current.
+    """
+    return THEMES.get(name or load_name(), THEMES[DEFAULT]).palette
 
 
 def ramp(name: str | None = None) -> "Ramp":

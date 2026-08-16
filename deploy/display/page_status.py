@@ -24,16 +24,13 @@ is the one thing a status page must never do.
 """
 from __future__ import annotations
 
-import menu_ui as ui
+import theme
 
-ROW_Y = 110                     # first row's top edge; clears the tab
-                                # strip and the HUD glow above it
-ROW_H = 62
-ROW_X0, ROW_X1 = ui.X0, ui.X1
-LABEL_X = 40
-STATE_X = 200
-DETAIL_X = 400
-DETAIL_W = ROW_X1 - DETAIL_X - 16
+# The inks these rows label their answers with. Read at import: the panel
+# re-execs on a theme change, so import time is always current.
+_P = theme.palette()
+INK, DIM_INK = _P["INK"], _P["DIM_INK"]
+OK_INK, WARN_INK, BAD_INK = _P["OK_INK"], _P["WARN_INK"], _P["BAD_INK"]
 
 # How long a capturing mic may produce nothing but exact zeros before the row
 # stops calling it fine. Not a mute detector: the PowerConf gates a quiet room
@@ -76,7 +73,7 @@ class StatusPage:
     def _nuc_row(self, snap: dict) -> tuple[str, tuple, list[str]]:
         s, err = snap.get("nuc"), snap.get("nuc_error")
         if not s:
-            return "NO LINK", ui.BAD_INK, [err or "UNREACHABLE"]
+            return "NO LINK", BAD_INK, [err or "UNREACHABLE"]
         detail = []
         brain = (s.get("brain") or {}).get("active")
         if brain:
@@ -85,7 +82,7 @@ class StatusPage:
         if temp is not None:
             detail.append(f"{round(float(temp))}C")
         detail.append("MOCK" if s.get("mock") else "LIVE")
-        return "OK", ui.OK_INK, detail
+        return "OK", OK_INK, detail
 
     def _head_row(self, snap: dict) -> tuple[str, tuple, list[str]]:
         direct, err = snap.get("head"), snap.get("head_error")
@@ -95,12 +92,12 @@ class StatusPage:
         brain_sees = link.get("online")
 
         if not direct:
-            return "DOWN", ui.BAD_INK, [err or "UNREACHABLE"]
+            return "DOWN", BAD_INK, [err or "UNREACHABLE"]
         if brain_sees is False:
             # We can reach the head and the brain cannot. This is the failure
             # worth shouting about: everything looks alive and FRED still won't
             # move, because the link that matters is the brain's, not ours.
-            return "NO BRAIN LINK", ui.BAD_INK, [
+            return "NO BRAIN LINK", BAD_INK, [
                 "HEAD UP - BRAIN CANT REACH IT",
                 str(link.get("error") or "").upper()]
         detail = ["SERVOS MOCK" if direct.get("mock") else "SERVOS LIVE"]
@@ -108,7 +105,7 @@ class StatusPage:
             detail.append("SUSPENDED - HANDED OFF")
         elif brain_sees is None and snap.get("nuc"):
             detail.append("BRAIN LINK UNKNOWN")
-        return "OK", ui.OK_INK, detail
+        return "OK", OK_INK, detail
 
     def _cart_row(self, snap: dict) -> tuple[str, tuple, list[str]]:
         """The drive base: its Pico, the hoverboard mainboard behind it, and the
@@ -133,23 +130,23 @@ class StatusPage:
         brain_off = bool(snap.get("nuc")) and not brain.get("enabled", True)
 
         if cart is None:
-            return "UNKNOWN", ui.DIM_INK, ["NO ANSWER FROM CHEST"]
+            return "UNKNOWN", DIM_INK, ["NO ANSWER FROM CHEST"]
         if cart.get("enabled") is False:
-            return "OFF", ui.DIM_INK, ["DRIVER DISABLED ON CHEST"]
+            return "OFF", DIM_INK, ["DRIVER DISABLED ON CHEST"]
         if not cart.get("connected"):
             detail = [str(cart.get("last_error") or "NO PICO").upper()]
             if brain_off:
                 detail.append("AND DISABLED IN BRAIN SETTINGS")
-            return "NOT ATTACHED", ui.DIM_INK, detail
+            return "NOT ATTACHED", DIM_INK, detail
         if brain_off:
             # Plugged in and healthy, but the brain will refuse to drive it.
-            return "BRAIN OFF", ui.WARN_INK, ["CART DISABLED IN SETTINGS"]
+            return "BRAIN OFF", WARN_INK, ["CART DISABLED IN SETTINGS"]
         if cart.get("estop"):
-            return "ESTOP", ui.BAD_INK, ["LATCHED - CLEAR IT TO DRIVE"]
+            return "ESTOP", BAD_INK, ["LATCHED - CLEAR IT TO DRIVE"]
         if cart.get("ps2_active"):
-            return "PS2 REMOTE", ui.WARN_INK, ["REMOTE HAS PRIORITY OVER BRAIN"]
+            return "PS2 REMOTE", WARN_INK, ["REMOTE HAS PRIORITY OVER BRAIN"]
         if not cart.get("mainboard_seen"):
-            return "NO MAINBOARD", ui.BAD_INK, ["PICO OK - HOVERBOARD SILENT"]
+            return "NO MAINBOARD", BAD_INK, ["PICO OK - HOVERBOARD SILENT"]
 
         age = cart.get("telemetry_age")
         detail = []
@@ -162,8 +159,8 @@ class StatusPage:
         if cart.get("moving"):
             line += " MOVING"
         if age is not None and age > 5:
-            return "STALE", ui.BAD_INK, [f"NO TELEMETRY {_age(age)}"]
-        return "OK", ui.OK_INK, [line]
+            return "STALE", BAD_INK, [f"NO TELEMETRY {_age(age)}"]
+        return "OK", OK_INK, [line]
 
     def _audio_row(self, snap: dict) -> tuple[str, tuple, list[str]]:
         """Both directions, because "audio is broken" is two different faults.
@@ -184,49 +181,49 @@ class StatusPage:
         """
         nuc = snap.get("nuc") or {}
         if not nuc:
-            return "UNKNOWN", ui.DIM_INK, ["NO LINK TO BRAIN"]
+            return "UNKNOWN", DIM_INK, ["NO LINK TO BRAIN"]
         sound = nuc.get("sound") or {}
         voice = nuc.get("voice") or {}
         mic = voice.get("mic") or {}
 
         if not sound:
-            return "NO OUTPUT", ui.BAD_INK, ["BRAIN HAS NO SOUND DEVICE"]
+            return "NO OUTPUT", BAD_INK, ["BRAIN HAS NO SOUND DEVICE"]
         if sound.get("suspended"):
-            return "HANDED OFF", ui.DIM_INK, ["AUDIO RELEASED TO MYROBOTLAB"]
+            return "HANDED OFF", DIM_INK, ["AUDIO RELEASED TO MYROBOTLAB"]
         if sound.get("audit"):
-            return "AUDIT", ui.WARN_INK, ["SPEECH RENDERED - NOT PLAYED"]
+            return "AUDIT", WARN_INK, ["SPEECH RENDERED - NOT PLAYED"]
         if not sound.get("can_speak"):
-            return "MUTE OUT", ui.BAD_INK, ["CANNOT SPEAK - NO TTS OR DEVICE"]
+            return "MUTE OUT", BAD_INK, ["CANNOT SPEAK - NO TTS OR DEVICE"]
 
         tts = str(sound.get("tts") or "?").upper()
         if not voice.get("available"):
             # Output is fine; there is simply no ear fitted (no mic, no model).
-            return "OUT ONLY", ui.DIM_INK, [f"TTS {tts} - NO VOICE INPUT"]
+            return "OUT ONLY", DIM_INK, [f"TTS {tts} - NO VOICE INPUT"]
         if not mic.get("capturing"):
             state = "SPEAKING" if voice.get("speaking") else "NOT LISTENING"
-            return "IDLE", ui.DIM_INK, [f"TTS {tts} - MIC {state}"]
+            return "IDLE", DIM_INK, [f"TTS {tts} - MIC {state}"]
 
         silent = mic.get("silent_for")
         if silent is not None and silent >= MIC_SILENCE_WARN:
-            return "NO MIC SIGNAL", ui.WARN_INK, [
+            return "NO MIC SIGNAL", WARN_INK, [
                 f"NOTHING HEARD FOR {_duration(silent)}",
                 "CHECK THE MUTE BUTTON ON THE MIC"]
-        return "OK", ui.OK_INK, [f"TTS {tts} - MIC LIVE"]
+        return "OK", OK_INK, [f"TTS {tts} - MIC LIVE"]
 
     def _chest_row(self, snap: dict) -> tuple[str, tuple, list[str]]:
         # We are running on the chest, so there is no link to test — the useful
         # question is whether the stomach node is still feeding the relay.
         sensors = (snap.get("chest") or {}).get("sensors") or {}
         if not sensors:
-            return "OK", ui.DIM_INK, ["RELAY OFF"]
+            return "OK", DIM_INK, ["RELAY OFF"]
         if not sensors.get("connected"):
-            return "NO NODE", ui.BAD_INK, ["PICO UNPLUGGED"]
+            return "NO NODE", BAD_INK, ["PICO UNPLUGGED"]
         age = sensors.get("age")
         node = (sensors.get("node") or "").upper()[:10]
         if age is None:
-            return "NO DATA", ui.BAD_INK, ["NOTHING FROM PICO"]
+            return "NO DATA", BAD_INK, ["NOTHING FROM PICO"]
         fresh = age < 15
-        return ("OK" if fresh else "STALE"), (ui.OK_INK if fresh else ui.BAD_INK), \
+        return ("OK" if fresh else "STALE"), (OK_INK if fresh else BAD_INK), \
                [f"{node} {_age(age)}".strip()]
 
     # ---- drawing ----------------------------------------------------------
@@ -244,30 +241,3 @@ class StatusPage:
                 ("CART", "DRIVE BASE", *self._cart_row(snap)),
                 ("AUDIO", "MIC / SPEAKER", *self._audio_row(snap))]
 
-    def draw(self, frame, snap: dict) -> None:
-        rows = [(name, where, (state, ink, detail))
-                for name, where, state, ink, detail in self.rows(snap)]
-
-        for i, (name, where, (state, ink, detail)) in enumerate(rows):
-            y = ROW_Y + i * ROW_H
-            # A readout, not a button: this page is entirely read-only, and
-            # five accent-bordered rows were five things that looked tappable.
-            ui.readout(frame, ROW_X0, y, ROW_X1, y + ROW_H - 10)
-            # Stacked from the row's own line heights rather than from fixed
-            # offsets. The offsets used to be safe because every scale was the
-            # same 7px grid; a real typeface is taller and differs per theme, so
-            # a hardcoded y+34 put the sub-label through the bottom of the panel.
-            name_h = ui.line_height(2)
-            top = y + max(2, (ROW_H - 10 - name_h - ui.line_height(1)) // 2)
-            ui.text(frame, name, LABEL_X, top, ui.INK, 2)
-            ui.text(frame, where, LABEL_X, top + name_h, ui.DIM_INK, 1)
-            ui.text(frame, state, STATE_X, top + (name_h - ui.line_height(2)) // 2,
-                    ink, 2)
-            details = [d for d in detail if d][:2]
-            det_h = ui.line_height(2)
-            det_top = y + max(2, (ROW_H - 10 - det_h * len(details)) // 2)
-            for k, d in enumerate(details):
-                ui.text(frame, ui.fit(d, DETAIL_W), DETAIL_X, det_top + k * det_h,
-                        ui.DIM_INK, 2)
-
-        ui.text(frame, f"UPDATED {_age(snap.get('age'))}", ROW_X0, 440, ui.DIM_INK, 1)

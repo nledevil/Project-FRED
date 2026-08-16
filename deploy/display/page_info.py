@@ -18,13 +18,12 @@ a filled box with a border means tappable; a readout has to go without one.
 """
 from __future__ import annotations
 
-import menu_ui as ui
+import theme
 
-X0, X1 = ui.X0, ui.X1
-COL2 = 300
-HEAD_Y = 104
-ROW_Y = 136
-LINE_H = 26
+_P = theme.palette()
+INK, DIM_INK = _P["INK"], _P["DIM_INK"]
+OK_INK, WARN_INK, BAD_INK = _P["OK_INK"], _P["WARN_INK"], _P["BAD_INK"]
+
 
 
 
@@ -92,21 +91,21 @@ class InfoPage:
         inference = who.get("inference") or {}
         library = str(inference.get("library") or "")
         if not library:
-            rows.append(("INFERENCE", "UNKNOWN", ui.DIM_INK))
+            rows.append(("INFERENCE", "UNKNOWN", DIM_INK))
         elif library.lower() == "cpu":
             # Not a cosmetic detail: this is the 25x slowdown, and it is silent.
-            rows.append(("INFERENCE", "CPU - GPU WAS MISSED AT BOOT", ui.BAD_INK))
+            rows.append(("INFERENCE", "CPU - GPU WAS MISSED AT BOOT", BAD_INK))
         else:
             gpu = str(inference.get("name") or library).upper()
             total = str(inference.get("total") or "")
             rows.append(("INFERENCE", f"{library.upper()} {gpu} {total}".strip(),
-                         ui.OK_INK))
+                         OK_INK))
 
         brain = who.get("brain") or {}
         if brain:
             active = str(brain.get("active") or "?").upper()
             model = str(brain.get("model") or "")
-            rows.append(("BRAIN", f"{active} - LOCAL {model}".strip(" -"), ui.INK))
+            rows.append(("BRAIN", f"{active} - LOCAL {model}".strip(" -"), INK))
 
         rev = who.get("revision") or {}
         if rev.get("commit"):
@@ -114,16 +113,16 @@ class InfoPage:
             if rev.get("dirty"):
                 line += " - UNCOMMITTED"
             rows.append(("VERSION", line,
-                         ui.WARN_INK if rev.get("dirty") else ui.INK))
+                         WARN_INK if rev.get("dirty") else INK))
 
-        rows.append(("", "", ui.INK))            # a blank line, not a rule
+        rows.append(("", "", INK))            # a blank line, not a rule
 
         # --- the three machines ---------------------------------------------
         rows.append((str(who.get("hostname") or "BRAIN").upper(),
-                     f"UP {_uptime(who.get('uptime_s'))}", ui.INK))
+                     f"UP {_uptime(who.get('uptime_s'))}", INK))
         for addr in (who.get("addresses") or []):
             rows.append(("", f"{addr.get('interface', '?')} {addr.get('address', '?')}",
-                         ui.DIM_INK))
+                         DIM_INK))
 
         # Labelled by role, not by hostname. Both Pis answer to "DietPi", so the
         # hostname put the same word on two rows and identified neither — and
@@ -134,13 +133,13 @@ class InfoPage:
         rows.append(("HEAD PI",
                      f"10.0.0.10 - UP {_uptime(head.get('uptime_s'))}"
                      f"{_named(head)}" if head else "10.0.0.10 - NO LINK",
-                     ui.INK if head else ui.BAD_INK))
+                     INK if head else BAD_INK))
 
         display = (snap.get("chest") or {}).get("display") or {}
         rows.append(("CHEST PI",
                      f"10.0.0.11 - UP {_uptime(display.get('uptime_s'))}"
                      f"{_named(display)}" if display else "10.0.0.11 - THIS PI",
-                     ui.INK))
+                     INK))
 
         ap = snap.get("hotspot") or {}
         if ap.get("configured"):
@@ -151,27 +150,7 @@ class InfoPage:
                 detail += f" - {clients} JOINED"
             elif not on:
                 detail += " - OFF"
-            rows.append(("ACCESS POINT", detail, ui.OK_INK if on else ui.DIM_INK))
+            rows.append(("ACCESS POINT", detail, OK_INK if on else DIM_INK))
 
         return rows
 
-    def draw(self, frame, snap: dict) -> None:
-        who = snap.get("whoami") or {}
-        rows = self.rows(snap)
-
-        ui.text(frame, "WHAT THIS ROBOT IS", X0, HEAD_Y, ui.INK, 3)
-        if not who:
-            ui.empty(frame, "NO LINK TO THE BRAIN", ROW_Y + 10)
-            ui.text(frame, "NAMES AND VERSIONS COME FROM THE NUC", X0,
-                    ROW_Y + 10 + LINE_H, ui.DIM_INK, 1)
-            return
-
-        y = ROW_Y
-        for label, value, ink in rows:
-            if label:
-                ui.text(frame, ui.fit(label, COL2 - X0 - 8), X0, y, ui.DIM_INK, 2)
-            if value:
-                ui.text(frame, ui.fit(value, X1 - COL2), COL2, y, ink, 2)
-            y += LINE_H
-            if y > 470:
-                break

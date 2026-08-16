@@ -28,7 +28,6 @@ import time
 import urllib.request
 from pathlib import Path
 
-import menu_ui as ui
 
 PIN_PATH = Path(__file__).resolve().parent / "pin.json"
 PIN_LENGTH = 4
@@ -107,13 +106,6 @@ def check(pin: str, material: dict) -> bool:
 
 
 # ---- the keypad ----------------------------------------------------------
-KEY_X0, KEY_X1 = 24, 470
-KEY_Y0, KEY_Y1 = 168, 462
-KEY_GAP = 10
-STOP_X0, STOP_X1 = 490, 776
-STOP_Y0, STOP_Y1 = 168, 462
-DOT_Y = 104
-DOT_W, DOT_H, DOT_GAP = 46, 52, 14
 
 KEYS = (("1", "2", "3"),
         ("4", "5", "6"),
@@ -137,29 +129,7 @@ class PinPad:
         self._locked_until = 0.0
         self.unlocked = not is_set(self._material)
 
-        self._keys = []
-        cols, rows = len(KEYS[0]), len(KEYS)
-        kw = (KEY_X1 - KEY_X0 - KEY_GAP * (cols - 1)) // cols
-        kh = (KEY_Y1 - KEY_Y0 - KEY_GAP * (rows - 1)) // rows
-        for r, row in enumerate(KEYS):
-            for c, label in enumerate(row):
-                x0 = KEY_X0 + c * (kw + KEY_GAP)
-                y0 = KEY_Y0 + r * (kh + KEY_GAP)
-                self._keys.append((label, ui.Button(x0, y0, x0 + kw, y0 + kh,
-                                                    label, scale=3 if len(label) > 1 else 5)))
-        self._stop = ui.Button(STOP_X0, STOP_Y0, STOP_X1, STOP_Y1)
-
     # ---- input -----------------------------------------------------------
-    def on_touch(self, kind: str, x: int, y: int, net) -> None:
-        if kind != "down":
-            return
-        if self._stop.hit(x, y):
-            self.stop(net)
-            return
-        for label, button in self._keys:
-            if button.hit(x, y):
-                self.key(label)
-                return
 
     def _submit(self) -> None:
         if check(self._entry, self._material):
@@ -210,44 +180,4 @@ class PinPad:
         self._message = "CART STOPPED"
 
     # ---- drawing ---------------------------------------------------------
-    def draw(self, frame, snap: dict) -> None:
-        wait = self._wait()
-        ui.text(frame, "ENTER PIN TO OPEN SETTINGS", KEY_X0, 68, ui.DIM_INK, 2)
 
-        # Filled boxes rather than asterisks: the font has no "*" and an unknown
-        # character renders as a blank, which would read as a lost keypress.
-        for i in range(PIN_LENGTH):
-            x0 = KEY_X0 + i * (DOT_W + DOT_GAP)
-            filled = i < len(self._entry)
-            # The dots show how many digits are in; they are not keys. Filled
-            # ones take the ink colour, because the whole job of this row is to
-            # tell you a keypress landed — without it you cannot see whether the
-            # screen heard you.
-            ui.readout(frame, x0, DOT_Y, x0 + DOT_W, DOT_Y + DOT_H,
-                       face=ui.INK if filled else None)
-
-        for label, button in self._keys:
-            button.draw(frame, ink=ui.DIM_INK if wait > 0 else ui.INK)
-
-        if wait > 0:
-            ui.text(frame, f"TOO MANY TRIES - WAIT {wait:.0f}S", KEY_X0 + 300,
-                    DOT_Y + 18, ui.BAD_INK, 2)
-        elif self._message:
-            ink = ui.OK_INK if self._message == "CART STOPPED" else ui.BAD_INK
-            ui.text(frame, self._message, KEY_X0 + 300, DOT_Y + 18, ink, 2)
-
-        self._draw_stop(frame, snap)
-
-    def _draw_stop(self, frame, snap: dict) -> None:
-        """Same face and the same meaning as the cart page's, so it reads as one
-        control that happens to be reachable from two screens."""
-        cart = (snap.get("chest") or {}).get("cart") or {}
-        latched = bool(cart.get("estop"))
-        ink = ui.WARN_INK if latched else ui.BAD_INK
-        # See page_cart._draw_stop: own colours, theme's shape, and it
-        # acknowledges the tap like every other control.
-        ui.draw_face(frame, STOP_X0, STOP_Y0, STOP_X1, STOP_Y1, ui.STOP_PANEL,
-                     ink, self._stop.phase(), weight=3.0)
-        ui.text_centred(frame, "STOP", STOP_X0, STOP_X1, STOP_Y0 + 92, ink, 8)
-        ui.text_centred(frame, "E-STOP LATCHED" if latched else "NO PIN NEEDED",
-                        STOP_X0, STOP_X1, STOP_Y0 + 172, ink, 2)

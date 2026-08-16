@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import time
 
-import menu_ui as ui
 
 ROW_Y0 = 100                    # first slider row
 ROW_H = 52
@@ -72,17 +71,13 @@ class ServosPage:
     title = "SERVOS"
 
     def __init__(self):
-        self._drag: str | None = None       # servo captured by the current touch
-        self._local: dict[str, float] = {}  # what the finger says, per servo
+        self._page = 0
+        self._total = 0                          # servos the brain reported
+        self._local: dict[str, float] = {}       # what the finger says, per servo
         self._touched_at: dict[str, float] = {}
         self._sent_at: dict[str, float] = {}
         self._pending: dict[str, float] = {}
-        self._rest = ui.Button(*REST_BTN, "REST", scale=2)
-        self._rows: list[tuple[str, int]] = []   # (name, row y) from the last draw
-        self._pager = ui.Pager(PER_PAGE, PAGER_Y, x_right=PAGER_X_RIGHT)
-        self._total = 0                          # servos the brain reported
 
-    # ---- helpers ----------------------------------------------------------
     @staticmethod
     def _servos(snap: dict) -> dict:
         return ((snap.get("nuc") or {}).get("servos")) or {}
@@ -114,66 +109,6 @@ class ServosPage:
             current = s.get("rest_angle", 0.0)
         return float(current)
 
-    @staticmethod
-    def _to_angle(s: dict, x: int) -> float:
-        lo, hi = float(s["min_angle"]), float(s["max_angle"])
-        frac = (x - TRACK_X0) / float(TRACK_X1 - TRACK_X0)
-        return lo + max(0.0, min(1.0, frac)) * (hi - lo)
-
-    @staticmethod
-    def _to_x(s: dict, angle: float) -> int:
-        lo, hi = float(s["min_angle"]), float(s["max_angle"])
-        frac = 0.0 if hi <= lo else (float(angle) - lo) / (hi - lo)
-        return int(TRACK_X0 + max(0.0, min(1.0, frac)) * (TRACK_X1 - TRACK_X0))
-
-    # ---- input ------------------------------------------------------------
-    def on_touch(self, kind: str, x: int, y: int, net) -> None:
-        if kind == "down":
-            if self._rest.hit(x, y):
-                net.post_rest()
-                self._local.clear()          # the robot is about to disagree
-                return
-            if self._paged(kind, x, y):
-                return                       # paging is not the start of a drag
-            self._drag = self._row_at(y)
-        if self._drag is None:
-            return                           # a move/up that never started on a row
-
-        name = self._drag
-        snap = net.snapshot()
-        s = self._servos(snap).get(name)
-        if s and not self._blocked(snap):
-            # 'up' carries a position too, and it can be newer than the last
-            # 'move' — the driver may update the coordinate in the same report
-            # that lifts the pen. Applying it is what makes the servo end where
-            # the finger left rather than a few degrees behind it.
-            angle = round(self._to_angle(s, x))
-            self._local[name] = angle
-            self._touched_at[name] = time.monotonic()
-            if kind == "up":
-                self._pending[name] = angle
-            else:
-                self._throttled(name, angle, net)
-
-        if kind == "up":
-            # Always flush: the throttle may have been holding the last value,
-            # and a slider that stops short of where the finger left is the bug
-            # everyone notices.
-            if name in self._pending:
-                self._send(name, self._pending.pop(name), net)
-            self._drag = None
-
-    def _paged(self, kind: str, x: int, y: int) -> bool:
-        """True if the pager took the tap. Checked before the sliders, because a
-        press that starts on the pager must not also capture a slider."""
-        return self._pager.on_touch(kind, x, y, self._total)
-
-    def _row_at(self, y: int) -> str | None:
-        for name, row_y in self._rows:
-            if row_y <= y < row_y + ROW_H:
-                return name
-        return None
-
     def _throttled(self, name: str, angle: float, net) -> None:
         now = time.monotonic()
         if now - self._sent_at.get(name, 0.0) >= POST_EVERY:
@@ -200,13 +135,14 @@ class ServosPage:
         blocked = self._blocked(snap)
         if not servos:
             return {"rows": [], "blocked": blocked or "BRAIN SENT AN EMPTY LIST",
-                    "empty": True, "page": self._pager.page, "pages": 1}
+                    "empty": True, "page": self._page, "pages": 1}
 
         order = [n for n in LABELS if n in servos] + \
                 [n for n in sorted(servos) if n not in LABELS]
         self._total = len(order)
         rows = []
-        for name in self._pager.slice(order):
+        start = self._page * PER_PAGE
+        for name in order[start:start + PER_PAGE]:
             sv = servos[name]
             rows.append({
                 "name": name,
@@ -216,9 +152,9 @@ class ServosPage:
                 "hi": float(sv.get("max_angle", 180)),
                 "rest": float(sv.get("rest_angle", self._angle(name, sv))),
             })
-        pages = max(1, -(-self._total // self._pager.per_page))
+        pages = max(1, -(-self._total // PER_PAGE))
         return {"rows": rows, "blocked": blocked, "empty": False,
-                "page": min(self._pager.page, pages - 1), "pages": pages}
+                "page": min(self._page, pages - 1), "pages": pages}
 
     def set_angle(self, name: str, angle: float, net, final: bool = False) -> None:
         """Move one servo, wherever the drag came from."""
@@ -239,60 +175,6 @@ class ServosPage:
             self._throttled(name, angle, net)
 
     def turn_page(self, delta: int) -> None:
-        pages = max(1, -(-self._total // self._pager.per_page))
-        self._pager.page = max(0, min(pages - 1, self._pager.page + delta))
+        pages = max(1, -(-self._total // PER_PAGE))
+        self._page = max(0, min(pages - 1, self._page + delta))
 
-    def draw(self, frame, snap: dict) -> None:
-        servos = self._servos(snap)
-        blocked = self._blocked(snap)
-
-        if not servos:
-            ui.text(frame, "NO SERVOS REPORTED", LABEL_X, ROW_Y0, ui.BAD_INK, 2)
-            ui.text(frame, blocked or "BRAIN SENT AN EMPTY LIST",
-                    LABEL_X, ROW_Y0 + 28, ui.DIM_INK, 2)
-            self._rows = []
-            return
-
-        # Known servos first, in a sensible physical order, then anything the
-        # brain reports that this page has never heard of — a new servo should
-        # appear by itself rather than be invisible until someone edits a list.
-        order = [n for n in LABELS if n in servos] + \
-                [n for n in sorted(servos) if n not in LABELS]
-
-        self._total = len(order)
-        self._rows = []
-        for i, name in enumerate(self._pager.slice(order)):
-            s = servos[name]
-            y = ROW_Y0 + i * ROW_H
-            self._rows.append((name, y))
-            angle = self._angle(name, s)
-
-            ui.text(frame, LABELS.get(name, name.replace("_", "-")),
-                    LABEL_X, y + 12, ui.INK, 2)
-
-            mid = y + ROW_H // 2
-            ui.fill(frame, TRACK_X0, mid - TRACK_H // 2, TRACK_X1, mid + TRACK_H // 2,
-                    ui.PANEL)
-            ui.border(frame, TRACK_X0, mid - TRACK_H // 2, TRACK_X1,
-                      mid + TRACK_H // 2, ui.EDGE)
-            # A tick at rest, so "where should this be" is answerable at a glance.
-            rest_x = self._to_x(s, s.get("rest_angle", angle))
-            ui.fill(frame, rest_x - 1, mid - 14, rest_x + 1, mid + 14, ui.EDGE)
-
-            kx = self._to_x(s, angle)
-            ink = ui.DIM_INK if blocked else ui.INK
-            ui.fill(frame, TRACK_X0, mid - TRACK_H // 2, kx, mid + TRACK_H // 2,
-                    ui.PANEL_ON)
-            ui.fill(frame, kx - KNOB_W // 2, mid - 16, kx + KNOB_W // 2, mid + 16, ink)
-
-            label = f"{round(angle)}"
-            ui.text(frame, label, VALUE_X - ui.text_width(label, 2), y + 12,
-                    ui.DIM_INK if blocked else ui.INK, 2)
-
-        self._rest.draw(frame, ink=ui.DIM_INK if blocked else ui.INK)
-        self._pager.draw(frame, self._total)
-        if blocked:
-            ui.text(frame, blocked, LABEL_X, 424, ui.BAD_INK, 2)
-        else:
-            ui.text(frame, "DRAG TO MOVE - LIMITS ARE THE CALIBRATED ONES",
-                    LABEL_X, 456, ui.DIM_INK, 1)

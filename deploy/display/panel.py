@@ -6,11 +6,12 @@ spawned the next on every change, which under Qt means paying ~1.2s of start-up
 to swap a shader. This starts once and switches scenes on a property, so a
 change is a frame.
 
-It is also the shell the menu is moving into. Today it hosts the animations and
-the cog still opens the numpy settings menu — the daemon kills this app, runs
-settings_menu.py against the framebuffer, and starts it again. That handoff is
-what this eventually removes: one app, one rendering stack, no DRM-to-fbdev
-transition, and no start-up cost to open the settings.
+It is also the menu: the cog switches to the menu scene in place, with the
+animation still running underneath. The numpy menu this replaced had to take
+the whole framebuffer to draw, so opening settings meant killing the animation
+and closing meant a daemon round-trip to restart it; that machinery retired on
+2026-08-16 and the page classes it left behind now serve their view() data to
+the QML here.
 
 What to show is read from state.json, the same file the daemon already writes
 when the panel's animation is changed through its API. Polling a file the daemon
@@ -24,7 +25,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import math
 import os
 import subprocess
@@ -44,7 +44,7 @@ from voice_state import VoiceFeed                       # noqa: E402
 # The menu's facts come from the poller the numpy menu already uses. Imported
 # rather than copied; it moves into its own module when that menu is retired at
 # the end of the port, which is the moment it stops having two callers.
-from settings_menu import Net, NUC                       # noqa: E402
+from net_snapshot import Net, NUC                        # noqa: E402
 from page_status import StatusPage                       # noqa: E402
 from page_info import InfoPage                           # noqa: E402
 from page_voice import VoicePage                         # noqa: E402
@@ -54,12 +54,15 @@ from page_cart import CartPage                           # noqa: E402
 from page_wireless import WirelessPage                   # noqa: E402
 from power_menu import PowerMenu                         # noqa: E402
 import pin_gate                                          # noqa: E402
-from settings_menu import PAGES as _MENU_PAGES           # noqa: E402
+
+# The tabs, left to right. This is the one copy: it moved here from
+# settings_menu.py when the numpy menu retired.
+MENU_PAGES = (StatusPage, VoicePage, ServosPage, CartPage,
+              DisplayPage, WirelessPage, InfoPage)
 
 
 def _pages():
-    """The tab classes, from the menu itself — never a second list."""
-    return _MENU_PAGES
+    return MENU_PAGES
 
 from PySide6.QtCore import (QObject, QTimer, QUrl, Signal, Slot,  # noqa: E501
                             Property, Qt)   # noqa: E402
@@ -113,9 +116,8 @@ def load_fonts() -> dict:
     falls back to DejaVu and the panel stops looking like itself.
     """
     families = {}
-    for name, filename in (("soft", "Rajdhani-Medium.ttf"),
-                           ("hud", "Orbitron[wght].ttf"),
-                           ("neon", "Exo2[wght].ttf")):
+    for name, th in theme.THEMES.items():
+        filename = th.ttf
         path = _find(f"fonts/ttf/{filename}")
         if not path:
             print(f"[fonts] missing {filename}; Qt will substitute", flush=True)
@@ -182,6 +184,7 @@ class Panel(QObject):
         super().__init__()
         self._forced = forced
         self._scene = scene                # "anim" | "menu"
+        self._opened_as_menu = False       # --menu: the daemon put us here
         self._page = 0
         self._snap = {}
         self._rows = []
@@ -427,10 +430,11 @@ class Panel(QObject):
 
     @Slot(str)
     def pickTheme(self, name):
-        self._display_page.pick_theme(name)
-        # The palette is a context property, so a live theme change means
-        # rebuilding it — the pages bind to Th and will re-read on the change.
-        self.themeChanged.emit()
+        theme.save_name(name)
+        print(f"panel: theme -> {name}, restarting to wear it", flush=True)
+        os.execv(sys.executable,
+                 [sys.executable, os.path.join(_HERE, "panel.py"),
+                  "--menu", "--page", "4"])
 
     def _info_page_turn(self, delta):
         self._info.turn_page(delta, len(self._info.rows(self._snap)))
@@ -472,13 +476,18 @@ class Panel(QObject):
 
     @Slot()
     def closeMenu(self):
-        """Leaving the menu is a scene change now.
+        """Leaving the menu is a scene change — unless the daemon opened it.
 
-        The numpy menu had to ask its own daemon to switch away and then exit,
-        because it held the framebuffer exclusively and the animation could not
-        start until it let go. One app means the animation was never stopped.
+        When the panel is already running, closing is free: the animation
+        underneath never stopped. But the cog also works from the native voice
+        HUD, where the daemon kills that renderer and starts this app with
+        --menu; closing must then hand the screen back the same way the numpy
+        menu did, by asking the daemon to restore whatever was showing.
         """
-        self.scene = "anim"
+        if self._opened_as_menu:
+            self._net.post_restore()
+        else:
+            self.scene = "anim"
 
     @Slot(str)
     def pinKey(self, label):
@@ -628,6 +637,7 @@ def main() -> int:
 
     overlay = Overlay()
     panel = Panel(args.anim, "menu" if args.menu else "anim")
+    panel._opened_as_menu = bool(args.menu)
     panel.page = args.page
     if args.no_gate:
         panel.unlock_for_testing()
@@ -652,22 +662,27 @@ def main() -> int:
     def hexof(rgb):
         return "#%02x%02x%02x" % tuple(int(v) for v in rgb)
 
-    # The pixel sizes the atlases were baked at, so Qt text is the size the
-    # panel's text has always been. theme.fonts names them — orbitron-18.npz is
-    # scale 2 at 18px — and reading them from there beats a second table that
-    # can drift from the one the numpy pages still use.
-    # String keys: a QVariantMap with integer keys comes back into QML with
-    # nothing at Th.px[2], which shows up as "Unable to assign [undefined]".
-    px = {str(scale): int(re.search(r"-(\d+)\.npz$", f).group(1))
-          for scale, f in th.fonts.items()}
-    # One size for the whole tab row, chosen the way the numpy menu chooses it:
-    # the largest that fits every label, because tabs at mixed sizes look broken
-    # rather than tidy.
-    import menu_ui as _ui
-    _ui.apply_theme(name)
-    tab_w = (776 - 24 - 8 * 6) // 7
-    tab_px = px.get(str(_ui.scale_to_fit_all([c.title for c in _pages()], tab_w, 2)),
-                px["1"])
+    # The theme's type scale, straight from theme.py. String keys: a
+    # QVariantMap with integer keys comes back into QML with nothing at
+    # Th.px[2], which shows up as "Unable to assign [undefined]".
+    px = {str(scale): int(v) for scale, v in th.sizes.items()}
+    # One size for the whole tab row — the largest that fits every label,
+    # because tabs at mixed sizes look broken rather than tidy. Measured with
+    # QFontMetrics against the face Qt will actually draw, plus the theme's
+    # letterspacing, which the old atlas arithmetic also had to carry.
+    from PySide6.QtGui import QFont, QFontMetrics
+    tab_w = (776 - 24 - 8 * 6) // 7 - 16          # minus the button's padding
+    titles = [c.title for c in _pages()]
+    tab_px = min(int(v) for v in px.values())
+    for cand in sorted((int(v) for v in px.values()), reverse=True):
+        if cand > int(px["2"]):
+            continue
+        f = QFont(families.get(name, ""), -1)
+        f.setPixelSize(cand)
+        f.setLetterSpacing(QFont.AbsoluteSpacing, th.tracking)
+        if all(QFontMetrics(f).horizontalAdvance(t) <= tab_w for t in titles):
+            tab_px = cand
+            break
 
     ctx.setContextProperty("Th", {
         "px": px, "tabPx": tab_px,

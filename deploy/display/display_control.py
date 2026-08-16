@@ -116,7 +116,10 @@ PRESETS = [
     # dies on SIGTERM — but it is not a *look*, so it is hidden from the head's
     # dropdown. You reach it by tapping the cog, and it is entered and left by
     # the two paths below (the touch watcher, and /api/animation/restore).
-    {"id": "settings",       "label": "Settings menu",        "argv": ["settings_menu.py"],
+    # The menu is a scene of the panel app now; --menu opens straight into it.
+    # This preset only fires from the native voice HUD, where the panel is not
+    # already running — the panel handles its own cog without the daemon.
+    {"id": "settings",       "label": "Settings menu",        "argv": ["panel.py", "--menu"],
      "hidden": True},
 ]
 PRESET_BY_ID = {p["id"]: p for p in PRESETS}
