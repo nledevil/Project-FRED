@@ -102,6 +102,8 @@ def main() -> int:
                     help="voice state for the voice HUD frame")
     args = ap.parse_args()
 
+    # Create it rather than failing 15 times over at the last line.
+    os.makedirs(args.out, exist_ok=True)
     bad = 0
     for theme_name in theme.ORDER:
         for module, extra, grab in ANIMS:

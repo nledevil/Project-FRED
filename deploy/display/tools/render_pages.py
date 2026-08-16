@@ -100,6 +100,8 @@ def main() -> int:
     ap.add_argument("--out", default="/tmp")
     args = ap.parse_args()
 
+    # Create it rather than failing 15 times over at the last line.
+    os.makedirs(args.out, exist_ok=True)
     bad = 0
     for name in theme_mod.ORDER:
         ui.apply_theme(name)
