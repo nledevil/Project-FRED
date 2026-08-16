@@ -18,6 +18,7 @@ Item {
 
     Rectangle { anchors.fill: parent; color: "black" }
 
+
     // The menu is a scene beside the animation rather than a second process
     // taking the screen. Switching is a property, so there is no DRM-to-fbdev
     // handoff and no start-up cost to open the settings.

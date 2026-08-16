@@ -39,6 +39,7 @@ import numpy as np                                      # noqa: E402
 import cog_hud                                          # noqa: E402
 import metrics_hud                                      # noqa: E402
 import theme                                            # noqa: E402
+import touch                                            # noqa: E402
 from voice_state import VoiceFeed                       # noqa: E402
 # The menu's facts come from the poller the numpy menu already uses. Imported
 # rather than copied; it moves into its own module when that menu is retired at
@@ -535,6 +536,25 @@ def main() -> int:
     os.environ.setdefault("QT_QPA_PLATFORM", "eglfs")
     os.environ.setdefault("QT_QPA_EGLFS_KMS_ATOMIC", "1")
     os.environ.setdefault("QT_QPA_EGLFS_HIDECURSOR", "1")
+    # Qt reads the touchscreen itself, so it does not inherit touch.py's
+    # software rotation — and this panel's picture is turned 180 by the kernel
+    # while the digitiser is not. Without this every tap lands diagonally
+    # opposite the finger: the cog does nothing because the tap arrived in the
+    # top-left corner. Same device and same angle that touch.py works out, from
+    # the same /proc/cmdline, so the two cannot disagree.
+    rot = touch.display_rotation()
+    if rot:
+        dev = touch.find_device()
+        # Both halves are needed. Qt 6 prefers libinput, which has no rotation
+        # of its own and quietly ignored QT_QPA_EVDEV_TOUCHSCREEN_PARAMETERS —
+        # taps kept arriving at the opposite corner with nothing in the log to
+        # say why. So eglfs's own input is switched off and the evdev touch
+        # plugin is loaded by hand, which does take a rotation.
+        os.environ.setdefault("QT_QPA_EGLFS_DISABLE_INPUT", "1")
+        os.environ.setdefault("QT_QPA_GENERIC_PLUGINS",
+                              f"evdevtouch:{dev}:rotate={rot}")
+        os.environ.setdefault("QT_QPA_EVDEV_TOUCHSCREEN_PARAMETERS",
+                              f"{dev}:rotate={rot}")
     os.environ.setdefault("QT_LOGGING_RULES", "qt.qpa.*=false")
 
     app = QGuiApplication(sys.argv[:1])
