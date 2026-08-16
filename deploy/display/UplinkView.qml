@@ -11,6 +11,30 @@ Item {
     id: view
     property var joining: null        // the network being asked for a password
 
+    // dBm to bars the way every phone does it: full at a strong -50, empty
+    // by -80. The exact number still rides in a small label beside them.
+    function sigLevel(dbm) {
+        if (dbm === null || dbm === undefined) return 0
+        return dbm >= -50 ? 4 : dbm >= -60 ? 3 : dbm >= -68 ? 2 : dbm >= -76 ? 1 : 0
+    }
+
+    component SigBars: Row {
+        property int dbm: -100
+        property int lit: view.sigLevel(dbm)
+        spacing: 3
+        anchors.verticalCenter: parent ? parent.verticalCenter : undefined
+        Repeater {
+            model: 4
+            Rectangle {
+                width: 5
+                height: 7 + index * 5
+                anchors.bottom: parent.bottom
+                radius: 1
+                color: index < lit ? Th.okInk : Th.readoutEdge
+            }
+        }
+    }
+
     ColumnLayout {
         anchors.fill: parent
         spacing: 8
@@ -39,6 +63,14 @@ Item {
                     color: Th.dimInk
                     font.pixelSize: Th.px["1"]; font.family: Th.font
                 }
+            }
+            Item {
+                Layout.preferredWidth: 26; Layout.preferredHeight: 26
+                SigBars { dbm: P.uplinkView.signal !== null
+                               && P.uplinkView.signal !== undefined
+                               ? P.uplinkView.signal : -100
+                          anchors.bottom: parent.bottom }
+                visible: P.uplinkView.ssid ? true : false
             }
             Btn {
                 label: P.uplinkView.busy ? "SCANNING" : "SCAN"
@@ -74,7 +106,11 @@ Item {
                 RowLayout {
                     anchors.fill: parent
                     anchors.leftMargin: 14; anchors.rightMargin: 10
-                    spacing: 10
+                    spacing: 12
+                    Item {
+                        Layout.preferredWidth: 26; Layout.preferredHeight: 24
+                        SigBars { dbm: modelData.signal; anchors.bottom: parent.bottom }
+                    }
                     Text {
                         text: modelData.ssid.toUpperCase()
                         color: Th.ink
@@ -83,17 +119,14 @@ Item {
                         Layout.fillWidth: true
                         elide: Text.ElideRight
                     }
-                    Text {
-                        text: (modelData.saved ? "SAVED  " : "")
-                              + (modelData.secure ? "" : "OPEN  ")
-                              + modelData.signal + " DBM"
-                        color: Th.dimInk
-                        font.pixelSize: Th.px["1"]; font.family: Th.font
-                    }
+                    Chip { label: "SAVED"; ok: false
+                           visible: modelData.saved && !modelData.current }
+                    Chip { label: "OPEN"; ok: false; visible: !modelData.secure }
+                    Chip { label: "CONNECTED"; ok: true; visible: modelData.current }
                     Btn {
-                        label: modelData.current ? "ON" : "JOIN"
+                        label: "JOIN"
                         implicitWidth: 96; implicitHeight: 36
-                        enabled: !modelData.current
+                        visible: !modelData.current
                         onTapped: {
                             // A saved or open network needs no password: joining
                             // is one tap, which is the point at a venue.
@@ -137,6 +170,26 @@ Item {
                 label: ">"; implicitWidth: 56; implicitHeight: 40
                 onTapped: P.turnUplinkPage(1)
             }
+        }
+    }
+
+    component Chip: Rectangle {
+        property string label: ""
+        property bool ok: false
+        implicitWidth: chipText.implicitWidth + 16
+        implicitHeight: 22
+        radius: 11
+        color: "transparent"
+        border.color: ok ? Th.okInk : Th.readoutEdge
+        border.width: 1
+        Text {
+            id: chipText
+            anchors.centerIn: parent
+            text: parent.label
+            color: parent.ok ? Th.okInk : Th.dimInk
+            font.pixelSize: Th.px["1"] - 2 > 8 ? Th.px["1"] - 2 : 8
+            font.family: Th.font
+            font.letterSpacing: Th.tracking
         }
     }
 

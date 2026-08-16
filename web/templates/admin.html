@@ -9,12 +9,12 @@
   /* Page layout only — what things look like lives in /static/ui.css. */
   .app { max-width:1080px; margin:0 auto; }
 
-  /* Desktop: a sticky rail of section links beside the cards, because
-     fifteen sections in one scroll is a place to lose things. The rail is
-     position:sticky so it never needs its own scrollbar plumbing, and the
-     links are plain anchors so everything works with JS off — the scrollspy
-     highlight is decoration on top. On narrow screens the rail disappears
-     and the phone keeps its stack + sticky save bar. */
+  /* One section at a time, picked from the rail — pages, not jump links.
+     Fifteen cards in one scroll was a place to lose things; a page per
+     section means the WiFi page is the WiFi page. The links carry real
+     #hashes so a section can still be sent in a URL, and with JS off the
+     hashes still land on their sections because nothing is hidden then
+     (.js-tabs is only set once the tab code has actually run). */
   .shell { display:grid; grid-template-columns:190px minmax(0,1fr); gap:26px;
            align-items:start; }
   .secnav { position:sticky; top:16px; display:flex; flex-direction:column;
@@ -22,16 +22,27 @@
             border:1px solid var(--border); border-radius:14px; }
   .secnav a { color:var(--mut); text-decoration:none; font-size:13px;
               font-weight:600; padding:7px 12px; border-radius:8px;
-              border-left:2px solid transparent; }
+              border-left:2px solid transparent; white-space:nowrap; }
   .secnav a:hover { color:var(--fg); background:rgba(255,255,255,.04); }
   .secnav a.on { color:var(--fg); background:rgba(45,127,249,.14);
                  border-left-color:var(--accent); }
   .content { min-width:0; }
-  /* Anchored jumps land with the heading visible, not under the top edge. */
+  .js-tabs .content section.panel { display:none; }
+  .js-tabs .content section.panel.on { display:block; }
   section.panel { scroll-margin-top:14px; }
+
+  /* Phone: the rail becomes a chip bar that scrolls sideways under the
+     title, so the tabs survive the width where the rail cannot. */
   @media (max-width:899px) {
     .shell { display:block; }
-    .secnav { display:none; }
+    .secnav { position:sticky; top:0; z-index:40; flex-direction:row;
+              overflow-x:auto; -webkit-overflow-scrolling:touch;
+              scrollbar-width:none; gap:4px; margin:0 0 12px;
+              padding:8px; border-radius:12px; }
+    .secnav::-webkit-scrollbar { display:none; }
+    .secnav a { border-left:0; border-bottom:2px solid transparent;
+                padding:8px 12px; font-size:12.5px; }
+    .secnav a.on { border-left:0; border-bottom-color:var(--accent); }
   }
   .panel { padding:20px 22px; margin-bottom:16px; }
   .phead { margin-bottom:18px; }
@@ -100,10 +111,51 @@
   .clip .del:hover { border-color:#a33; color:var(--bad); background:rgba(160,40,40,.12); }
   .clipnote { color:var(--mut); font-size:12px; }
 
+  /* WiFi: two sub-blocks in one card, and a scan list that reads like a
+     phone's — signal bars, a lock, one obvious Join. */
+  .wifisub { padding:14px 0 4px; }
+  .wifisub + .wifisub { border-top:1px solid var(--border); margin-top:14px; }
+  .wifisub-head { display:flex; align-items:center; gap:14px; margin-bottom:14px; }
+  .wifisub-head .label { flex:1; min-width:0; }
+  .wifisub-head .label b { display:block; font-weight:600; font-size:14px; }
+  .wifisub-head .label span { color:var(--mut); font-size:12px; }
+
+  .sig { display:inline-flex; align-items:flex-end; gap:2px; height:16px; flex:none; }
+  .sig i { width:4px; border-radius:1px; background:#33343a; }
+  .sig i:nth-child(1){height:5px} .sig i:nth-child(2){height:8px}
+  .sig i:nth-child(3){height:12px} .sig i:nth-child(4){height:16px}
+  .sig i.f { background:var(--ok); }
+  .upnow { display:flex; align-items:center; gap:12px; padding:12px 14px;
+           background:var(--panel2); border:1px solid var(--border);
+           border-radius:10px; margin-bottom:10px; }
+  .upnow .who { flex:1; min-width:0; }
+  .upnow .who b { display:block; font-size:14px; }
+  .upnow .who span { color:var(--mut); font-size:12px;
+                     font-variant-numeric:tabular-nums; }
+  .upnow.down { border-color:#7a5a10; }
+  .upnow.down .who b { color:var(--warn); }
+
   .wifilist { display:flex; flex-direction:column; gap:6px; width:100%; }
-  .wifirow { display:flex; align-items:center; gap:10px; padding:6px 10px;
-             border:1px solid var(--border); border-radius:8px; flex-wrap:wrap; }
-  .wifirow .grow { flex:1 1 auto; }
+  .wnet { border:1px solid var(--border); border-radius:10px; overflow:hidden; }
+  .wnet.cur { border-color:#0a5; }
+  .wnet .top { display:flex; align-items:center; gap:10px; padding:10px 12px;
+               flex-wrap:wrap; }
+  /* The name never shrinks below readability: chips and buttons wrap to a
+     second line instead of crushing "Springfield Elementary" down to "S". */
+  .wnet .ssid { flex:1 1 150px; min-width:130px; font-weight:600; overflow:hidden;
+                text-overflow:ellipsis; white-space:nowrap; }
+  .wchip { flex:none; font-size:10px; font-weight:700; letter-spacing:.05em;
+           text-transform:uppercase; padding:2px 8px; border-radius:999px;
+           border:1px solid var(--border); color:var(--mut); }
+  .wchip.ok { border-color:#0a5; color:var(--ok); }
+  .wnet .lock { flex:none; color:var(--mut); font-size:13px; }
+  .wnet .top button { padding:6px 14px; font-size:13px; }
+  /* the inline password ask, unfolded under the row that needs it */
+  .wjoin { display:flex; gap:8px; align-items:center; padding:10px 12px;
+           border-top:1px solid var(--border); background:var(--panel2);
+           flex-wrap:wrap; }
+  .wjoin input { flex:1 1 160px; }
+  .wjoin .err { flex:1 0 100%; color:var(--bad); font-size:12px; }
 </style>
 <link rel="stylesheet" href="/static/pin.css">
 <script src="/static/pin.js"></script>
@@ -303,34 +355,39 @@
 
   <section class="panel" id="sec-wifi">
     <p class="phead">WiFi</p>
-    <div class="row">
-      <div class="label"><b>FRED&rsquo;s hotspot</b><span>the network he hosts, for a phone</span></div>
-      <input type="text" id="apSsid" class="wide" spellcheck="false" placeholder="fred">
-      <input type="password" id="apPass" class="wide" spellcheck="false" placeholder="new password">
-      <div class="grow"></div>
-      <button onclick="saveAp()">Save hotspot</button>
-    </div>
-    <p class="hint">Renaming the hotspot or changing its password <b>restarts it</b>, so
-       anything joined to it drops for a few seconds. The password must be 8&ndash;63
-       characters. It is never sent back to this page &mdash; the field is blank because
-       the brain does not hand it out, not because it is unset.</p>
 
-    <div class="row">
-      <div class="label"><b>Connected to</b><span>the network FRED joins, for internet</span></div>
-      <span class="linkstat"><span class="dot" id="upDot"></span>
-        <span id="upStat">checking&hellip;</span></span>
-      <div class="grow"></div>
-      <button onclick="scanWifi()" id="upScanBtn">↻ Scan</button>
+    <div class="wifisub">
+      <div class="wifisub-head">
+        <div class="label"><b>FRED&rsquo;s hotspot</b>
+          <span>the network he hosts, so a phone can reach the panel with no WiFi around</span></div>
+        <label class="switch"><input type="checkbox" id="apOn"
+               onchange="onApToggle(this.checked)"> Broadcast</label>
+      </div>
+      <div class="row">
+        <input type="text" id="apSsid" class="wide" spellcheck="false" placeholder="network name">
+        <input type="password" id="apPass" class="wide" placeholder="new password">
+        <button onclick="saveAp()">Save</button>
+        <div class="grow"></div>
+      </div>
+      <p class="hint" id="apStat">&hellip;</p>
+      <p class="hint">Saving restarts the hotspot, so anything joined to it drops for a few
+         seconds. The password is never sent back to this page &mdash; the field is blank
+         because the brain does not hand it out, not because it is unset.</p>
     </div>
-    <div class="row" id="upListRow">
-      <div class="label"><b>In range</b><span>tap Join; saved networks need no password</span></div>
-      <div class="grow"><div id="upList" class="wifilist"></div></div>
+
+    <div class="wifisub">
+      <div class="wifisub-head">
+        <div class="label"><b>Connected to</b>
+          <span>the network FRED joins &mdash; the internet his brain uses</span></div>
+        <button onclick="scanWifi()" id="upScanBtn">&#8635; Scan</button>
+      </div>
+      <div class="upnow" id="upNow"><span class="hint">checking&hellip;</span></div>
+      <div id="upList" class="wifilist"></div>
+      <p class="hint">Joining <b>adds</b> a network rather than replacing: the workshop&rsquo;s
+         stays saved, so he finds his way home from an event without anyone typing anything.
+         Forgetting the last saved network is refused &mdash; a robot that has forgotten every
+         network needs a keyboard and a monitor at the venue to get back on.</p>
     </div>
-    <p class="hint">Joining <b>adds</b> a network rather than replacing: the workshop&rsquo;s
-       stays saved, so he finds his way home from an event without anyone typing anything.
-       A scan takes a couple of seconds because the radio has to sweep the band. Forgetting
-       the last saved network is refused &mdash; a robot that has forgotten every network
-       needs a keyboard and a monitor at the venue to get back on.</p>
   </section>
 
   <section class="panel" id="sec-display">
@@ -608,6 +665,36 @@ async function loadAnimations(selected) {
 
 // ---- WiFi: the one FRED hosts, and the one he joins ---------------------
 
+async function refreshHotspot() {
+  const st = await api('/api/hotspot');
+  const stat = document.getElementById('apStat');
+  if (!st || !st.configured) {
+    stat.textContent = st && st.error ? st.error : 'Hotspot not installed on the brain.';
+    document.getElementById('apOn').disabled = true;
+    return;
+  }
+  document.getElementById('apOn').checked = !!st.enabled;
+  if (!document.getElementById('apSsid').value) {
+    document.getElementById('apSsid').value = st.ssid || '';
+  }
+  stat.textContent = st.enabled
+    ? 'Broadcasting \u201c' + (st.ssid || '?') + '\u201d \u00b7 '
+      + (st.clients != null ? st.clients + ' joined \u00b7 ' : '')
+      + 'panel at ' + (st.address || '192.168.50.1') + ':8080'
+    : 'Off \u2014 nothing is being broadcast.';
+}
+
+async function onApToggle(on) {
+  const r = await api('/api/hotspot', { enabled: on });
+  if (r.error) {
+    toast('\u26a0 ' + r.error, true);
+    document.getElementById('apOn').checked = !on;   // put it back
+    return;
+  }
+  toast('Hotspot ' + (r.enabled ? 'on \u2014 it takes a few seconds to appear' : 'off'));
+  setTimeout(refreshHotspot, 4000);
+}
+
 async function saveAp() {
   const ssid = document.getElementById('apSsid').value.trim();
   const pass = document.getElementById('apPass').value;
@@ -617,66 +704,89 @@ async function saveAp() {
   }
   const r = await api('/api/hotspot/config', { ssid: ssid, passphrase: pass });
   if (r.error) { toast('\u26a0 ' + r.error, true); return; }
-  // Never keep the passphrase in the DOM after it has been sent: it was typed
-  // once and the brain does not hand it back.
+  // Never keep the passphrase in the DOM after it has been sent.
   document.getElementById('apPass').value = '';
   toast('Hotspot saved \u2014 it is restarting');
+  setTimeout(refreshHotspot, 5000);
 }
 
-async function seedApName() {
-  const s = await api('/api/hotspot');
-  if (s && s.ssid) document.getElementById('apSsid').value = s.ssid;
+// dBm to bars the way every phone does it: full at a strong -50, empty by -80.
+function sigLevel(dbm) {
+  if (dbm == null) return 0;
+  return dbm >= -50 ? 4 : dbm >= -60 ? 3 : dbm >= -68 ? 2 : dbm >= -76 ? 1 : 0;
 }
-
-async function refreshUplink() {
-  const dot = document.getElementById('upDot'), st = document.getElementById('upStat');
-  const s = await api('/api/uplink');
-  window._upSaved = s.saved || [];
-  window._upCurrent = s.ssid || '';
-  if (!s.available) {
-    dot.className = 'dot'; st.textContent = s.error || 'unavailable';
-    return;
-  }
-  if (s.ssid) {
-    dot.className = 'dot on';
-    st.textContent = s.ssid + ' \u00b7 ' + (s.address || 'no address')
-                   + (s.signal != null ? ' \u00b7 ' + s.signal + ' dBm' : '');
-  } else {
-    dot.className = 'dot off';
-    st.textContent = 'not connected';
-  }
-  renderWifi(window._upNets || []);
+function sigHtml(dbm) {
+  const n = sigLevel(dbm);
+  let h = '<span class="sig" title="' + (dbm == null ? '?' : dbm + ' dBm') + '">';
+  for (let i = 1; i <= 4; i++) h += '<i class="' + (i <= n ? 'f' : '') + '"></i>';
+  return h + '</span>';
 }
-
-function renderWifi(nets) {
-  const box = document.getElementById('upList');
-  if (!nets.length) {
-    box.innerHTML = '<span class="hint">Scan to see what is in range.</span>';
-    return;
-  }
-  const saved = window._upSaved || [], current = window._upCurrent || '';
-  box.innerHTML = nets.map(n => {
-    const isSaved = saved.indexOf(n.ssid) >= 0, isOn = n.ssid === current;
-    const bits = [n.signal + ' dBm'];
-    if (!n.secure) bits.push('open');
-    if (isSaved) bits.push('saved');
-    // A saved or open network needs no password, so the button is the whole
-    // interaction — which is the point when you are standing at a venue.
-    const act = isOn ? '<span class="hint">connected</span>'
-      : '<button onclick="joinWifi(' + JSON.stringify(n.ssid).replace(/"/g, '&quot;')
-        + ',' + (n.secure && !isSaved) + ')">Join</button>';
-    const forget = isSaved && !isOn
-      ? ' <button onclick="forgetWifi(' + JSON.stringify(n.ssid).replace(/"/g, '&quot;')
-        + ')">Forget</button>' : '';
-    return '<div class="wifirow"><b>' + escapeHtml(n.ssid) + '</b>'
-         + '<span class="hint">' + bits.join(' \u00b7 ') + '</span>'
-         + '<span class="grow"></span>' + act + forget + '</div>';
-  }).join('');
-}
-
 function escapeHtml(t) {
   return String(t).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;',
                                                '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+let UP = { saved: [], current: '', nets: [], joining: null };
+
+async function refreshUplink() {
+  const s = await api('/api/uplink');
+  UP.saved = s.saved || []; UP.current = s.ssid || '';
+  const now = document.getElementById('upNow');
+  if (!s.available) {
+    now.className = 'upnow down';
+    now.innerHTML = '<div class="who"><b>Unavailable</b><span>'
+                  + escapeHtml(s.error || '') + '</span></div>';
+  } else if (s.ssid) {
+    now.className = 'upnow';
+    now.innerHTML = sigHtml(s.signal)
+      + '<div class="who"><b>' + escapeHtml(s.ssid) + '</b><span>'
+      + escapeHtml(s.address || 'no address yet')
+      + (s.signal != null ? ' \u00b7 ' + s.signal + ' dBm' : '') + '</span></div>'
+      + '<span class="wchip ok">connected</span>';
+  } else {
+    now.className = 'upnow down';
+    now.innerHTML = '<div class="who"><b>Not connected</b>'
+      + '<span>saved: ' + (UP.saved.map(escapeHtml).join(', ') || 'none') + '</span></div>';
+  }
+  renderWifi();
+}
+
+function renderWifi() {
+  const box = document.getElementById('upList');
+  if (!UP.nets.length) {
+    box.innerHTML = '<span class="hint">Scan to see what is in range.</span>';
+    return;
+  }
+  box.innerHTML = UP.nets.map((n, i) => {
+    const isSaved = UP.saved.indexOf(n.ssid) >= 0, isCur = n.ssid === UP.current;
+    const joining = UP.joining === i;
+    let top = '<div class="top">' + sigHtml(n.signal)
+      + '<span class="ssid">' + escapeHtml(n.ssid) + '</span>'
+      + (isSaved && !isCur ? '<span class="wchip">saved</span>' : '')
+      + (isCur ? '<span class="wchip ok">connected</span>' : '')
+      + (n.secure ? '<span class="lock" title="password protected">\uD83D\uDD12</span>'
+                  : '<span class="wchip">open</span>');
+    if (!isCur) top += '<button onclick="joinTap(' + i + ')">Join</button>';
+    if (isSaved && !isCur) top += '<button onclick="forgetWifi(' + i + ')">Forget</button>';
+    top += '</div>';
+    // The password ask unfolds under the row that needs it, instead of a
+    // prompt() floating loose from what it is about.
+    let ask = '';
+    if (joining) {
+      ask = '<div class="wjoin">'
+        + '<input type="password" id="wjoinPass" placeholder="password for '
+        + escapeHtml(n.ssid).replace(/"/g, '&quot;') + '" '
+        + 'onkeydown="if(event.key===\'Enter\')joinGo(' + i + ')">'
+        + '<button class="primary" onclick="joinGo(' + i + ')">Join</button>'
+        + '<button onclick="UP.joining=null;renderWifi()">Cancel</button>'
+        + '<span class="err" id="wjoinErr"></span></div>';
+    }
+    return '<div class="wnet' + (isCur ? ' cur' : '') + '">' + top + ask + '</div>';
+  }).join('');
+  if (UP.joining != null) {
+    const f = document.getElementById('wjoinPass');
+    if (f) f.focus();
+  }
 }
 
 async function scanWifi() {
@@ -684,35 +794,46 @@ async function scanWifi() {
   btn.disabled = true; btn.textContent = 'Scanning\u2026';
   try {
     const r = await api('/api/uplink/scan');
-    window._upNets = r.networks || [];
-    renderWifi(window._upNets);
-    if (!window._upNets.length) toast('Nothing in range');
+    UP.nets = r.networks || []; UP.joining = null;
+    renderWifi();
+    if (!UP.nets.length) toast('Nothing in range');
   } finally {
     btn.disabled = false; btn.textContent = '\u21bb Scan';
   }
 }
 
-async function joinWifi(ssid, needsPassword) {
-  let pass = '';
-  if (needsPassword) {
-    pass = prompt('Password for "' + ssid + '"') || '';
-    if (!pass) return;
-    if (pass.length < 8 || pass.length > 63) {
-      toast('\u26a0 A WPA password is 8\u201363 characters', true); return;
-    }
+function joinTap(i) {
+  const n = UP.nets[i];
+  // A saved or open network needs no password: one tap and it joins.
+  if (!n.secure || UP.saved.indexOf(n.ssid) >= 0) { doJoin(n.ssid, ''); return; }
+  UP.joining = i; renderWifi();
+}
+
+function joinGo(i) {
+  const pass = (document.getElementById('wjoinPass') || {}).value || '';
+  if (pass.length < 8 || pass.length > 63) {
+    document.getElementById('wjoinErr').textContent =
+      'A WPA password is 8\u201363 characters.';
+    return;
   }
+  UP.joining = null;
+  doJoin(UP.nets[i].ssid, pass);
+}
+
+async function doJoin(ssid, pass) {
   toast('Joining ' + ssid + '\u2026');
   const r = await api('/api/uplink/join', { ssid: ssid, password: pass });
   if (!r.ok) { toast('\u26a0 ' + (r.error || 'could not join'), true); return; }
   toast('Joined \u2014 the network may drop for a moment');
+  renderWifi();
   // The radio takes a few seconds to associate and get an address.
   setTimeout(refreshUplink, 6000);
 }
 
-async function forgetWifi(ssid) {
-  const r = await api('/api/uplink/forget', { ssid: ssid });
+async function forgetWifi(i) {
+  const r = await api('/api/uplink/forget', { ssid: UP.nets[i].ssid });
   if (!r.ok) { toast('\u26a0 ' + (r.error || 'could not forget'), true); return; }
-  toast('Forgot ' + ssid);
+  toast('Forgot ' + UP.nets[i].ssid);
   refreshUplink();
 }
 
@@ -949,29 +1070,37 @@ loadEvent();
 load();
 refreshDisplay();
 refreshUplink();
-seedApName();
+refreshHotspot();
 
-// ---- section rail scrollspy --------------------------------------------
-// Decoration on top of plain anchors: the link whose section is nearest the
-// top of the viewport gets lit. IntersectionObserver so it costs nothing
-// while nobody scrolls.
+// ---- section tabs -------------------------------------------------------
+// One section shown at a time. Everything stays in the DOM — Save reads
+// fields from every section, shown or not — only visibility changes. The
+// hash tracks the tab so a URL can carry #sec-wifi, and the last tab is
+// remembered the way the control panel remembers its view.
 (function () {
   const links = document.querySelectorAll('.secnav a[data-sec]');
-  if (!links.length || !('IntersectionObserver' in window)) return;
-  const byId = {};
-  for (const a of links) byId[a.dataset.sec] = a;
-  const seen = new Map();
-  const io = new IntersectionObserver(entries => {
-    for (const e of entries) seen.set(e.target.id, e.isIntersecting ? e.boundingClientRect.top : Infinity);
-    let best = null, bestTop = Infinity;
-    for (const [id, top] of seen) {
-      const t = Math.abs(top);
-      if (top !== Infinity && t < bestTop) { best = id; bestTop = t; }
+  const secs = document.querySelectorAll('.content section.panel[id]');
+  if (!links.length) return;
+  document.body.classList.add('js-tabs');
+  function show(id, push) {
+    if (!document.getElementById(id)) id = secs[0].id;
+    for (const sec of secs) sec.classList.toggle('on', sec.id === id);
+    for (const a of links) {
+      const on = a.dataset.sec === id;
+      a.classList.toggle('on', on);
+      if (on) a.scrollIntoView({ block: 'nearest', inline: 'center' });
     }
-    if (!best) return;
-    for (const a of links) a.classList.toggle('on', a.dataset.sec === best);
-  }, { rootMargin: '-10% 0px -70% 0px' });
-  for (const sec of document.querySelectorAll('section.panel[id]')) io.observe(sec);
+    try { localStorage.setItem('adminSec', id); } catch (e) {}
+    if (push) history.replaceState(null, '', '#' + id);
+    window.scrollTo(0, 0);
+  }
+  for (const a of links)
+    a.addEventListener('click', e => { e.preventDefault(); show(a.dataset.sec, true); });
+  window.addEventListener('hashchange',
+    () => show(location.hash.replace('#', '') || secs[0].id, false));
+  let start = location.hash.replace('#', '');
+  if (!start) { try { start = localStorage.getItem('adminSec') || ''; } catch (e) {} }
+  show(start || secs[0].id, false);
 })();
 </script>
 </body>
