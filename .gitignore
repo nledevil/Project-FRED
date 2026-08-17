@@ -20,4 +20,7 @@ deploy/display/voice_hud
 deploy/display/theme_colors.h
 verify-*.raw
 deploy/display/shaders/*.qsb
-logs/                              # heard.jsonl and friends: data, not source
+# heard.jsonl and friends: data, not source. The comment is on its own line
+# because git has no trailing comments — with one appended, the whole line
+# became the pattern and this directory was never ignored at all.
+logs/
