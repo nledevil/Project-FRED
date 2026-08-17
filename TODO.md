@@ -31,6 +31,28 @@ note immediately following.
   `@protected`, and only the two read-only GETs are open. The test now records
   those decisions, with the reasoning, and passes.
 
+**Also cleared 2026-08-16: the touchscreen's PIN only ever asked once.** Unlock
+the chest menu, leave it, tap the cog again — and it opened straight up. It
+stayed that way until the process restarted, which on a machine running
+`inmoov-display` indefinitely means until the next reboot, so the first operator
+of the day silently unlocked the robot for everyone who walked up after.
+
+Worth understanding rather than just fixing, because nobody wrote a bug: the
+gate re-locked *by itself* when the settings menu was a separate process, since
+closing it destroyed the pad. "Keep one panel process instead of respawning per
+animation" (2026-08-15) was a rendering change with no visible relationship to
+security, and it quietly turned "locked per open" into "locked once per boot".
+`PinPad.lock()` now exists and `closeMenu()` calls it — and deliberately keeps
+the wrong-guess back-off, or closing the menu would be the way to buy five more
+free tries. Leaving also hides the power overlay, so an armed shutdown cannot
+come back on top of the keypad. Proved on the hardware by injecting real touch
+events and running the sequence against both the old code (walks in) and the new
+(asks again); `tools/test_menu_logic.py` covers all four behaviours.
+
+**Still open on it:** the menu does not re-lock or close on its own if it is left
+open and abandoned. Deciding that is a judgement call about an operator reading a
+page versus a robot left unattended, so it is left for Ryan rather than guessed.
+
 **Also cleared 2026-08-16: the chest touchscreen's servo sliders.** They drew
 correctly and ignored every finger. Two independent faults, both in
 `ServosPage.qml`: the `Slider` replaced `background` with a size-less `Item`,

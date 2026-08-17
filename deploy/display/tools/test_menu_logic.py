@@ -226,6 +226,37 @@ def main() -> int:                                    # noqa: PLR0915
     check("the stop works while locked — no PIN between a person and it",
           stopped == [True])
 
+    # Leaving the menu must ask again. This is not hypothetical: the gate was a
+    # separate process until the Qt port, so closing it re-locked by itself, and
+    # afterwards one unlock lasted until the next reboot.
+    real = {"salt": "aabb", "hash": pin_gate.hashlib.pbkdf2_hmac(
+        "sha256", b"4271", bytes.fromhex("aabb"), 1).hex(), "iterations": 1}
+    h = pin_gate.PinPad(real, log=lambda *a: None)
+    check("a PIN that is set starts locked", not h.view()["unlocked"])
+    for k in ("4", "2", "7", "1"):
+        h.key(k)
+    check("the right PIN opens it", h.view()["unlocked"])
+    h.lock()
+    check("leaving locks it again", not h.view()["unlocked"])
+    check("...and clears the digits behind it", h.view()["filled"] == 0)
+
+    # The one thing lock() must NOT do. Closing the menu five times over would
+    # otherwise buy five fresh free tries each time, and tap-close-tap is a lot
+    # faster than thinking of a number.
+    b = pin_gate.PinPad(real, log=lambda *a: None)
+    for _ in range(6):
+        for k in ("9", "9", "9", "9"):
+            b.key(k)
+    check("six wrong guesses lock the pad out", b.view()["locked"])
+    b.lock()
+    check("leaving does not reset the back-off", b.view()["locked"],
+          b.view()["message"])
+
+    # A robot with no PIN set must stay open, or the touchscreen bricks itself.
+    n = pin_gate.PinPad({}, log=lambda *a: None)
+    n.lock()
+    check("no PIN set means leaving still leaves it open", n.view()["unlocked"])
+
     print("power: the order that cannot be a matter of opinion")
 
     def drive(fail=(), pick="all", taps=2):

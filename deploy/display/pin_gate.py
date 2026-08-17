@@ -145,6 +145,24 @@ class PinPad:
         self._message = "WRONG PIN" if wait <= 0 else ""
         self._log(f"menu: wrong PIN ({self._fails} wrong)")
 
+    def lock(self) -> None:
+        """Ask again next time. Called when the menu is left.
+
+        This used to happen by itself: the settings menu was a separate process,
+        so closing it destroyed the pad and the next open built a fresh one. Once
+        the menu became a scene of the long-running panel that stopped being
+        true, and a single unlock lasted until the next reboot — which on a robot
+        whose screen faces a queue of strangers is the whole gate undone.
+
+        **`_fails` and `_locked_until` are deliberately kept.** The back-off is
+        the only thing standing between four digits and ten thousand guesses;
+        resetting it here would make closing the menu the way to buy five more
+        free tries, and tap-close-tap is faster than thinking.
+        """
+        self.unlocked = not is_set(self._material)
+        self._entry = ""
+        self._message = ""
+
     def _wait(self) -> float:
         return max(0.0, self._locked_until - time.monotonic())
 

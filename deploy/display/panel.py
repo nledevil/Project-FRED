@@ -185,6 +185,7 @@ class Panel(QObject):
         self._forced = forced
         self._scene = scene                # "anim" | "menu"
         self._opened_as_menu = False       # --menu: the daemon put us here
+        self._no_gate = False              # --no-gate: stay open, for grabs
         self._page = 0
         self._snap = {}
         self._rows = []
@@ -471,7 +472,12 @@ class Panel(QObject):
         self.scene = "menu"
 
     def unlock_for_testing(self) -> None:
-        """Open the gate without a PIN. Only reachable from --no-gate."""
+        """Open the gate without a PIN, and keep it open across a close.
+
+        Only reachable from --no-gate, which exists so the page harnesses can
+        grab every tab without a PIN in the way.
+        """
+        self._no_gate = True
         self._gate.unlocked = True
 
     @Slot()
@@ -488,6 +494,14 @@ class Panel(QObject):
             self._net.post_restore()
         else:
             self.scene = "anim"
+        # Leaving re-locks, and leaves nothing armed behind it. Both matter
+        # because this is one long-lived process now: without the first, one
+        # unlock outlives the operator who typed it; without the second, a power
+        # menu left open would come back on top of the keypad, which is the one
+        # overlay that must never be reachable without the PIN.
+        if not self._no_gate:
+            self._power.hide()
+            self._gate.lock()
 
     @Slot(str)
     def pinKey(self, label):
