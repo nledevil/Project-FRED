@@ -1,12 +1,45 @@
 # InMoov TODO
 
-## Where things stand after 2026-08-12/14
+## Where things stand after 2026-08-12/16
 
 A long session that touched the brain, the GPU, the chest touchscreen, the cart
 and the network. Everything below is either unfinished, worth doing, or worth
 knowing before someone changes it.
 
 Verified means "watched it work on the hardware", not "should work".
+
+**This section was audited against the code on 2026-08-16** — every claim in it
+re-checked rather than assumed. Three had gone stale and are corrected where
+they sit, each marked *Corrected 2026-08-16*: event mode exists (this section
+said it did not), `ui.Pager` never did, and the terminator clips are present but
+out of Claude's reach. Further down, STEM priority 1 turned out to be built and
+priority 2 mostly so; both are rewritten to say what is actually left. Two more
+things were found broken *by* the audit and fixed the same day — the cleared
+note immediately following.
+
+**Cleared 2026-08-16: two things that were quietly wrong.**
+
+- **`logs/` was never actually ignored.** `.gitignore` had `logs/` with a
+  trailing `# comment` on the same line, and git has no trailing comments — the
+  whole line became the pattern, matching nothing. So `logs/heard.jsonl`, which
+  holds what visitors actually said to him, was one `git add -A` from being
+  published. The comment now sits on its own line.
+- **`tools/test_auth.py` was red.** Nine endpoints from the 2026-08-16 work —
+  the four `uplink` routes, three `phrases`, and both `heard` — had never been
+  classified, which is precisely the failure that test exists to force. The
+  good news is that `app.py` had them right all along: everything that acts is
+  `@protected`, and only the two read-only GETs are open. The test now records
+  those decisions, with the reasoning, and passes.
+
+**Also cleared 2026-08-16: the chest touchscreen's servo sliders.** They drew
+correctly and ignored every finger. Two independent faults, both in
+`ServosPage.qml`: the `Slider` replaced `background` with a size-less `Item`,
+which collapses the control's implicit height to zero — QML does not clip, so
+the track and knob still drew at full size while the *touchable* area was a
+zero-height line — and the `Repeater`'s model was bound to the per-tick-rebuilt
+row list, so the first move destroyed the delegate the finger was on. A control
+that draws but cannot be touched is invisible to screenshots; it took injecting
+real events at `/dev/input/event4` to see it. Confirmed by Ryan on the panel.
 
 **Cleared on 2026-08-12**, and removed from the list rather than left to rot:
 the whole session's work is committed in both repos; the Ollama iGPU
@@ -56,11 +89,19 @@ Three things learned building it, worth not rediscovering:
 Still open on it: **a look does not light the privacy LED** (`Camera.acquire()`
 tracks MJPEG viewers only), so frames leave the robot with no outward sign.
 Raised and deliberately declined on 2026-08-13 — it matches face tracking, which
-has never lit it either. And the TODO below wanted this gated behind event mode;
-only the rate limit and a `brain.vision` switch gate it, because event mode does
-not exist. Two items below still assume it does — capping answer length, and the
-crowd speed cap — so it may be worth building as its own thing rather than
-inventing a third private version of it.
+has never lit it either. The look is also **not** gated by event mode: only the
+12 s rate limit and the `brain.vision` switch stand in front of it.
+
+*Corrected 2026-08-16: this paragraph used to say event mode did not exist. It
+does — `inmoov/event.py`, and the two items said to be waiting on it are built.*
+**Event mode caps his answers** (`max_words`, default 25 — the brain injects a
+"you are at a public event, one short sentence" instruction and `ship()` stops
+at the first sentence boundary past the cap), **caps the cart** (`cart_speed`,
+default 120, applied as `speed_ceiling` per command), **protects the chest
+display** from Claude swapping a voice-state screen for a flourish, raises that
+display when switched on, and is recorded against every line in the heard log.
+It is `event.enabled` in settings with a toggle on the admin page, and it is
+**off on this robot today** — turning it on is part of setting up for an event.
 
 **Also cleared (2026-08-14): he can say how he is doing.** `check_health`
 reports uptime, processor temperature, and the drive base's battery and board
@@ -73,8 +114,13 @@ would be false precision. No matcher pattern for it on purpose — "how are you
 feeling?" deserves warmth, and a regex hands back the same flat recitation
 every time.
 
-**Also cleared (2026-08-14): long lists have somewhere to go.** ui.Pager, used
-by the animation grid and the servo list. The grid used to divide its space by
+**Also cleared (2026-08-14): long lists have somewhere to go.** Paging on the
+chest, in the animation grid and the servo list. *(Corrected 2026-08-16: this
+said "ui.Pager". There is no such class and no `ui.py` — the numpy menu it
+belonged to was retired on 2026-08-16, and what survives is the same rule
+written twice, in `page_display.py` and `page_servos.py`. Both behave as
+described; if a third list ever needs paging, that is the moment to extract
+one.)* The grid used to divide its space by
 however many presets there were, shrinking buttons to 33px at twelve; the servo
 list drew at a fixed pitch with no bound, so the eighth servo was drawn off the
 panel entirely and six wired servos were all that hid it. The pager draws
@@ -93,9 +139,14 @@ LISTENING / THINKING / SPEAKING from `voice_state.py` — so that item is not
 that actually runs is the C one. Event mode now raises that display and stops
 Claude swapping it for a flourish.
 
-Also worth knowing: **there is almost nothing to play.** Three utility clips
-(`ok`, `startup`, `test`) and no terminator clips uploaded at all, so the sound
-half of this works but has nothing expressive to say with it.
+Also worth knowing: **there is almost nothing Claude can play.** *(Corrected
+2026-08-16: the terminator clips are not missing — eight are in
+`sounds/terminator/`, uploaded 2026-08-09.)* The real limit is that
+`sound.list()` globs `sounds/*.wav` and does not recurse, so the `play_sound`
+tool still offers only the three utility clips (`ok`, `startup`, `test`); the
+terminator folder is reachable only through terminator mode's
+`play_random()`. Letting the tool see the subfolder is a small change and the
+cheapest expressiveness available.
 
 **Also cleared (2026-08-15): the speech model, on cost.** He runs
 `vosk-model-en-us-0.22-lgraph` now. `voice.asr_model` picks it by directory
@@ -128,6 +179,24 @@ Nothing. The two items that were here — driving the cart from the hand
 controller, and what releasing the deadman should do — are settled; see the note
 above.
 
+### Waiting on somebody standing at the robot
+
+Not priorities — just the things no session can close by itself, collected in
+one place because they are otherwise scattered through the notes above.
+
+- **Releasing the deadman on the real base**, with a real thumb on R1. The
+  behaviour is decided and covered in `tools/test_cart_driver.py`; what is
+  missing is watching the wheels actually stop.
+- **A phone joining the `fred` access point**, to exercise the guest-to-internet
+  rule end to end. *(The other half of this is now done: the AP was confirmed
+  coming up by itself across a real cold boot on 2026-08-16, with all three
+  "AP guests" NAT rules present. Only the guest side is unwatched.)*
+- **Face tracking with a real face in front of it** — see the facial-tracking
+  section; nothing has ever been tuned and saved.
+- **A child at three feet in a hall of four hundred**, which is the speech case
+  the model decision was never able to test. `logs/heard.jsonl` is collecting
+  the evidence now; feed the suspicious lines through `tools/bench_asr.py`.
+
 ## Where to go next (proposed 2026-08-12)
 
 Ideas, not commitments — nothing here has been agreed. Ordered by what would
@@ -140,8 +209,18 @@ this is what is *not* already on it.
    phone layout on 2026-08-16 — a bottom tab bar, the transcript filling the
    Chat tab, the estop one tap away on Drive — so the "page shaped like a
    phone" half of this is done and lives at the same URL. What remains is the
-   actions the transcript tab should carry: stop speaking, mute the mic, reset
-   the conversation, volume. Closely related to the one-tap phrase deck below.
+   actions the transcript tab should carry. Checked one by one on 2026-08-16:
+   - **Stop speaking — missing, and it is the one that matters.** `/api/sound/stop`
+     exists with no caller anywhere in the UI. See the STOP item below.
+   - **Mute the mic — effectively there already.** The 🎤 Listen button on the
+     chat tab stops the wake-word listener and frees the mic. It is a listener
+     toggle rather than a labelled mute, which may be enough.
+   - **Reset the conversation — missing, and now load-bearing.** He grew a
+     memory (STEM priority 1); 🗑 clears only the transcript *display*, so the
+     next visitor inherits the last one's context. `Brain.clear_history()` is
+     right there with no endpoint in front of it.
+   - **Volume — missing entirely.** There is no volume control on this robot at
+     all; see the STOP + volume item below.
 
 2. **Cleared 2026-08-16: the deck of one-tap things to say.** On the web
    panel's chat: a Quick say strip above the input — tabs (Crowd, Stalling,
@@ -165,33 +244,51 @@ Baseline context: speech is pipelined (brain streams sentences → warm piper
 daemon → lip-synced jaw + on-screen face from the same envelope), temp sensor is
 wired into the brain, tool failures no longer kill a turn.
 
-### Priority 1 — conversation memory (follow-ups)
-`brain.py:_ask_claude` builds `messages=[{user: text}]` fresh every turn, so
-"who was Einstein?" → "when was he born?" fails — FRED doesn't know who "he" is.
-- Keep a rolling window of the last ~6 exchanges in `Brain`, replayed into
-  `messages` each turn.
-- Clear it after a few idle minutes (monotonic timestamp) so the next visitor
-  starts fresh; also clear on an explicit "new conversation"/reset.
-- Mind the tool loop: history entries should be the *final* user/assistant text
-  pairs, not the intermediate tool_use/tool_result blocks (keeps tokens down).
+### ~~Priority 1 — conversation memory (follow-ups)~~ DONE (verified 2026-08-16)
+Built, and the method the item named no longer exists: it is `Brain._ask_llm`,
+which sends `self._history + [the new turn]`. Six exchanges
+(`HISTORY_MAX_EXCHANGES`), dropped after three idle minutes
+(`HISTORY_IDLE_SECS`) so the next visitor starts fresh, and dropped on a spoken
+"new conversation" (`_NEW_CONV`). `_remember()` stores only the final user and
+assistant text, never the tool_use/tool_result blocks, exactly as this item
+asked. So "who was Einstein?" → "when was he born?" works today.
 
-### Priority 2 — auto-greeting when someone walks up (toggleable)
-The face tracker already fires `event_cb` on face-detected (`face_tracker.py:245`).
-- When idle > ~2 min and a new face appears → speak a greeting ("Hi! I'm Fred —
-  ask me anything about robots!").
-- Cooldown so he doesn't re-greet the same crowd; don't greet while speaking or
-  mid-conversation.
-- **Must be a settings toggle** (`voice.auto_greet` or similar) editable live
-  from the admin panel — on for events, off at home.
-- Greeting lines are fixed strings → pre-render via the TTS cache so they play
-  instantly.
+**But nothing on the panel can clear it.** `Brain.clear_history()` has exactly
+one caller — the spoken reset. The chat tab's 🗑 empties the *display* ring
+(`/api/log/clear`) and leaves the brain's memory untouched, so an operator who
+wipes the transcript between visitors has not actually given the next one a
+fresh start. That is the "reset the conversation" button in the operator-actions
+item above, and conversation memory is what makes it matter.
+
+### Priority 2 — auto-greeting when someone walks up (toggleable) — MOSTLY BUILT
+`inmoov/greeter.py` exists and does most of this: canned `GREETINGS`, a cooldown
+so a crowd is not re-greeted, never speaks over himself (checks speaking and
+thinking), respects the hardware handoff, speaks off-thread, and is a live
+settings toggle on the admin page. The setting is **`greet.enabled` /
+`greet.cooldown`**, not the `voice.auto_greet` guessed here, and it is **off on
+this robot today**. Its state is in `/api/state` under `greet`.
+
+What is left of the original item:
+- **The trigger is the stomach sensor's `approach` event, not a face.** The face
+  tracker's `event_cb` goes to the log and nowhere else. Whether that matters is
+  a bench question — the sensor may well be the better signal for "someone is
+  standing in front of me" — but it is not what this item asked for, and it means
+  he greets a passing chair as readily as a child.
+- **No idle gate.** There is a 90 s cooldown but nothing checking "idle > 2 min",
+  so he can greet someone he was mid-conversation with a minute ago.
+- Greeting lines are not pre-rendered; the 64-entry TTS cache makes repeats
+  cheap, but the *first* one of the day still waits for piper.
 
 ### Priority 3 — thinking earcon
 At 2–4 s to first word, kids in a loud hall assume he didn't hear and repeat
 themselves. The moment a Claude-path question is accepted (local matcher missed,
 before the API call), play a cached "Hmm…" / soft robot chirp — cache hit is
 ~0 s. Bonus: pulse the eyes/LED while thinking. Hook point: `Brain.respond`
-just before `_ask_claude`, or in `Assistant.converse` keyed off the source.
+just before `_ask_llm` (renamed since this was written), or in
+`Assistant.converse` keyed off the source. Still entirely absent as of
+2026-08-16 — `brain.py` imports no sound module at all. Note the *visual* half
+already exists: `Assistant._thinking` drives the chest HUD's THINKING state, so
+this is the audible half of a signal the robot is already giving.
 
 ### Priority 4 — "show yourself off" demo routine
 One voice command + web button that runs a scripted showcase: eyes sweep, head
@@ -201,6 +298,9 @@ speak with a neural voice"). Teachers will ask for this constantly.
 - Script = list of (speak, move) steps; reuse `speak_stream` + servo calls.
 - Narration lines are fixed → TTS cache makes the whole routine start instantly.
 - Local command ("introduce yourself", "show off") + Claude tool + panel button.
+- Confirmed entirely absent on 2026-08-16 — no matcher pattern, no tool in the
+  14-entry `CLAUDE_TOOLS`, no button. (`demo.py` at the repo root is an old
+  servo script, unrelated, and easy to mistake for a start on this.)
 
 ### Priority 5 — offline fun-fact fallback
 If venue WiFi dies, every open question becomes "my AI brain isn't connected."
@@ -208,30 +308,53 @@ If venue WiFi dies, every open question becomes "my AI brain isn't connected."
   offline via the local matcher (`commands.py:_PATTERNS`).
 - When Claude is unreachable, fall back to something friendlier that points at
   what still works: "My internet brain is down, but ask me for a robot fact!"
+- Confirmed open on 2026-08-16. There is no fact bank, and the two dead ends are
+  still the flat ones — "Sorry, I can't answer that — my A.I. brain isn't
+  connected yet." and "I'm having trouble reaching my brain right now." Worth
+  knowing that the `auto` backend already falls back to Ollama before either of
+  those is reached, so this is the *last* resort, not the first.
 
 ### Then — the rest (rough order)
-- **Event persona / audience awareness:** system prompt knows it's talking to
-  students; age-appropriate, deflect mischief with humor. Settings toggle
-  ("event mode") so home personality is unchanged.
+- **Event persona / audience awareness — half built.** The toggle this item
+  asked for exists (`event.enabled`, see the correction at the top) and it
+  already changes the prompt, but only to say "you are at a public event, answer
+  in one short sentence". Nothing tells him he is talking to *students*: no
+  age-appropriate register, no deflecting mischief with humour. That is a
+  paragraph in the event-mode prompt, not new machinery.
 - ~~**Panel auth**~~ — done 2026-08-12: a 4-digit PIN gates the settings and
   everything that moves him; `/api/say` is deliberately still open, and the
   cart's STOP always is. See the note at the top of this file.
-- **Big STOP + volume control:** `/api/sound/stop` exists but isn't prominent;
-  voice-"stop" mid-speech is impossible (half-duplex card — mic is off while he
-  talks). No volume control exists anywhere (card pinned at 100% via amixer) —
-  add an amixer slider in admin + "quieter/louder" local commands.
+- **Big STOP + volume control:** `/api/sound/stop` exists and — confirmed
+  2026-08-16 — has **zero callers in the UI**. Not "isn't prominent": there is
+  no button anywhere on the panel that stops him talking, on any tab, so the
+  only way to shut him up mid-sentence is curl. That is the cheapest item on
+  this list. Voice-"stop" mid-speech remains impossible (half-duplex card — the
+  mic is off while he talks). No volume control exists anywhere (card pinned at
+  100% via amixer) — add an amixer slider in admin + "quieter/louder" local
+  commands. Note `voice.gain` is *microphone* gain, not output; it is not this.
 - **Visitor kiosk view:** read-only fullscreen `/kiosk` route — big face, live
   captions of heard/said (noisy rooms + accessibility), "Say 'Hey Fred'…"
   prompt. Face SVG, envelope animation, transcript polling all exist already.
+  Confirmed 2026-08-16: no such route, and the word "kiosk" appears nowhere in
+  the repo but this line. The pieces really are all there to assemble.
 - **Persist the transcript:** `convlog.py` is a 300-entry in-memory ring —
   everything asked evaporates on restart. Append to a dated `.jsonl`; post-event
   review of real student questions + a closing stat ("answered 214 questions").
-- **Wake-word noise robustness:** `WAKE_WORDS` includes `"friend"`
-  (`listener.py:37`) — crowd chatter saying "my friend…" triggers him. Event
-  setting requiring the two-word "hey fred" form; push-to-talk button as backup.
+  Still true on 2026-08-16. Do not mistake `logs/heard.jsonl` for this: that is
+  the ASR-miss log, one row per *utterance* with the route it took, and it is
+  now the thing whose directory the `.gitignore` fix above actually covers —
+  which is worth thinking about before writing full transcripts beside it.
+- **Wake-word noise robustness:** `WAKE_WORDS` still includes `"friend"`
+  (now `listener.py:50` — the old cite drifted) — crowd chatter saying
+  "my friend…" triggers him. Matching is single-token, so nothing requires the
+  "hey" at all, and event mode carries no strictness knob to add one. Push-to-talk
+  does not exist either: the chest VOICE page is a latching on/off, not a hold.
 - **Thermal:** `get_throttled` already shows `0x80000` (soft temp limit hit on a
   desk). Buy a fan/heatsink before enclosing in the head shell. Software side:
-  have FRED say "I'm running a bit hot" when `throttled_now` flips.
+  have FRED say "I'm running a bit hot" when `throttled_now` flips. Still open —
+  `/api/health` decodes the throttle bits but only the browser reads them.
+  `check_health` says "running hot" above 80 °C, which is close but backwards:
+  it answers when *asked*, and this item is about him volunteering it.
 - **Rate limiting:** no throttle on `/api/command`; combined with no-auth, one
   bored kid with a phone = denial-of-Fred. Cheap token bucket.
 
@@ -282,13 +405,23 @@ together with the InMoov app stopped.
   - *Possible follow-up:* have the toggle also **start/stop the `myrobotlab`
     systemd service** (via a small sudoers rule), so one switch both frees our
     hardware and boots MRL — today the operator releases here, then starts MRL
-    separately.
+    separately. *Still open on 2026-08-16: no sudoers rule for myrobotlab exists
+    (`/etc/sudoers.d/` has only the hotspot one and the login shell's), and
+    nothing in the app references the service. There is now a worked example to
+    copy — `sudoers-fred-hotspot` plus the `fred-ap-config` helper — so this is
+    a smaller job than it was when it was written.*
 
 ## Facial tracking (Pi Camera 3 → eye/neck servos)
 
 **BUILT 2026-07-04 — needs bench tuning with a real face.** The detector, control
 loop, API, and live UI are all in place (see "Implemented" below). What remains
 is sitting in front of the camera and dialling in the gains/inverts.
+
+*Still true on 2026-08-16, and now provable: `track` in `config/settings.json` is
+`{}`. `POST /api/track` writes the whole tuning set there the first time anything
+is changed, so an empty dict means no value has ever been dialled in and saved —
+this robot is running FaceTracker's built-in defaults. Nobody has sat in front of
+it yet.*
 
 ### Implemented (2026-07-04)
 - `inmoov/face_tracker.py`: `FaceTracker` — background thread pulls a lores
