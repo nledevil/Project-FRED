@@ -54,6 +54,17 @@ GATED = [
     # The AP password is the outermost credential on the robot now that
     # the access point comes up at boot with a route to the internet.
     "/api/hotspot/config",
+    # Joining someone else's WiFi is the same class of thing as configuring the
+    # AP: it moves the robot onto a network, and forgetting one can strand him
+    # at a venue. The scan is gated too — it sweeps the band for 40 s, so it is
+    # a way to make him unresponsive as much as it is a way to read the room.
+    "/api/uplink/scan", "/api/uplink/join", "/api/uplink/forget",
+    # Editing the deck changes what a one-tap button will make him say in front
+    # of a crowd. Reading it is open, below.
+    "/api/phrases/add", "/api/phrases/remove",
+    # What people said to him. Bystander speech is never logged, but this is
+    # still a record of visitors' voices and belongs behind the PIN.
+    "/api/heard", "/api/heard.jsonl",
 ]
 OPEN = [
     "/api/cart/stop",       # never, ever gated
@@ -78,6 +89,15 @@ OPEN = [
     # be backwards: the AP guest who cannot reach the tailnet door is exactly
     # the one who needs to be told about the other one.
     "/api/terminals",
+    # Reading the deck is open like the transcript is: the panel has to render
+    # the buttons before anyone has typed a PIN, and /api/say — which is what a
+    # deck button actually calls — is deliberately open anyway.
+    "/api/phrases",
+    # Which network he has joined, and the names of the ones he remembers. No
+    # passwords: the helper's saved() returns access-point keys only. Open for
+    # the same reason /api/whoami is — the chest panel shows it and has no
+    # session to obtain, and an empty WiFi page at a venue reads as broken.
+    "/api/uplink",
 ]
 
 
