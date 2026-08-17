@@ -26,13 +26,20 @@ Item {
         }
 
         Repeater {
-            model: P.servosView.rows || []
+            // The count, not the rows. servosView is rebuilt every tick, and
+            // the moment a drag moves a servo the rows *change*, so a model
+            // bound to them resets and destroys the very Slider the finger is
+            // on — one onMoved per touch, then nothing. A count only changes
+            // when servos appear or the page turns, so the delegate survives
+            // its own drag; each row reads the live view by index instead.
+            model: (P.servosView.rows || []).length
             RowLayout {
+                property var row: (P.servosView.rows || [])[index] || ({})
                 Layout.fillWidth: true
                 Layout.preferredHeight: 46
                 spacing: 12
                 Text {
-                    text: modelData.label; color: Th.ink
+                    text: row.label || ""; color: Th.ink
                     font.pixelSize: Th.px["2"]; font.family: Th.font
                     font.letterSpacing: Th.tracking
                     Layout.preferredWidth: 190
@@ -41,15 +48,22 @@ Item {
                 Slider {
                     id: slider
                     Layout.fillWidth: true
-                    from: modelData.lo
-                    to: modelData.hi
+                    // Replacing background with a size-less Item collapses the
+                    // control's implicit height to zero. The track and knob
+                    // still draw (nothing clips), so the page looks right while
+                    // the touchable area is a zero-height line — every drag
+                    // falls straight through to nothing. The row's height is
+                    // the real hit target, so claim it.
+                    Layout.preferredHeight: 46
+                    from: row.lo !== undefined ? row.lo : 0
+                    to: row.hi !== undefined ? row.hi : 180
                     // Follows the robot except while a finger is on it, which
                     // is what page_servos does with its "held" window.
-                    value: pressed ? value : modelData.angle
+                    value: pressed ? value : (row.angle || 0)
                     enabled: !(P.servosView.blocked)
-                    onMoved: P.moveServo(modelData.name, value, false)
+                    onMoved: P.moveServo(row.name, value, false)
                     onPressedChanged: if (!pressed)
-                        P.moveServo(modelData.name, value, true)
+                        P.moveServo(row.name, value, true)
 
                     background: Item {
                         Rectangle {
@@ -67,9 +81,9 @@ Item {
                         // The tick at rest, so "where should this be" is
                         // answerable at a glance.
                         Rectangle {
-                            x: (modelData.hi > modelData.lo
-                                ? (modelData.rest - modelData.lo)
-                                  / (modelData.hi - modelData.lo) : 0) * parent.width - 1
+                            x: (row.hi > row.lo
+                                ? (row.rest - row.lo)
+                                  / (row.hi - row.lo) : 0) * parent.width - 1
                             anchors.verticalCenter: parent.verticalCenter
                             width: 2; height: 28; color: Th.edge
                         }
@@ -82,7 +96,7 @@ Item {
                     }
                 }
                 Text {
-                    text: Math.round(modelData.angle)
+                    text: Math.round(row.angle || 0)
                     color: P.servosView.blocked ? Th.dimInk : Th.ink
                     font.pixelSize: Th.px["2"]; font.family: Th.font
                     horizontalAlignment: Text.AlignRight
