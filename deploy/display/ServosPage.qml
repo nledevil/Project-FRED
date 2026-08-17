@@ -110,7 +110,11 @@ Item {
         RowLayout {
             Layout.fillWidth: true
             spacing: 12
-            Btn { label: "REST"; implicitWidth: 120; onTapped: P.restServos() }
+            // "Reset", not "REST": the servos' *rest angles* are what it sends,
+            // but nobody standing at the robot reads it that way — and the
+            // brain's own tool for this is already called reset_pose. The API
+            // underneath is still /api/rest; only the word on the button moved.
+            Btn { label: "Reset"; implicitWidth: 120; onTapped: P.restServos() }
             Item { Layout.fillWidth: true }
             Btn {
                 visible: (P.servosView.pages || 1) > 1
