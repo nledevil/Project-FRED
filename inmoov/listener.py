@@ -56,7 +56,17 @@ FULL_SCALE = 32767              # int16, so a peak is a fraction of this
 # and see the whole of it.
 LEVEL_HISTORY = 48
 
-WAKE_WORDS = ("fred", "friend", "fread", "frayed")
+# His name, plus what the recogniser actually produces when someone says it.
+# Every one of these was observed in logs/heard.jsonl rather than guessed:
+# "alfred" is "hey Fred" run together into a single token, and "fraud"/"bread"
+# are what a general lexicon reaches for when a short name competes with the
+# whole English vocabulary. Words that are *ordinary* English stay out however
+# close they sound — "are" and "from" also turned up, and either would make him
+# answer half the conversations in the room.
+# "fread" is deliberately absent: it is not in this model's vocabulary, so no
+# recogniser can ever emit it and listing it only makes Vosk log a warning per
+# grammar it builds. Checked, not assumed — the other six are all in there.
+WAKE_WORDS = ("fred", "friend", "frayed", "alfred", "fraud", "bread")
 ARM_WINDOW = 6.0     # seconds to wait for the command after a bare "Fred"
 # Seconds the mic stays open after FRED has asked a question. Longer than the
 # window above because answering a question takes a beat more thought than
@@ -72,6 +82,16 @@ FOLLOWUP_WINDOW = 9.0
 # The cost is that a bare "stop" won't do it — "Fred, stop" will. That is the
 # same bargain the wake word already makes everywhere else.
 BARGE_NEEDS_WAKE_WORD = True
+# Barge-in listens with a *restricted* grammar: the only things it can output
+# are his name and "[unk]". A short name competing against the full lexicon is
+# the whole problem — measured on this model, "Fred, stop talking" came back as
+# "fresh start talking" and "hey Fred" as "alfred", so nothing matched and he
+# talked straight over the person. Given only the name to find, it finds it.
+#
+# Needs a model built with a dynamic graph (the "-lgraph" suffix). If the model
+# can't take a grammar, _run falls back to watching the ordinary recogniser and
+# says so once.
+BARGE_GRAMMAR = json.dumps(sorted(WAKE_WORDS) + ["[unk]"])
 
 
 class Listener:
@@ -127,6 +147,7 @@ class Listener:
         # branch in _run and by arm() from the Assistant, hence an attribute
         # rather than a local — a plain float, written and read as one word.
         self._armed_until = 0.0
+        self._warned_grammar = False           # only say "no grammar support" once
         self._heard_at = 0.0                  # monotonic, last chunk that wasn't silence
         self._captured_at = 0.0               # monotonic, last chunk of any kind
         # When the current unbroken run of digital silence began. Tracked as its
@@ -313,6 +334,7 @@ class Listener:
         if self._model is None:                # ~2s load; do it off the boot path
             self._model = Model(str(self.model_path))
         rec = KaldiRecognizer(self._model, 16000)
+        brec = self._new_barge_rec()
         try:
             dropped = False       # audio was discarded -> restart the recogniser
             barged = False        # already cut this reply short
@@ -334,6 +356,7 @@ class Listener:
                         _reap(proc)
                         continue
                     rec = KaldiRecognizer(self._model, 16000)   # fresh recogniser after a gap
+                    brec = self._new_barge_rec()
                     with self._lock:
                         # Silence is measured per capture session, and a session
                         # now spans FRED's replies rather than restarting after
@@ -368,30 +391,48 @@ class Listener:
                     # Listening *through* his own reply. Safe because the device
                     # cancels its own output out of its capture — see pause() —
                     # so what arrives here is the room, not him.
+                    #
+                    # Two recognisers, deliberately. brec only knows his name and
+                    # decides whether to stop him; rec knows English and produces
+                    # the sentence they actually said. Asking one recogniser to do
+                    # both is what failed: given the whole lexicon, "Fred, stop
+                    # talking" decodes as "fresh start talking" and nothing fires.
+                    if not barged and brec is not None:
+                        if brec.AcceptWaveform(data):
+                            hit = json.loads(brec.Result()).get("text", "")
+                        else:
+                            # Partial: this is the half that has to be quick.
+                            # Waiting for a final means waiting for them to stop
+                            # talking, by which time he has talked over them.
+                            hit = json.loads(brec.PartialResult()).get("partial", "")
+                        if _wants_him(hit):
+                            barged = True
+                            self._barge()
                     if rec.AcceptWaveform(data):
                         text = json.loads(rec.Result()).get("text", "").strip()
                         if text:
                             if not barged and _wants_him(text):
-                                # No partial got there first — a whole utterance
-                                # landed in one chunk. Stop him now.
+                                # Nothing caught it earlier — a whole utterance
+                                # landing in one chunk. Stop him now.
+                                barged = True
                                 self._barge()
-                            # Routed normally — *not* armed. Speech heard over his
-                            # own voice has to carry his name to count, or every
-                            # passing conversation becomes a command.
-                            try:
-                                self._dispatch(text, time.monotonic())
-                            except Exception as exc:  # noqa: BLE001
-                                print(f"[Listener] handler error: {exc}")
+                            if barged:
+                                # He was interrupted, so this was aimed at him.
+                                # If his name survived into this transcript let
+                                # the normal path strip it (and answer a bare
+                                # "Fred" with "Yes?"); if it came out as "fresh"
+                                # or "alfred", take the sentence whole rather
+                                # than demand a name the recogniser just lost.
+                                try:
+                                    if _strip_wake(text) is None:
+                                        self._dispatch(text, time.monotonic(), armed=True)
+                                    else:
+                                        self._dispatch(text, time.monotonic())
+                                except Exception as exc:  # noqa: BLE001
+                                    print(f"[Listener] handler error: {exc}")
                         barged = False
-                    elif not barged:
-                        # Partial, not final: this is the half of barge-in that
-                        # has to be quick. Waiting for a final means waiting for
-                        # them to stop talking, and he would still be answering
-                        # the old question over the top of them.
-                        part = json.loads(rec.PartialResult()).get("partial", "").strip()
-                        if _wants_him(part):
-                            barged = True
-                            self._barge()
+                        if brec is not None:
+                            brec.Reset()       # next utterance starts clean
                     continue
                 if dropped:
                     # Audio was thrown away, so the recogniser is mid-utterance on
@@ -413,6 +454,23 @@ class Listener:
             print(f"[Listener] loop error: {exc}")
         finally:
             self._close_proc()
+
+    def _new_barge_rec(self):
+        """A recogniser that can only hear his name, for deciding to interrupt.
+
+        Returns None when the model has no dynamic graph, in which case _run
+        watches the ordinary recogniser instead — worse, but not broken.
+        """
+        if self._model is None:
+            return None
+        try:
+            return KaldiRecognizer(self._model, 16000, BARGE_GRAMMAR)
+        except Exception as exc:  # noqa: BLE001
+            if not self._warned_grammar:
+                self._warned_grammar = True
+                print(f"[Listener] no grammar support in this model ({exc}); "
+                      "barge-in will be less reliable at hearing his name")
+            return None
 
     def _barge(self) -> None:
         """Tell whoever is speaking to stop. Never lets a handler kill the loop."""
