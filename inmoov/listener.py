@@ -2,15 +2,24 @@
 
 Runs ``arecord`` on the USB mic and feeds the raw 16 kHz PCM to a Vosk
 recogniser (offline, on-device). When a final transcript contains the wake word
-("Hey FRED"), the rest of that utterance is treated as a command; if nothing
-followed the wake word, FRED says "Yes?" and the *next* utterance is the command.
+— his name, "Fred", anywhere in the utterance — the rest of that utterance is
+treated as a command; if nothing followed it, FRED says "Yes?" and the *next*
+utterance is the command. A leading "hey" or "ok" is not required and never was:
+_strip_wake scans for the name and keeps whatever comes after it, so "Fred, turn
+your head" and "hey Fred, turn your head" are the same sentence to him.
+
+The wake word is how a conversation *starts*, not a toll on every sentence: when
+FRED himself ends a turn on a question, ``arm()`` holds the mic open so the
+answer to "which one did you mean?" is just the answer. See Assistant.converse.
 
 Design mirrors the other hardware wrappers: ``available()`` is False (and the
 thread never starts) when Vosk or the model or the mic are missing, so the app
 still runs without voice.
 
-The recogniser is muted while FRED is speaking (via the ``is_muted`` callback)
-so he doesn't hear and transcribe his own voice.
+The recogniser is muted while FRED is speaking (``pause``/``resume``) so a reply
+cannot answer itself. The microphone itself keeps running throughout — the
+PowerConf is full duplex and cancels its own output from its capture; see
+``Listener.pause`` for what was measured.
 """
 from __future__ import annotations
 
@@ -48,7 +57,21 @@ FULL_SCALE = 32767              # int16, so a peak is a fraction of this
 LEVEL_HISTORY = 48
 
 WAKE_WORDS = ("fred", "friend", "fread", "frayed")
-_ARM_WINDOW = 6.0    # seconds to wait for the command after a bare "Hey FRED"
+ARM_WINDOW = 6.0     # seconds to wait for the command after a bare "Fred"
+# Seconds the mic stays open after FRED has asked a question. Longer than the
+# window above because answering a question takes a beat more thought than
+# issuing a command after "Yes?" — and because it is measured from the moment he
+# stops talking, not from the moment he decided what to say.
+FOLLOWUP_WINDOW = 9.0
+# Interrupting him takes his name. Any-speech-interrupts was tried first and is
+# unusable in a real room: with a television on, four lines of dialogue in seven
+# seconds each cut him off *and* were taken as commands, so he started an answer,
+# lost it, started another, and the panel filled with replies nobody heard. The
+# room is full of speech that isn't for him; his name is the one signal that is.
+#
+# The cost is that a bare "stop" won't do it — "Fred, stop" will. That is the
+# same bargain the wake word already makes everywhere else.
+BARGE_NEEDS_WAKE_WORD = True
 
 
 class Listener:
@@ -57,7 +80,7 @@ class Listener:
     Parameters
     ----------
     on_command : callable(str)   -- called with the recognised command text.
-    on_wake : callable()         -- called on a bare "Hey FRED" (say "Yes?").
+    on_wake : callable()         -- called on a bare "Fred" (say "Yes?").
     device : str                 -- ALSA capture device for arecord.
     gain : float                 -- software mic boost applied to the raw PCM
                                     before Vosk sees it. The USB mic's analog
@@ -73,11 +96,18 @@ class Listener:
     so the two must never overlap.
     """
 
-    def __init__(self, on_command, on_wake=None,
+    def __init__(self, on_command, on_wake=None, on_barge=None,
                  device: str = "plughw:0,0", model_path: str | Path = MODEL_PATH,
-                 gain: float = 1.0):
+                 gain: float = 1.0, barge_in: bool = True):
         self._on_command = on_command
         self._on_wake = on_wake or (lambda: None)
+        # Called the moment somebody starts talking over him, so the reply can be
+        # cut short. Separate from on_command because it fires on a *partial* —
+        # the point is to stop within a word, not to wait out their sentence.
+        self._on_barge = on_barge or (lambda: None)
+        # Whether to listen at all while he speaks. Off = the old behaviour, where
+        # audio during a reply is read and dropped.
+        self.barge_in = bool(barge_in)
         self.device = device
         self.gain = max(1.0, float(gain))       # never attenuate below the captured level
         self.model_path = Path(model_path)
@@ -92,6 +122,11 @@ class Listener:
         # See _note_level() for why digital silence is worth its own flag.
         self._peak = 0                        # loudest sample in the last chunk
         self._levels = collections.deque(maxlen=LEVEL_HISTORY)   # recent chunk peaks
+        # Monotonic deadline: while now < this, an utterance is taken as speech
+        # meant for FRED with no wake word in front of it. Set by the bare-wake
+        # branch in _run and by arm() from the Assistant, hence an attribute
+        # rather than a local — a plain float, written and read as one word.
+        self._armed_until = 0.0
         self._heard_at = 0.0                  # monotonic, last chunk that wasn't silence
         self._captured_at = 0.0               # monotonic, last chunk of any kind
         # When the current unbroken run of digital silence began. Tracked as its
@@ -101,25 +136,71 @@ class Listener:
         self._silent_since = 0.0
 
     def pause(self) -> None:
-        """Suspend mic capture so playback runs alone, and *block until the card
-        is actually free*.
+        """Stop feeding the recogniser while FRED speaks. The mic stays open.
 
-        This used to only send SIGTERM and return, leaving arecord to die on its
-        own; the caller got away with it because rendering the TTS took a couple
-        of seconds, which was plenty of time. Now that speech is rendered by a
-        warm piper daemon (~0.1 s on a cache hit) that accidental grace period is
-        gone, so we reap the process here — the USB codec on this rig wedges if
-        capture and playback overlap even briefly.
+        This used to reap arecord and hand the card back, on the grounds that the
+        USB codec wedged if capture and playback overlapped even briefly. Measured
+        on the Anker PowerConf (2026-08-19) that is not true of this device:
+
+        * Capture and playback are separate USB interfaces with separate
+          endpoints (2 OUT / 3 IN, ``/proc/asound/card0/stream0``). Both report
+          ``Running`` together indefinitely, a capture taken straight through six
+          seconds of continuous playback came back full-length and gap-free, and
+          the two streams together use about a fifth of a full-speed bus.
+        * The device cancels its own output out of the mic. Playing a phrase of
+          nine words no room would produce ("banana helicopter Tuesday...") and
+          transcribing the capture — with ``gain`` applied, as below — returned
+          not one of them, three times over. Correlation puts the echo near
+          -43 dB, roughly 33 dB under the noise floor of an ordinary room; the
+          mic actually goes *quieter* while it plays, so it ducks rather than
+          merely subtracting.
+
+          It cancels that well because the speaker and the microphones are one
+          sealed unit. The A3301 carries a six-mic array around a single driver,
+          so the path from driver to capsules is fixed, known to the firmware and
+          unchanging, and the array beamforms toward whoever is talking and away
+          from its own speaker. (It is Zoom-certified, which is a duplex
+          conformance bar, not just a logo.) That is what makes this a property of
+          the device rather than of where it happened to be sitting on the day —
+          so moving the robot cannot quietly undo it. A separate speaker and a
+          single microphone would have neither guarantee, which is very likely
+          the arrangement the original "the codec wedges" note was written for.
+
+        So the stream stays up and this only stops the *recogniser* from being
+        fed. That matters beyond tidiness: closing meant a device reopen and a
+        fresh recogniser on every single reply, and it put arecord's restart in a
+        race with aplay for the card — which is the failure ``play_file``'s retry
+        and its longer first-clip probe exist to survive.
+
+        Frames are still read while paused (see ``_run``) and simply dropped: stop
+        reading and arecord's pipe fills, which really would wedge it.
 
         Safe to call from the listener thread itself (the usual path: a
         recognised command calls back into Assistant.speak).
         """
         self._paused.set()
-        self._close_proc()
 
     def resume(self) -> None:
-        """Resume mic capture after playback."""
+        """Start feeding the recogniser again once FRED has stopped talking."""
         self._paused.clear()
+
+    def arm(self, seconds: float = FOLLOWUP_WINDOW) -> None:
+        """Accept the next utterance without a wake word, for ``seconds``.
+
+        Call this *after* FRED has finished speaking, not when the reply was
+        decided: nothing said while he talks is listened to, so a window opened
+        before he starts is mostly spent by the time anyone can answer.
+
+        Cheap to call when already armed — it extends rather than stacks.
+        """
+        self._armed_until = time.monotonic() + max(0.0, float(seconds))
+
+    def disarm(self) -> None:
+        """Close the window early. The wake word is required again."""
+        self._armed_until = 0.0
+
+    def is_armed(self) -> bool:
+        return time.monotonic() < self._armed_until
 
     def available(self) -> bool:
         return (Model is not None and self.model_path.is_dir()
@@ -199,7 +280,13 @@ class Listener:
                 "capturing": capturing, "peak": peak, "silent_for": silent_for,
                 "levels": levels, "peak_recent": max(levels) if levels else 0,
                 "full_scale": FULL_SCALE,
-                "capture_age": round(now - captured_at, 1) if captured_at else None}
+                "capture_age": round(now - captured_at, 1) if captured_at else None,
+                # Why a sentence with no wake word in it was answered. Without
+                # this the panel's transcript looks like FRED replied to nothing.
+                "barge_in": self.barge_in,
+                "armed": now < self._armed_until,
+                "armed_for": (round(self._armed_until - now, 1)
+                              if now < self._armed_until else None)}
 
     def start(self) -> bool:
         if not self.available():
@@ -226,15 +313,12 @@ class Listener:
         if self._model is None:                # ~2s load; do it off the boot path
             self._model = Model(str(self.model_path))
         rec = KaldiRecognizer(self._model, 16000)
-        armed_until = 0.0
         try:
+            dropped = False       # audio was discarded -> restart the recogniser
+            barged = False        # already cut this reply short
             while not self._stop.is_set():
-                if self._paused.is_set():      # playback in progress -> capture off (no duplex)
-                    self._close_proc()
-                    self._stop.wait(0.05)
-                    continue
                 proc = self._proc
-                if proc is None:               # (re)open capture after a pause or EOF
+                if proc is None:               # first start, or reopen after an EOF
                     proc = subprocess.Popen(
                         ["arecord", "-q", "-D", self.device, "-f", "S16_LE",
                          "-r", "16000", "-c", "1", "-t", "raw"],
@@ -251,8 +335,11 @@ class Listener:
                         continue
                     rec = KaldiRecognizer(self._model, 16000)   # fresh recogniser after a gap
                     with self._lock:
-                        # Silence is measured per capture session: the gap while
-                        # FRED was speaking is not the microphone's fault.
+                        # Silence is measured per capture session, and a session
+                        # now spans FRED's replies rather than restarting after
+                        # each one — so this only fires on a real EOF (arecord
+                        # died, or the card went away), where a silence run
+                        # measured across the gap would be meaningless.
                         self._silent_since = 0.0
                 try:
                     data = proc.stdout.read(4000)
@@ -266,25 +353,60 @@ class Listener:
                 self._note_level(data)
                 if self.gain > 1.0:
                     data = _amplify(data, self.gain)
+                if self._paused.is_set():
+                    with self._lock:
+                        # Don't let his turn count as the microphone going quiet:
+                        # the canceller ducks capture while he speaks, and that
+                        # is not the mic failing.
+                        self._silent_since = 0.0
+                    if not self.barge_in:
+                        # Read and drop. Leaving frames in arecord's pipe is what
+                        # would actually wedge it; the level meter still sees them,
+                        # so the panel keeps moving while he talks.
+                        dropped = True
+                        continue
+                    # Listening *through* his own reply. Safe because the device
+                    # cancels its own output out of its capture — see pause() —
+                    # so what arrives here is the room, not him.
+                    if rec.AcceptWaveform(data):
+                        text = json.loads(rec.Result()).get("text", "").strip()
+                        if text:
+                            if not barged and _wants_him(text):
+                                # No partial got there first — a whole utterance
+                                # landed in one chunk. Stop him now.
+                                self._barge()
+                            # Routed normally — *not* armed. Speech heard over his
+                            # own voice has to carry his name to count, or every
+                            # passing conversation becomes a command.
+                            try:
+                                self._dispatch(text, time.monotonic())
+                            except Exception as exc:  # noqa: BLE001
+                                print(f"[Listener] handler error: {exc}")
+                        barged = False
+                    elif not barged:
+                        # Partial, not final: this is the half of barge-in that
+                        # has to be quick. Waiting for a final means waiting for
+                        # them to stop talking, and he would still be answering
+                        # the old question over the top of them.
+                        part = json.loads(rec.PartialResult()).get("partial", "").strip()
+                        if _wants_him(part):
+                            barged = True
+                            self._barge()
+                    continue
+                if dropped:
+                    # Audio was thrown away, so the recogniser is mid-utterance on
+                    # a gap it never saw the far side of. Start it clean. Cheap —
+                    # this is the object, not the model.
+                    rec = KaldiRecognizer(self._model, 16000)
+                    dropped = False
+                barged = False
                 if not rec.AcceptWaveform(data):
                     continue
                 text = json.loads(rec.Result()).get("text", "").strip()
                 if not text:
                     continue
-                now = time.monotonic()
                 try:                           # a handler crash must not stop listening
-                    if now < armed_until:      # command following a bare wake word
-                        armed_until = 0.0
-                        self._on_command(text)
-                    else:
-                        cmd = _strip_wake(text)
-                        if cmd is None:
-                            continue           # no wake word -> ignore
-                        if cmd:
-                            self._on_command(cmd)
-                        else:                  # bare "Hey FRED" -> prompt & arm
-                            armed_until = now + _ARM_WINDOW
-                            self._on_wake()
+                    self._dispatch(text, time.monotonic())
                 except Exception as exc:  # noqa: BLE001
                     print(f"[Listener] handler error: {exc}")
         except Exception as exc:  # noqa: BLE001 - log a crash instead of dying silently
@@ -292,12 +414,44 @@ class Listener:
         finally:
             self._close_proc()
 
+    def _barge(self) -> None:
+        """Tell whoever is speaking to stop. Never lets a handler kill the loop."""
+        try:
+            self._on_barge()
+        except Exception as exc:  # noqa: BLE001
+            print(f"[Listener] barge handler error: {exc}")
+
+    def _dispatch(self, text: str, now: float, armed: bool = False) -> None:
+        """Route one final transcript: a command, a wake prompt, or nothing.
+
+        Split out of _run so the barge-in path can use it too. ``armed=True``
+        skips the wake word outright — someone talking over him has already made
+        it clear who they are talking to.
+        """
+        if armed or now < self._armed_until:
+            # Speech inside an open window: the command after a bare "Fred", the
+            # answer to a question he just asked, or an interruption. Consumed
+            # *before* the handler runs, so a reply ending on another question
+            # can re-arm.
+            self._armed_until = 0.0
+            self._on_command(text)
+            return
+        cmd = _strip_wake(text)
+        if cmd is None:
+            return                             # not addressed to him -> ignore
+        if cmd:
+            self._on_command(cmd)
+        else:                                  # bare "Fred" -> prompt & arm
+            self._armed_until = now + ARM_WINDOW
+            self._on_wake()
+
     def _close_proc(self) -> None:
         """Terminate the arecord subprocess and release the capture device.
 
-        Callable from any thread: pause() calls it to hand the USB card to
-        playback, and the loop calls it on EOF. The claim/release of ``_proc`` is
-        atomic so a concurrent pause() + loop-EOF can't double-reap. We reap the
+        Callable from any thread: stop() ends the thread that owns it, and the
+        loop calls it on EOF. pause() no longer does — the stream stays up while
+        FRED speaks, see pause(). The claim/release of ``_proc`` is atomic so a
+        concurrent close + loop-EOF can't double-reap. We reap the
         child (so ALSA frees the device) *and* close the pipe (so we don't leak an
         fd per pause) — the loop's read() tolerates the pipe vanishing underneath
         it, which is what makes closing from another thread safe.
@@ -333,6 +487,17 @@ def _amplify(data: bytes, gain: float) -> bytes:
     samples = np.frombuffer(data, dtype=np.int16).astype(np.float32) * gain
     np.clip(samples, -32768, 32767, out=samples)
     return samples.astype(np.int16).tobytes()
+
+
+def _wants_him(text: str) -> bool:
+    """Is this speech addressed to FRED — i.e. does his name appear in it?
+
+    The test for interrupting him. See BARGE_NEEDS_WAKE_WORD for why a room's
+    ordinary conversation must not qualify.
+    """
+    if not BARGE_NEEDS_WAKE_WORD:
+        return bool(text.strip())
+    return _strip_wake(text) is not None
 
 
 def _strip_wake(text: str):

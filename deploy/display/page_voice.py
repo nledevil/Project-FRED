@@ -65,8 +65,16 @@ class VoicePage:
             status = "SPEAKING"
         elif said.get("thinking"):
             status = "THINKING"
+        elif listening and (said.get("mic") or {}).get("armed"):
+            # He has just asked something and is holding the mic open for the
+            # reply. Worth its own line: the whole point is that the person does
+            # not have to say his name, and standing at the robot is exactly
+            # where you would otherwise wait for a prompt that never comes.
+            status = "LISTENING FOR YOUR ANSWER"
         elif listening:
-            status = "LISTENING FOR HEY FRED"
+            # Not "HEY FRED": the wake word is the name on its own, and a panel
+            # that tells people otherwise is where the "hey" habit comes from.
+            status = "LISTENING FOR FRED"
         else:
             status = "NOT LISTENING"
         return {"label": "PENDING" if pending else ("ON" if listening else "OFF"),

@@ -1,7 +1,7 @@
 """FRED's voice assistant — wires the wake-word listener, the hybrid brain, and
 lip-synced speech into one object the web app owns.
 
-Flow: Listener hears "Hey FRED ..." -> Brain turns it into an action + reply ->
+Flow: Listener hears "Fred ..." -> Brain turns it into an action + reply ->
 Assistant speaks the reply while animating the jaw in time with the audio.
 
 Speech is *pipelined*, because a talking head is judged on how fast it answers.
@@ -16,6 +16,7 @@ local commands only; no speaker -> silent. ``status()`` reports what's live.
 from __future__ import annotations
 
 import queue
+import re
 import threading
 import time
 import types
@@ -27,7 +28,7 @@ from pathlib import Path
 
 from . import heardlog
 from .brain import LOOK_MIN_SECS, Brain
-from .listener import Listener
+from .listener import ARM_WINDOW, Listener
 
 MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
 
@@ -36,7 +37,7 @@ class Assistant:
     def __init__(self, controller, led, tracker, sound, *, api_key: str | None = None,
                  device: str = "plughw:0,0", log=None, mic_gain: float = 1.0,
                  model: str | None = None, sensors=None, brain_cfg: dict | None = None,
-                 asr_model: str | None = None):
+                 asr_model: str | None = None, barge_in: bool = True):
         # sensors is the SensorHub, or None on a build with no sensor node — the
         # read_sensors action degrades to saying so rather than failing.
         self._ctx = types.SimpleNamespace(controller=controller, led=led,
@@ -62,12 +63,24 @@ class Assistant:
             # anywhere on disk.
             listener_kw["model_path"] = MODELS_DIR / str(asr_model)
         self.listener = Listener(on_command=self._on_command, on_wake=self._on_wake,
+                                 on_barge=self.interrupt,
+                                 barge_in=bool(barge_in),
                                  device=device, gain=mic_gain, **listener_kw)
         self._speaking = False
         # True from "FRED heard you" until the first audio of his reply — the
         # Claude round-trip made visible. The chest display shows it as a state.
         self._thinking = False
         self._speak_lock = threading.Lock()
+        # Barge-in: set to cut the current reply short because someone started
+        # talking over him. Speech checks it between clips and inside the wait
+        # for one, so he stops on the sentence he is on rather than finishing
+        # the whole answer to a room that has moved on.
+        self._interrupt = threading.Event()
+        # The thread running the current turn. Turns run off the listener thread
+        # so the microphone keeps being read while he answers — without that,
+        # nothing can hear the person interrupting.
+        self._turn: threading.Thread | None = None
+        self._turn_lock = threading.Lock()
         self._last_heard = ""
         self._last_reply = ""
         self._last_source = ""
@@ -166,6 +179,13 @@ class Assistant:
         self._last_heard = text
         if not text:                                # nothing to say: don't cycle the mic
             return {"reply": "", "source": "none", "actions": []}
+        # A new turn is never born interrupted. Cleared here rather than in
+        # _on_command because the panel's text box calls converse() directly —
+        # leaving it set there meant one barge-in silenced every typed reply
+        # afterwards, with the transcript still showing what he "said".
+        # Safe against the previous turn: _on_command has already interrupted
+        # and joined it before starting this one.
+        self._interrupt.clear()
         if self._log:
             self._log.user(text, source=source)
 
@@ -189,6 +209,21 @@ class Assistant:
 
         self._last_reply = result.get("reply", "")
         self._last_source = result.get("source", "")
+        # A question is an invitation to answer, so hold the mic open rather than
+        # making the person say his name again to finish the exchange they are
+        # already in. Here, not before speaking: capture is off for the whole of
+        # playback, so a window opened earlier would have burned down while he
+        # was still talking.
+        #
+        # Only when FRED actually asked something, and only when the turn came in
+        # by voice. Arming after every reply would leave the mic live on a room
+        # full of people all evening, which is what the wake word is for; arming
+        # after somebody typed in the panel would open it on a room that was
+        # never talking to him in the first place.
+        if source == "voice" and _ends_on_question(self._last_reply):
+            self.listener.arm()
+            if self._log:
+                self._log.event("Asked a question — listening for the answer…")
         # The tuning set a fair produces: what was heard and where it went.
         # After the reply, so a crash while speaking still logged the hearing.
         try:
@@ -205,13 +240,62 @@ class Assistant:
                            actions=result.get("actions"))
         return result
 
+    def interrupt(self) -> None:
+        """Stop the reply in progress. Someone is talking over him.
+
+        Cuts the audio immediately and unwinds ``speak_stream``; the brain may
+        still be writing sentences, but nothing further is spoken and the queue
+        is drained by the caller. Harmless when he isn't talking.
+        """
+        if self._speaking and self._log:
+            # Worth a line in the transcript: "he stopped mid-sentence" is
+            # otherwise indistinguishable from a crash, and if this starts
+            # appearing when nobody is talking it is the thing to look at.
+            self._log.event("Interrupted — someone spoke over him")
+        self._interrupt.set()
+        self._sound.stop()
+
     def _on_command(self, text: str) -> None:
-        self.converse(text, source="voice")
+        """A recognised utterance. Runs the turn *off* the listener thread.
+
+        This used to call converse() inline, which meant the thread that reads
+        the microphone sat in speaker.join() for the whole reply — nothing was
+        read while he talked, so nobody could interrupt him however loudly they
+        spoke. The turn gets its own thread and the listener goes straight back
+        to reading.
+
+        A new utterance while a turn is still running *is* the interruption: the
+        old turn is cut short and briefly waited for, so two replies can never
+        be spoken over each other.
+        """
+        with self._turn_lock:
+            running = self._turn
+        if running is not None and running.is_alive():
+            self.interrupt()
+            # Short join: the point is to serialise turns, not to stall the mic.
+            # interrupt() has already killed the audio, so this returns quickly;
+            # the timeout is a backstop for a brain call that is mid-request.
+            running.join(timeout=2.0)
+        turn = threading.Thread(target=self._run_turn, args=(text,),
+                                name="turn", daemon=True)
+        with self._turn_lock:
+            self._turn = turn
+        turn.start()
+
+    def _run_turn(self, text: str) -> None:
+        try:
+            self.converse(text, source="voice")
+        except Exception as exc:  # noqa: BLE001 - a turn must never kill the thread
+            print(f"[Assistant] turn failed: {exc}")
 
     def _on_wake(self) -> None:
         if self._log:
-            self._log.event("Heard “Hey FRED” — listening…")
+            self._log.event("Heard his name — listening…")
         self.speak("Yes?")
+        # Restart the window now that the mic is live again. _run armed it before
+        # this call, so without this the second or so spent saying "Yes?" comes
+        # out of the time the person has to speak.
+        self.listener.arm(ARM_WINDOW)
 
     # ---- lip-synced speech ------------------------------------------------
     def speak(self, text: str) -> bool:
@@ -236,8 +320,10 @@ class Assistant:
         if not self._sound.can_speak():
             return False
         with self._speak_lock:
-            # Mic off first, and pause() blocks until arecord has really released
-            # the USB card — capture and playback must never overlap on this rig.
+            # Stop listening — but the mic stream stays up through playback now:
+            # the PowerConf runs both directions at once and cancels its own
+            # voice out of its capture, so there is nothing to hand over. See
+            # Listener.pause for the measurements.
             self.listener.pause()
             # Remember where the mouth is, so we RESTORE it after speaking rather
             # than force-closing — e.g. "open your mouth" opens the jaw first, then
@@ -257,8 +343,12 @@ class Assistant:
             try:
                 first = True
                 while True:
+                    if self._interrupt.is_set():
+                        break                      # barged in: stop mid-reply
                     path = rendered.get()
                     if path is None:               # renderer finished
+                        break
+                    if self._interrupt.is_set():
                         break
                     # Only the first clip gets the lead-in padding; re-padding each
                     # sentence would insert a silent gap mid-reply.
@@ -273,7 +363,7 @@ class Assistant:
                 if jaw and hold_angle is not None:
                     self._controller.set_angle("jaw", hold_angle)   # restore prior mouth position
                 self._speaking = False
-                self.listener.resume()             # mic capture back on
+                self.listener.resume()             # listening again
             return spoke
 
     def _render_ahead(self, sentences, out: queue.Queue, abort: threading.Event) -> None:
@@ -312,6 +402,9 @@ class Assistant:
             self._thinking = False      # sound is out: he's answering, not pondering
             self._animate_jaw(levels, frame_dt, epoch)
             while self._sound.is_playing():                          # let audio finish
+                if self._interrupt.is_set():
+                    self._sound.stop()             # cut this clip off mid-word
+                    break
                 time.sleep(0.02)
         return True
 
@@ -341,6 +434,10 @@ class Assistant:
         lead-in silence plus the device's own start-up latency. Starting the
         envelope at ``time.monotonic()`` instead (as this used to) marched the jaw
         through the whole utterance a lead-in ahead of the voice.
+
+        Returns early when the reply is interrupted. This loop is the jaw's only
+        driver and it blocks for the length of the clip, so without that check a
+        barge-in leaves him mouthing the rest of a sentence nobody can hear.
         """
         s = self._controller.servos.get("jaw")
         if not s or not levels:
@@ -349,6 +446,12 @@ class Assistant:
         span = opened - closed
         start = epoch if epoch is not None else time.monotonic()
         for i, lvl in enumerate(levels):
+            if self._interrupt.is_set():
+                # Barged in: the audio was killed the instant it was requested,
+                # but this loop owns the next second or two of jaw movement and
+                # would mime its way to the end of the clip in silence. Stop
+                # here; speak_stream's finally puts the mouth back.
+                return
             dt = (start + i * frame_dt) - time.monotonic()
             if dt > 0:
                 time.sleep(dt)
@@ -357,6 +460,23 @@ class Assistant:
             # a small floor so the mouth still flutters on quiet syllables
             open_amt = min(1.0, 0.15 + 0.85 * float(lvl))
             self._controller.set_angle("jaw", closed + span * open_amt)
+
+
+# Sentence-final punctuation that closes a question. The closing bracket/quote
+# class is there because FRED's replies come out of a sentence splitter that
+# keeps them ("...which one did you mean?").
+_QUESTION_END = re.compile(r"\?[\"\'’”)\]]*\s*$")
+
+
+def _ends_on_question(reply: str) -> bool:
+    """Did FRED finish his turn by asking something?
+
+    The *last* sentence is what decides it. A reply that asks something in
+    passing and then answers it ("Is it raining? Yes, and it will be all day.")
+    is not waiting on anybody, and holding the mic open after one would leave it
+    live on a room that has no reason to reply.
+    """
+    return bool(_QUESTION_END.search((reply or "").strip()))
 
 
 def _drain(q: queue.Queue):

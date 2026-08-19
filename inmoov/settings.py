@@ -164,6 +164,12 @@ DEFAULT_SETTINGS = {
         # to the wide camera. Measure with tools/bench_asr.py before switching.
         "asr_model": "vosk-model-en-us-0.22-lgraph",
         "model": "claude-haiku-4-5-20251001",   # Claude model behind FRED's replies.
+        # Listen through his own replies, so saying his name over him cuts the
+        # answer short. The speakerphone cancels his voice out of its own capture,
+        # so this hears the room rather than him — but it does hear the *room*,
+        # which is why it takes his name and not just any speech. Turn it off
+        # where even that misfires.
+        "barge_in": True,
                                       # Haiku answers in ~0.7s vs Opus's ~1.7s; for one- or
                                       # two-sentence spoken replies that trade is worth it.
     },

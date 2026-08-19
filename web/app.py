@@ -182,7 +182,9 @@ _assistant = Assistant(_ctrl, _status_led, _tracker, _sound,  # voice: wake word
                        model=_voice_cfg.get("model") or None,
                        sensors=_sensors,
                        brain_cfg=_settings.get("brain", {}),   # cloud/local routing
-                       asr_model=_voice_cfg.get("asr_model"))
+                       asr_model=_voice_cfg.get("asr_model"),
+                       # Listen through his own replies so he can be interrupted.
+                       barge_in=bool(_voice_cfg.get("barge_in", True)))
 # Auto-greet: the first thing FRED does unprompted. Wired after the assistant
 # because it needs one, and attached to the hub afterwards because the hub was
 # needed to build the assistant — the dependency is genuinely circular.
