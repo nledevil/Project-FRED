@@ -115,6 +115,13 @@ Item {
             // brain's own tool for this is already called reset_pose. The API
             // underneath is still /api/rest; only the word on the button moved.
             Btn { label: "Reset"; implicitWidth: 120; onTapped: P.restServos() }
+            // Relax, next to Reset, same as the web panel — the two are used
+            // in the same session and a control that exists on one screen and
+            // not the other reads as a fault. Reset parks the head and keeps
+            // holding it; Relax cuts the pulses, so the head goes limp and can
+            // sag under its own weight. Different enough to be its own button
+            // rather than a second meaning for Reset.
+            Btn { label: "Relax"; implicitWidth: 120; onTapped: P.relaxServos() }
             Item { Layout.fillWidth: true }
             Btn {
                 visible: (P.servosView.pages || 1) > 1
@@ -135,7 +142,7 @@ Item {
 
         Text {
             text: P.servosView.blocked
-                  || "DRAG TO MOVE - LIMITS ARE THE CALIBRATED ONES"
+                  || "DRAG TO MOVE - RELAX CUTS TORQUE, THE HEAD GOES LIMP"
             color: P.servosView.blocked ? Th.badInk : Th.dimInk
             font.pixelSize: P.servosView.blocked ? Th.px["2"] : Th.px["1"]
             font.family: Th.font

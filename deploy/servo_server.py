@@ -372,8 +372,22 @@ class _Handler(server.BaseHTTPRequestHandler):
             name = body.get("name")
             if name is not None and name not in _ctrl.servos:
                 return self._send(404, {"error": f"unknown servo {name!r}"})
-            _ctrl.relax(name)
-            return self._send(200, {"relaxed": name or "all"})
+            # Locked servos keep their pulse. Cutting torque is not a move this
+            # server issues, but it is one gravity issues a moment later — and
+            # a lock exists precisely because that servo must stay put. Refuse
+            # a named one outright (423, like a move); skip them in a relax-all
+            # and say which, so "all" is never read as more than it did.
+            if name is not None:
+                if name in LOCKED:
+                    return self._send(423, {"error": f"{name} is locked "
+                                                     "(SERVO_LOCKED) and will not be relaxed"})
+                _ctrl.relax(name)
+                return self._send(200, {"relaxed": name, "skipped_locked": []})
+            for n in _ctrl.servos:
+                if n not in LOCKED:
+                    _ctrl.relax(n)
+            return self._send(200, {"relaxed": "all",
+                                    "skipped_locked": sorted(LOCKED & set(_ctrl.servos))})
 
         if path == "/api/suspend":
             _ctrl.suspend()

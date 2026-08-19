@@ -181,6 +181,19 @@ class FaceTracker:
         with self._lock:
             return self._thread is not None and self._thread.is_alive()
 
+    def driven(self) -> set[str]:
+        """The servos this loop commands: the configured names, plus head tilt
+        when this head has one.
+
+        Anything that cuts torque needs to ask. A relax on a servo the loop is
+        driving is undone on the next frame — the pulse is back within 1/fps
+        and the servo never actually goes slack.
+        """
+        names = set(self._names.values())
+        if self._tilt:
+            names.add(self._tilt)
+        return names
+
     def tuning(self) -> dict:
         return {k: getattr(self, "_fps" if k == "fps" else k) for k in TUNABLE}
 

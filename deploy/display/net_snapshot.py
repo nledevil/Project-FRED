@@ -159,6 +159,12 @@ class Net:
     def post_rest(self) -> None:
         self._fire(f"{NUC}/api/rest", {})
 
+    def post_relax(self) -> None:
+        """Cut every servo's pulse. Brain-side, like rest — and the brain is
+        also what stops face tracking first, so the loop cannot re-drive what
+        this just released."""
+        self._fire(f"{NUC}/api/relax", {})
+
     def post_hotspot(self, on: bool) -> None:
         """The access point lives on the *brain* — it has the AP-capable radio."""
         self._fire(f"{NUC}/api/hotspot", {"enabled": bool(on)})

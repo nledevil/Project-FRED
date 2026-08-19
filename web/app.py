@@ -1446,12 +1446,32 @@ def api_rest():
 @app.post("/api/relax")
 @protected
 def api_relax():
+    """Cut the pulses so the servos stop holding torque.
+
+    Face tracking is stopped first when it drives any servo being relaxed.
+    Without that the relax lands and is immediately undone: the tracker's loop
+    calls set_angle on the eyes, neck and head tilt every frame, so the pulse
+    is back within 1/fps and the servos never go slack — which reads, to
+    whoever pressed the button, as the button doing nothing.
+
+    The jaw is deliberately not covered: the assistant only drives it while
+    FRED is mid-sentence, and cutting a sentence short is worse than a jaw
+    that goes slack a second later when the speech ends.
+    """
     if (blocked := _blocked_by_handoff()):
         return blocked
     name = (request.get_json(silent=True) or {}).get("name")
+    # Outside _lock on purpose: stop() joins the tracker thread, and that thread
+    # is in and out of the controller on its own. Holding the route lock across
+    # a join is how you turn a 2 s timeout into a stuck panel.
+    stopped = False
+    if _tracker.is_tracking() and (name is None or name in _tracker.driven()):
+        _tracker.stop()
+        stopped = True
     with _lock:
         _ctrl.relax(name)
-    return jsonify({"relaxed": name or "all"})
+    return jsonify({"relaxed": name or "all", "tracking_stopped": stopped,
+                    "track": _tracker.status()})
 
 
 @app.post("/api/record")

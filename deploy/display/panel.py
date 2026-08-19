@@ -448,6 +448,10 @@ class Panel(QObject):
     def restServos(self):
         self._net.post_rest()
 
+    @Slot()
+    def relaxServos(self):
+        self._net.post_relax()
+
     @Slot(int)
     def turnServoPage(self, delta):
         self._servos_page.turn_page(delta)

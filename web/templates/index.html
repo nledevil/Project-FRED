@@ -1239,7 +1239,15 @@ function cancelPending() {
 }
 
 async function rest() { cancelPending(); STATE = await api('/api/rest', {}); render(); }
-async function relax() { cancelPending(); await api('/api/relax', {}); toast('Relaxed'); }
+// Relaxing stops face tracking server-side (the loop would re-drive the very
+// servos we just cut), so take the server's word for the tracking state here
+// rather than leaving the button armed until the 200ms poll notices.
+async function relax() {
+  cancelPending();
+  const res = await api('/api/relax', {});
+  if (res && res.track) applyTrack(res.track);
+  toast(res && res.tracking_stopped ? 'Relaxed · tracking off' : 'Relaxed');
+}
 
 function setCalib() {
   CALIB = document.getElementById('calib').checked;
