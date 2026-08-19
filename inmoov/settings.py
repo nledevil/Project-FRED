@@ -154,7 +154,7 @@ DEFAULT_SETTINGS = {
         "cart_speed": 120,        # of cart.py's 300, on a machine weighing 350 lb
     },
     "voice": {
-        "enabled": False,             # start the "Hey FRED" wake-word listener at boot
+        "enabled": False,             # start the "Fred" wake-word listener at boot
         "gain": 1.0,                  # software mic boost (analog capture is already
                                       # maxed); 1.0 = off, ~2-3 for quiet/distant speech
         # Which Vosk model transcribes what he hears. A directory name under

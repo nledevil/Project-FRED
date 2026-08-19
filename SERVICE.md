@@ -535,7 +535,7 @@ sudo journalctl -u inmoov-announce-ip -b    # what it announced this boot
 Tuning lives in `config/settings.json` under `sound` (`device`, `enabled`) —
 the announcement and the web app share it.
 
-# Voice assistant — "Hey FRED" (2026-07-04)
+# Voice assistant — "Fred" (2026-07-04)
 
 FRED can listen for a wake word, run spoken commands, answer questions, and talk
 back with his mouth moving in time with the audio.
@@ -545,8 +545,10 @@ back with his mouth moving in time with the audio.
   `inmoov/commands.py` (the command vocabulary), `inmoov/assistant.py`
   (ties it together + lip-sync). Owned by `web/app.py` as `_assistant`.
 - **How it listens:** always-on `arecord` on the USB mic (`plughw:0,0`) → Vosk
-  (`models/vosk-model-small-en-us-0.15`, ~40 MB, git-ignored). Say **"Hey FRED,
-  <command>"**; a bare "Hey FRED" makes him say "Yes?" and wait ~6 s for the
+  (`models/vosk-model-small-en-us-0.15`, ~40 MB, git-ignored). Say **"Fred,
+  <command>"** (a leading "hey" is optional and always was — `_strip_wake` scans
+  for the name anywhere in the utterance); a bare "Fred" makes him say "Yes?" and
+  wait ~6 s for the
   command.
 - **Brain (hybrid):** built-in commands (open/close mouth, track face on/off,
   terminator mode on/off, look left/right/up/down/center with the eyes, turn

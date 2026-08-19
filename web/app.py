@@ -1273,10 +1273,24 @@ def api_voice_status():
 @app.post("/api/voice")
 @protected
 def api_voice():
-    """Start/stop the 'Hey FRED' wake-word listener. Body: {"on": bool}."""
+    """Start/stop the "Fred" wake-word listener. Body: {"on": bool}.
+
+    Also takes ``{"interrupt": true}`` to cut off the reply in progress, and
+    ``{"barge_in": bool}`` to control whether talking over him does the same.
+    """
     if (blocked := _blocked_by_handoff()):
         return blocked                           # starting it would re-grab the mic
     data = request.get_json(force=True) or {}
+    if data.get("interrupt"):
+        # Stop him mid-sentence, the same way talking over him does. Handy from
+        # the panel when he is answering the wrong question at an event.
+        _assistant.interrupt()
+    if "barge_in" in data:
+        # Whether he listens through his own replies. Off in a noisy room where
+        # background speech would keep cutting him off.
+        _assistant.listener.barge_in = bool(data["barge_in"])
+        _settings.setdefault("voice", {})["barge_in"] = _assistant.listener.barge_in
+        save_settings(_settings)
     if "on" in data:
         if data["on"]:
             if not _assistant.available():
@@ -1791,7 +1805,7 @@ if __name__ == "__main__":
         _sound.play(boot)                        # non-blocking chime on startup
     if (_settings.get("voice", {}).get("enabled") and _assistant.available()
             and not _handoff_released):
-        _assistant.start(greet=True)             # "Hey FRED" listener on at boot
+        _assistant.start(greet=True)             # "Fred" wake-word listener on at boot
     if _sensor_cfg.get("serial_enabled"):
         _serial_sensors.start()                  # read a USB-serial sensor node (no-WiFi fallback)
     app.run(host="0.0.0.0", port=8080, threaded=True)

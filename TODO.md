@@ -355,7 +355,7 @@ If venue WiFi dies, every open question becomes "my AI brain isn't connected."
   100% via amixer) — add an amixer slider in admin + "quieter/louder" local
   commands. Note `voice.gain` is *microphone* gain, not output; it is not this.
 - **Visitor kiosk view:** read-only fullscreen `/kiosk` route — big face, live
-  captions of heard/said (noisy rooms + accessibility), "Say 'Hey Fred'…"
+  captions of heard/said (noisy rooms + accessibility), "Say 'Fred'…"
   prompt. Face SVG, envelope animation, transcript polling all exist already.
   Confirmed 2026-08-16: no such route, and the word "kiosk" appears nowhere in
   the repo but this line. The pieces really are all there to assemble.

@@ -16,7 +16,7 @@ admin page's Heard tab, or pulled whole as JSONL.
 listener transcribes the whole room while it waits for the wake word, and a
 fair's worth of bystander conversation is surveillance, not tuning data. Only
 what passed the wake gate (or was typed at the panel) lands here. The one cost
-is that a *misheard wake word* never appears — a child whose "hey fred" came
+is that a *misheard wake word* never appears — a child whose "fred" came
 out "hay fread" was dropped silently — and that trade is taken knowingly.
 
 Unbounded on purpose, with a size backstop: a busy fair is a few hundred rows

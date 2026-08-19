@@ -24,7 +24,7 @@ so call yours whatever you like.
 | | |
 |---|---|
 | **Servos** | 6 channels via a PCA9685 — eyes (X/Y), jaw, neck rotate, head tilt (L/R and F/B). Soft limits, calibration mode, graceful relax. |
-| **Voice in** | Always-on wake word ("Hey FRED") using **Vosk** — fully offline, on-device. No cloud listening. |
+| **Voice in** | Always-on wake word ("Fred") using **Vosk** — fully offline, on-device. No cloud listening. |
 | **Brain** | Local regex commands answer instantly and for free; anything else falls through to **Claude**, which gets the same actions as tool definitions so it can actually *drive the robot*, not just talk. |
 | **Voice out** | ALSA `aplay`, with a speech envelope published to the chest display so the animation's mouth matches the audio. |
 | **Vision** | Camera Module 3 via `picamera2`, a USB camera via V4L2, or another machine's MJPEG stream — one interface, three backends. Plus an OpenCV Haar-cascade face tracker on a PD loop that moves the eyes, neck and head tilt to hold a face centred. |

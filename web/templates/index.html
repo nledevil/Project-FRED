@@ -255,7 +255,7 @@
   .voice .chat { flex:1 1 220px; min-height:180px; overflow-y:auto;
       display:flex; flex-direction:column; gap:8px; padding:12px 2px; margin-top:2px;
       overscroll-behavior:contain; }
-  .voice .chat:empty::before { content:"No messages yet — say “Hey FRED…” or type below.";
+  .voice .chat:empty::before { content:"No messages yet — say “Fred…” or type below.";
       color:var(--mut); font-size:12.5px; }
   .msg { max-width:88%; padding:8px 11px; border-radius:13px; font-size:13px; line-height:1.4;
       word-wrap:break-word; }
@@ -482,7 +482,7 @@
           <div class="micbars" id="micBars" title="What the microphone has heard in the last six seconds"></div>
           <div class="micfoot"><span id="micRead">—</span><span id="micNote"></span></div>
         </div>
-        <p class="hint" id="voiceHint">Say “Hey FRED, open your mouth”, or type above.</p>
+        <p class="hint" id="voiceHint">Say “Fred, open your mouth”, or type above.</p>
       </section>
 
     <section class="panel cart" id="cartPanel" hidden>
@@ -606,7 +606,7 @@ function applyVoice(v) {
   st.textContent = label + (v.ai_available ? ' · AI' : '');
   st.className = 'badge ' + (v.listening ? 'live' : 'mock');
   document.getElementById('voiceHint').textContent = v.ai_available
-    ? 'Say “Hey FRED, open your mouth”, or type above.'
+    ? 'Say “Fred, open your mouth”, or type above.'
     : 'Built-in commands work now — add an API key for open questions (see SERVICE.md).';
   drawMic(v.mic);
 }
