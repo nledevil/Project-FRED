@@ -189,6 +189,13 @@ DEFAULT_SETTINGS = {
         "lead_in": 0.0,               # seconds of silence prepended to each clip; raise
                                       # (~0.4-0.6) for a device that clips the opening words
                                       # while its output stream spins up. 0 = off.
+        "gap_lead_in": 0.12,          # seconds of silence prepended to the *second and
+                                      # later* clips of one reply. Each sentence is its
+                                      # own aplay and so reopens the device; without
+                                      # this they lose their opening syllable. Much
+                                      # smaller than lead_in — it covers a reopen, not
+                                      # a cold start, and it is silence between the
+                                      # sentences of one answer. 0 = off.
         "sync_offset": 0.0,           # seconds; lip-sync trim. lead_in is compensated
                                       # exactly, so this only covers residual device
                                       # latency. Positive = jaw waits longer (mouth was

@@ -245,11 +245,23 @@ class Sound:
     def __init__(self, device: str = "plughw:0,0",
                  sounds_dir: str | Path = SOUNDS_DIR, enabled: bool = True,
                  lead_in: float = 0.0, sync_offset: float = 0.0,
-                 audit: bool = False):
+                 gap_lead_in: float = 0.0, audit: bool = False):
         self.device = device
         self.sounds_dir = Path(sounds_dir)
         self.enabled = enabled
         self.lead_in = max(0.0, float(lead_in))
+        # Lead-in for the *second and later* clips of one reply. This used to be
+        # flatly zero, on the reasoning that the device was already awake — but a
+        # reply is spoken as one aplay per sentence, and every aplay closes and
+        # reopens the PCM. On a USB speakerphone that reopen costs real time, so
+        # sentences after the first lost their opening syllable while the device
+        # woke up: "he misses parts of words while he's talking", and only ever
+        # in multi-sentence answers, which is what made it look intermittent.
+        #
+        # Much smaller than lead_in on purpose. It only has to cover the reopen,
+        # not a cold start, and every millisecond here is silence between the
+        # sentences of one reply. 0.0 restores the old behaviour exactly.
+        self.gap_lead_in = max(0.0, float(gap_lead_in))
         self.sync_offset = float(sync_offset)
         self._audit = bool(audit)
         # In audit mode nothing is spawned, so there is no process to poll for
@@ -477,7 +489,7 @@ class Sound:
             return False
         return self.play_file(random.choice(clips), wait=wait)
 
-    def _with_lead_in(self, path: Path) -> tuple[Path, bool]:
+    def _with_lead_in(self, path: Path, seconds: float | None = None) -> tuple[Path, bool]:
         """Return ``(path_to_play, owned)``. When ``lead_in`` > 0, write a temp
         copy of the WAV with that many seconds of silence prepended and return it
         with ``owned=True`` (the caller deletes it after playback); this masks the
@@ -488,13 +500,14 @@ class Sound:
         audio starts rather than assume it's immediate — the padding this adds
         delays it, and getting that wrong makes the jaw run ahead of the voice.
         """
-        if self.lead_in <= 0:
+        seconds = self.lead_in if seconds is None else max(0.0, float(seconds))
+        if seconds <= 0:
             return path, False
         try:
             with wave.open(str(path), "rb") as w:
                 params = w.getparams()
                 frames = w.readframes(w.getnframes())
-            silence = bytes(int(self.lead_in * params.framerate)
+            silence = bytes(int(seconds * params.framerate)
                             * params.sampwidth * params.nchannels)
             fd, tmp = tempfile.mkstemp(suffix=".wav", prefix="inmoov-lead-")
             os.close(fd)
@@ -521,10 +534,13 @@ class Sound:
                   pad: bool = True) -> bool:
         """Play a specific .wav file. Returns True if playback was started.
 
-        ``pad`` applies the ``lead_in`` silence. Pass False for the second and
-        later clips of a continuous utterance: the device is already awake by
-        then, and re-padding every clip would insert a ``lead_in``-long gap
-        between the sentences of one reply.
+        ``pad`` selects *which* lead-in: True for the first clip of an utterance
+        (the full ``lead_in``), False for the second and later clips of one reply
+        (the shorter ``gap_lead_in``). It is not "padding or none" — every clip
+        is its own aplay, so every clip reopens the device and every clip can
+        lose its opening syllable. What differs is how much silence it takes to
+        cover a reopen versus a cold start, and how much of a gap between the
+        sentences of one reply is worth paying for it.
 
         This blocks briefly (see ``probe`` below) to catch an aplay that fails on
         startup, which delays the caller's lip-sync by that much when there's no
@@ -543,11 +559,13 @@ class Sound:
         if self._audit:
             # Dry run: no device, no aplay, no padded temp file — just the clock.
             return self._play_virtual(path, pad=pad, wait=wait)
-        if pad:
-            play_path, owned = self._with_lead_in(path)   # prepend device-warmup silence
-            pre_roll = self.lead_in if owned else 0.0     # padding may have failed
-        else:
-            play_path, owned, pre_roll = path, False, 0.0
+        # First clip of a reply gets the full cold-start lead-in; the ones after
+        # it get the shorter reopen pad. Both go through the same path so the
+        # epoch below is stamped with whatever silence was really prepended —
+        # get that wrong and the jaw runs ahead of the voice.
+        want = self.lead_in if pad else self.gap_lead_in
+        play_path, owned = self._with_lead_in(path, want)
+        pre_roll = want if owned else 0.0                 # padding may have failed
         cleanup = (lambda: _silent_unlink(play_path)) if owned else (lambda: None)
         # How long to wait for a failing aplay to exit before we call it started.
         # The first clip of an utterance follows arecord releasing the card, which
@@ -613,7 +631,7 @@ class Sound:
         and the only thing the padding contributed was that delay.
         """
         duration = self._wav_duration(path)
-        pre_roll = self.lead_in if pad else 0.0
+        pre_roll = self.lead_in if pad else self.gap_lead_in
         with self._lock:
             self._proc = None
             self._audio_t0 = time.monotonic() + pre_roll + self.sync_offset

@@ -124,6 +124,9 @@ _sound = Sound(device=_snd_cfg.get("device", "default"),  # aplay-based, no-op i
                enabled=bool(_snd_cfg.get("enabled", True)),
                lead_in=float(_snd_cfg.get("lead_in", 0.0)),  # pad opening words on slow-to-wake devices
                sync_offset=float(_snd_cfg.get("sync_offset", 0.0)),  # lip-sync trim
+               # Shorter pad for sentences 2..n of one reply — every sentence is
+               # its own aplay and so reopens the device. See Sound.__init__.
+               gap_lead_in=float(_snd_cfg.get("gap_lead_in", 0.12)),
                audit=_boot_audit)           # dry run: render + time speech, play nothing
 # Load the piper voice now, off the request path: the first synthesis pays a
 # ~1.7s model load, and we'd rather spend it at boot than on FRED's first reply.
