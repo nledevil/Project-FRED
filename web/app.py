@@ -789,6 +789,8 @@ def api_event():
 def api_brain():
     """Switch the LLM backend: ``{"backend": "auto"|"claude"|"local"}``.
 
+    Also takes ``{"vision": bool}`` and ``{"web_search": bool}``.
+
     'auto' prefers Claude and falls back to the local model when the network is
     down — which is the case FRED is taken to events for. Persists."""
     data = request.get_json(force=True) or {}
@@ -797,6 +799,12 @@ def api_brain():
         # backend, so "no photographs today" survives a reboot.
         _assistant.brain.set_vision(bool(data["vision"]))
         _settings.setdefault("brain", {})["vision"] = _assistant.brain.vision
+        save_settings(_settings)
+    if "web_search" in data:
+        # Whether FRED may look things up on the internet. Claude-only and
+        # billed per search, so it is a switch rather than a constant.
+        _assistant.brain.set_web_search(bool(data["web_search"]))
+        _settings.setdefault("brain", {})["web_search"] = _assistant.brain.web_search
         save_settings(_settings)
     if "backend" in data:
         want = str(data["backend"])

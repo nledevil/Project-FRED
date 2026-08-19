@@ -277,6 +277,15 @@
       <label class="switch" style="margin-left:10px">
         <input type="checkbox" id="brainVision" onchange="onBrainVision(this.checked)"> Vision</label>
     </div>
+    <div class="row" style="margin-bottom:12px">
+      <div class="label"><b>Let him look it up</b>
+        <span>search the web for things that change — weather, news, prices</span></div>
+      <div class="grow"></div>
+      <span id="webSearchStatus" class="badge">…</span>
+      <label class="switch" style="margin-left:10px">
+        <input type="checkbox" id="brainWebSearch"
+               onchange="onBrainWebSearch(this.checked)"> Web</label>
+    </div>
     <p class="hint">FRED is taken places without reliable WiFi, so <b>Auto</b> uses Claude when it can
        reach it and silently falls back to the local model when it can't — a worse answer instead of
        no answer. After a failure it stays local for a minute rather than paying a network timeout on
@@ -988,6 +997,21 @@ function reflectBrain(s) {
     vs.title = s.vision_wide_ready ? 'eye camera and wide camera' : 'eye camera only'
              + ' · needs Claude (the local model is text-only)';
   }
+  // Same split as vision, for the same reason: off is a choice and reads
+  // neutral, on-but-unreachable is the one worth flagging. Searching is
+  // Claude-only — the local model never gets the tool — so "no Claude" is a
+  // real state and not a fault.
+  const web = document.getElementById('brainWebSearch');
+  if (web) web.checked = !!s.web_search;
+  const ws = document.getElementById('webSearchStatus');
+  if (ws) {
+    ws.textContent = !s.web_search ? 'off' : (s.web_search_ready ? 'ready' : 'no Claude');
+    ws.className = 'badge ' + (!s.web_search ? '' : (s.web_search_ready ? 'live' : 'mock'));
+    const loc = s.web_search_location || {};
+    const where = [loc.city, loc.region].filter(Boolean).join(', ');
+    ws.title = (where ? 'local questions assume ' + where : 'no location set')
+             + ' · needs Claude (the local model has no web access)';
+  }
 }
 async function loadBrain() { reflectBrain(await api('/api/brain')); }
 async function onBrainBackend(v) {
@@ -1019,6 +1043,12 @@ async function onBrainVision(on) {
   const s = await api('/api/brain', { vision: on });
   reflectBrain(s);
   toast(on ? 'FRED can look through his cameras' : 'Looking switched off');
+}
+
+async function onBrainWebSearch(on) {
+  const s = await api('/api/brain', { web_search: on });
+  reflectBrain(s);
+  toast(on ? 'FRED can look things up on the web' : 'Web lookups switched off');
 }
 
 // ---- audit (dry run) mode ----------------------------------------------

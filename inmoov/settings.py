@@ -126,6 +126,14 @@ DEFAULT_SETTINGS = {
         # iGPU via Vulkan. See inmoov/local_brain.py for why this model and not a
         # reasoning one. Live switch from the admin panel; persists.
         "backend": "auto",
+        # Let Claude look things up when the answer depends on something current.
+        # Claude-only: the tool runs on Anthropic's side, so the local model never
+        # gets it. Billed per search, hence a switch. The location is what he
+        # assumes when nobody names a place ("what's the weather?") — set it to
+        # wherever he actually is.
+        "web_search": True,
+        "web_search_location": {"city": "", "region": "", "country": "US",
+                                "timezone": ""},
         "local_model": "qwen2.5:3b",
         "local_host": "http://127.0.0.1:11434",
         # Whether FRED may look through his eye camera to answer a question.

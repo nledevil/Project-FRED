@@ -751,6 +751,37 @@ CLAUDE_TOOLS = [
 ]
 
 
+# --- Claude-only server tools ------------------------------------------------
+# Deliberately NOT in CLAUDE_TOOLS. That list is handed to *both* backends, and
+# a server tool carries no input_schema — local_brain._to_ollama would turn this
+# into a function with an empty schema and no description, which the local model
+# can happily call and nothing on this machine can execute. Claude's tool list is
+# CLAUDE_TOOLS plus this; the local model's is CLAUDE_TOOLS alone.
+#
+# Server-side means Anthropic runs the search: there is no run_tool() entry here
+# and nothing to execute on the robot. What comes back is already the answer.
+WEB_SEARCH_TOOL = "web_search"
+WEB_SEARCH_MAX_USES = 3     # a spoken answer is never worth ten searches
+
+
+def web_search_tool(location: dict | None = None) -> dict:
+    """The web search tool definition, optionally localised.
+
+    ``web_search_20250305`` — the basic version — on purpose. The newer
+    ``_20260209`` filters results through code execution first, which needs
+    programmatic tool calling; FRED runs Haiku 4.5, which does not have it, and
+    the newer version answers a request from a model without it with a 400.
+
+    `location` narrows results for questions that name no place ("what's the
+    weather?"). It is approximate by design — city and region, never a fix.
+    """
+    tool: dict = {"type": "web_search_20250305", "name": WEB_SEARCH_TOOL,
+                  "max_uses": WEB_SEARCH_MAX_USES}
+    if location:
+        tool["user_location"] = {"type": "approximate", **location}
+    return tool
+
+
 def run_tool(ctx, tool_name: str, tool_input: dict) -> str:
     """Map a Claude tool call to execute_action and return the spoken result."""
     ti = tool_input or {}

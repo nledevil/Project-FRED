@@ -131,6 +131,54 @@ SYSTEM = (
     "Droid."
 )
 
+# What gets added to SYSTEM depends on which backend is answering, because the
+# two have genuinely different senses. Both are constants: the prefix has to stay
+# byte-identical turn to turn or the local model reprocesses the whole prompt —
+# that is the 28 s stall the note in _ask_llm is about.
+#
+# Claude's half exists because search results pull the wrong way: they arrive as
+# prose with citations and symbols, and the measured answer to "weather in 60440"
+# came back at ~60 words with a registered-trademark sign in it. FRED speaks his
+# answers, so the length and plainness rules have to be restated where the search
+# happens rather than left to the general brevity rule further up.
+SYSTEM_WEB = (
+    " You can look things up on the internet when the answer depends on "
+    "something current — weather, news, prices, scores, when something opens. "
+    "Say the answer in your own words, in one or two short spoken sentences: no "
+    "symbols like the degree or trademark sign, no lists, no reading out URLs. "
+    "For anything settled — history, arithmetic, how something works — just "
+    "answer, don't look it up."
+)
+# Covers both ways FRED can end up without the web: running on the local model,
+# which never gets the tool at all (see commands.web_search_tool), and the switch
+# being off. Deliberately doesn't name a reason, because the two reasons differ
+# and a wrong one is worse than none. Same voice as the vision refusal in _look,
+# for the same reason: "I can't" with no why sounds like a fault.
+SYSTEM_NO_WEB = (
+    " You have no way to look anything up on the internet right now. If someone "
+    "asks for something current, like the weather or the news, say that plainly "
+    "rather than guessing at it."
+)
+
+
+def _web_place(location: dict | None) -> str:
+    """The 'you are here' line, or "" when no location is configured.
+
+    user_location on the tool only tilts which results rank highest — it is not
+    something the model can read. Without being told where he is, FRED searched
+    "weather today", got results for half the country and asked the visitor
+    where they were standing. He is the one who knows.
+    """
+    if not location:
+        return ""
+    where = ", ".join(str(location[k]) for k in ("city", "region")
+                      if location.get(k))
+    if not where:
+        return ""
+    return (f" You are in {where}. When someone asks about local conditions "
+            "without naming a place — the weather, what it's like outside — "
+            "that is the place they mean.")
+
 
 class _SentenceSplitter:
     """Turn a stream of text deltas into whole sentences, emitted as they land.
@@ -218,9 +266,15 @@ class Brain:
                  history_idle_secs: float = HISTORY_IDLE_SECS,
                  backend: str = "auto", local_model: str | None = None,
                  local_host: str | None = None, vision: bool = True,
-                 look_min_secs: float = LOOK_MIN_SECS):
+                 look_min_secs: float = LOOK_MIN_SECS,
+                 web_search: bool = True, web_location: dict | None = None):
         self.ctx = ctx
         self.vision = bool(vision)
+        # Web search costs money per search and only works on Claude. Switchable
+        # like vision, and persisted the same way, because "no lookups today" is
+        # an event-day decision rather than a code change.
+        self.web_search = bool(web_search)
+        self._web_location = dict(web_location) if web_location else None
         self._look_min_secs = max(0.0, float(look_min_secs))
         # Per camera ("eyes"/"wide"): when it was last grabbed, and the frame
         # itself, re-sent for repeat looks inside the rate-limit window. Held
@@ -360,7 +414,35 @@ class Brain:
                 "vision_ready": bool(self.vision and self._client is not None
                                      and cam is not None and cam.available()),
                 "vision_wide_ready": bool(spotter is not None and spotter.is_running()),
-                "vision_min_seconds": self._look_min_secs}
+                "vision_min_seconds": self._look_min_secs,
+                # Same split as vision: the switch, and whether a lookup would
+                # land. Cloud-only, so a local-only robot reads "on, not ready"
+                # rather than looking broken.
+                "web_search": self.web_search,
+                "web_search_ready": bool(self.web_search and self._client is not None),
+                "web_search_location": self._web_location}
+
+    def set_web_search(self, on: bool) -> bool:
+        """Turn internet lookups on or off. Returns the new state."""
+        self.web_search = bool(on)
+        return self.web_search
+
+    def _system_for(self, which: str) -> str:
+        """The system prompt this backend gets, told the truth about the web."""
+        if which == "claude" and self.web_search:
+            return SYSTEM + SYSTEM_WEB + _web_place(self._web_location)
+        return SYSTEM + SYSTEM_NO_WEB
+
+    def _tools_for(self, which: str) -> list:
+        """The tool list that backend may actually use.
+
+        The web tool is Claude's alone — it is executed by Anthropic, so handing
+        it to the local model would advertise a capability nothing on this robot
+        can carry out. See commands.web_search_tool.
+        """
+        if which != "claude" or not self.web_search:
+            return commands.CLAUDE_TOOLS
+        return commands.CLAUDE_TOOLS + [commands.web_search_tool(self._web_location)]
 
     def _pick_backend(self) -> str:
         """Which backend a question would actually go to right now."""
@@ -498,7 +580,11 @@ class Brain:
              "content": f"{sysinfo.context_block()}{brief}\n\n{text}"}]
         actions: list[str] = []
         said: list[str] = []                 # every sentence handed to emit()
-        system = SYSTEM                      # static: see the note above
+        # Static per backend: see the note above. What the suffix says depends on
+        # the backend and the switch, but for any one of them it is the same
+        # bytes every turn, so neither prompt cache is churned.
+        system = self._system_for(which)
+        tools = self._tools_for(which)
         spoken_words = 0
         capped = False
 
@@ -533,7 +619,7 @@ class Brain:
         try:
             for _ in range(4):                       # bounded tool loop
                 kwargs = dict(model=model, max_tokens=400, system=system,
-                              messages=messages, tools=commands.CLAUDE_TOOLS)
+                              messages=messages, tools=tools)
                 if which == "claude" and model.startswith(_EFFORT_MODELS):
                     kwargs["output_config"] = {"effort": "low"}  # snappy — it's spoken
                 splitter = _SentenceSplitter(ship)
@@ -541,10 +627,32 @@ class Brain:
                 # is still being written. Text blocks arrive before tool_use ones,
                 # so FRED says "Sure," and *then* the servo moves.
                 with client.messages.stream(**kwargs) as stream:
-                    for delta in stream.text_stream:
-                        splitter.feed(delta)
+                    # Events, not text_stream, for the sake of one character. A
+                    # web search splits the reply into two text blocks — one
+                    # before the search, one after — and text_stream concatenates
+                    # them with nothing in between, so "...zip code." + "Thunder-
+                    # storms..." arrives as "code.Thunderstorms". _SENTENCE_END
+                    # needs whitespace after the full stop, so without this the
+                    # two sentences are spoken as one long run-on. A block that
+                    # ends is a sentence that ended; say so.
+                    for event in stream:
+                        if event.type == "text":
+                            splitter.feed(event.text)
+                        elif (event.type == "content_block_stop"
+                                and event.content_block.type == "text"):
+                            splitter.feed("\n")
                     resp = stream.get_final_message()
                 splitter.flush()
+                if resp.stop_reason == "pause_turn":
+                    # A server-side search ran long and the API parked the turn
+                    # part-way. It is not finished — the old `!= "tool_use"` test
+                    # read this as "done" and stopped FRED mid-answer, which
+                    # sounds like he lost his train of thought. Hand the paused
+                    # turn straight back, unchanged: the blocks carry the
+                    # encrypted search results the API needs to resume, so they
+                    # must not be filtered or rebuilt on the way through.
+                    messages.append({"role": "assistant", "content": resp.content})
+                    continue
                 if resp.stop_reason != "tool_use":
                     break
                 messages.append({"role": "assistant", "content": resp.content})

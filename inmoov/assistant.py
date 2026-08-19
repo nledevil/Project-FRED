@@ -52,7 +52,9 @@ class Assistant:
                            local_host=bc.get("local_host") or None,
                            vision=bool(bc.get("vision", True)),
                            look_min_secs=float(bc.get("vision_min_seconds",
-                                                      LOOK_MIN_SECS)))
+                                                      LOOK_MIN_SECS)),
+                           web_search=bool(bc.get("web_search", True)),
+                           web_location=bc.get("web_search_location") or None)
         listener_kw = {}
         if asr_model:
             # A name under models/, not a path: the setting is edited by a human

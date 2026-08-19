@@ -138,8 +138,31 @@ def _to_ollama(system: str, messages: list, tools: list | None) -> tuple[list, l
     return out, conv
 
 
+class _TextEvent:
+    """One text delta, shaped like the Anthropic SDK's streaming TextEvent."""
+    type = "text"
+
+    def __init__(self, text: str):
+        self.text = text
+
+
+class _BlockStopEvent:
+    """End of a content block, shaped like the SDK's ContentBlockStopEvent.
+
+    Ollama streams one continuous run of text, so there is exactly one of these,
+    at the end. It exists because brain.py treats a block boundary as a sentence
+    boundary — see the note there — and iterating a local stream has to produce
+    the same shape of events as iterating a Claude one or that loop only works
+    on one backend.
+    """
+    type = "content_block_stop"
+
+    def __init__(self, block_type: str = "text"):
+        self.content_block = type("_B", (), {"type": block_type})()
+
+
 class _Stream:
-    """Context manager exposing ``text_stream`` then ``get_final_message()``."""
+    """Context manager exposing ``text_stream``, iteration, then ``get_final_message()``."""
 
     def __init__(self, host: str, payload: dict):
         self._host, self._payload = host, payload
@@ -197,6 +220,17 @@ class _Stream:
             if d.get("done"):
                 break
         self._done = True
+
+    def __iter__(self):
+        """The event form of ``text_stream``.
+
+        brain.py iterates the stream rather than consuming ``text_stream``
+        directly, so both backends have to answer ``for event in stream``. Same
+        deltas, same order — just wrapped, with a block-stop at the end.
+        """
+        for chunk in self.text_stream:
+            yield _TextEvent(chunk)
+        yield _BlockStopEvent("text")
 
     def get_final_message(self) -> _FinalMessage:
         text = "".join(self._text).strip()
