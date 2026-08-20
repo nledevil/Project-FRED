@@ -106,6 +106,17 @@ BARGE_GRAMMAR = json.dumps(sorted(WAKE_WORDS) + ["[unk]"])
 # Four is comfortably clear of the noise and still reacts within half a second
 # (a chunk is 4000 bytes = 125 ms).
 NAME_MIN_PARTIALS = 4
+# How long the full recogniser keeps running after it was last needed. It only
+# has to outlast the gap between "Fred" and the sentence after it, plus a beat
+# for a follow-up; is_armed() covers the follow-up window itself.
+HOT_LINGER = 6.0
+# Seconds of audio kept so the *command* isn't lost while the full recogniser is
+# still cold. The detector fires part-way through his name, so the replay has to
+# reach back far enough to include the whole of it — 2 s is comfortably more than
+# the 0.5 s the persistence rule costs, plus whatever ran before it.
+REPLAY_SECONDS = 2.0
+# 4000 bytes = 2000 samples at 16 kHz = 125 ms, which is the loop's read size.
+CHUNK_SECONDS = 0.125
 
 
 class Listener:
@@ -163,6 +174,11 @@ class Listener:
         self._armed_until = 0.0
         self._warned_grammar = False           # only say "no grammar support" once
         self._name_streak = 0                  # consecutive partials naming him
+        # The last couple of seconds of audio, so the full recogniser can be
+        # started only once his name has been heard and still be handed the
+        # sentence that carried it. See _run: transcribing a room nobody is
+        # talking to cost ~88% of a core, against ~9% for the name detector.
+        self._replay = collections.deque(maxlen=int(REPLAY_SECONDS / CHUNK_SECONDS))
         self._heard_at = 0.0                  # monotonic, last chunk that wasn't silence
         self._captured_at = 0.0               # monotonic, last chunk of any kind
         # When the current unbroken run of digital silence began. Tracked as its
@@ -348,12 +364,13 @@ class Listener:
     def _run(self) -> None:
         if self._model is None:                # ~2s load; do it off the boot path
             self._model = Model(str(self.model_path))
-        rec = KaldiRecognizer(self._model, 16000)
+        rec = None                     # the full recogniser, built when he is named
         brec = self._new_barge_rec()
         try:
             dropped = False       # audio was discarded -> restart the recogniser
             barged = False        # already cut this reply short
             name_seen = False     # the detector heard his name in this utterance
+            hot_until = 0.0       # monotonic; the full recogniser stays up until then
             while not self._stop.is_set():
                 proc = self._proc
                 if proc is None:               # first start, or reopen after an EOF
@@ -371,8 +388,9 @@ class Listener:
                     if not claimed:
                         _reap(proc)
                         continue
-                    rec = KaldiRecognizer(self._model, 16000)   # fresh recogniser after a gap
+                    rec = None                 # cold again after a capture gap
                     brec = self._new_barge_rec()
+                    self._replay.clear()
                     with self._lock:
                         # Silence is measured per capture session, and a session
                         # now spans FRED's replies rather than restarting after
@@ -413,9 +431,17 @@ class Listener:
                     # the sentence they actually said. Asking one recogniser to do
                     # both is what failed: given the whole lexicon, "Fred, stop
                     # talking" decodes as "fresh start talking" and nothing fires.
+                    self._replay.append(data)
                     if not barged and self._detect_name(brec, data):
                         barged = True
+                        hot_until = time.monotonic() + HOT_LINGER
+                        if rec is None:
+                            rec, _ = self._wake_full()
                         self._barge()
+                    if rec is None:
+                        # Nobody has interrupted him, so there is no sentence to
+                        # transcribe — only the detector needs to be listening.
+                        continue
                     if rec.AcceptWaveform(data):
                         text = json.loads(rec.Result()).get("text", "").strip()
                         if text:
@@ -448,6 +474,7 @@ class Listener:
                     # this is the object, not the model.
                     rec = KaldiRecognizer(self._model, 16000)
                     self._reset_rec(brec)
+                    rec = None                 # audio was dropped; start clean
                     dropped = False
                 barged = False
                 # The same two-recogniser split as barge-in, for the same reason:
@@ -460,8 +487,34 @@ class Listener:
                 # Latched rather than checked at the end: brec finishes utterances
                 # on its own schedule, so the name can be found and gone again
                 # before rec has finished the sentence it belongs to.
+                self._replay.append(data)
                 if not name_seen and self._detect_name(brec, data):
                     name_seen = True
+                    hot_until = time.monotonic() + HOT_LINGER
+                    if rec is None:
+                        rec, carried = self._wake_full()
+                        if carried:
+                            # The whole thing finished before the full recogniser
+                            # was up. Answer it rather than waiting for them to
+                            # say it again.
+                            try:
+                                self._dispatch(carried, time.monotonic())
+                            except Exception as exc:  # noqa: BLE001
+                                print(f"[Listener] handler error: {exc}")
+                            name_seen = False
+                            self._reset_rec(brec)
+                # Only the detector runs while nobody has addressed him. The full
+                # recogniser costs about ten times as much (measured: 88% of a
+                # core against 9% over the same audio) and spends all of it
+                # transcribing a room that is not talking to him. It runs once he
+                # has been named, stays up for the follow-up window so an answer
+                # needs no name, and then goes away again.
+                if not (name_seen or self.is_armed() or time.monotonic() < hot_until):
+                    if rec is not None:
+                        rec = None             # let it go; _wake_full rebuilds it
+                    continue
+                if rec is None:
+                    rec, _ = self._wake_full()
                 if not rec.AcceptWaveform(data):
                     continue
                 text = json.loads(rec.Result()).get("text", "").strip()
@@ -535,6 +588,31 @@ class Listener:
         else:
             self._name_streak = 0
         return self._name_streak >= NAME_MIN_PARTIALS
+
+    def _wake_full(self):
+        """Start the full recogniser and hand it the audio it wasn't running for.
+
+        The name detector fires part-way through his name, so without the replay
+        the first recogniser would ever hear of the sentence is whatever came
+        *after* "Fred" — losing the name itself, and with it _strip_wake's
+        ability to tell a command from a bare prompt.
+
+        Returns ``(recogniser, carried)``. A whole utterance can finish inside the
+        buffer — someone who says just "Fred" and stops is the ordinary case, and
+        the detector fires part-way through the word, so the final can land in the
+        replay rather than the live stream. ``carried`` is that sentence, when it
+        named him; anything completing in there that did *not* name him is the
+        room, and is dropped.
+        """
+        rec = KaldiRecognizer(self._model, 16000)
+        carried = ""
+        for chunk in list(self._replay):
+            if rec.AcceptWaveform(chunk):
+                text = json.loads(rec.Result()).get("text", "").strip()
+                if text and _wants_him(text):
+                    carried = text
+        self._replay.clear()
+        return rec, carried
 
     def _barge(self) -> None:
         """Tell whoever is speaking to stop. Never lets a handler kill the loop."""
