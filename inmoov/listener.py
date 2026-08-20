@@ -106,10 +106,25 @@ BARGE_GRAMMAR = json.dumps(sorted(WAKE_WORDS) + ["[unk]"])
 # Four is comfortably clear of the noise and still reacts within half a second
 # (a chunk is 4000 bytes = 125 ms).
 NAME_MIN_PARTIALS = 4
-# How long the full recogniser keeps running after it was last needed. It only
-# has to outlast the gap between "Fred" and the sentence after it, plus a beat
-# for a follow-up; is_armed() covers the follow-up window itself.
+# How long the full recogniser keeps running after it last heard sound. It has to
+# outlast a pause mid-sentence, plus the gap between "Fred" and what follows;
+# is_armed() covers the follow-up window itself.
 HOT_LINGER = 6.0
+# Chunk peak (0..32767) above which there is something worth transcribing.
+#
+# This gates the expensive recogniser on *sound*, not on his name — a deliberate
+# retreat from doing it the other way. Measured on this model, the persistence of
+# a name in the detector's partials does not separate cleanly from a room: real
+# phrases ran 0-3 consecutive chunks while "my friend told me about it" ran 7. A
+# detector good enough to decide whether to *interrupt* him is not good enough to
+# decide whether he gets to hear you at all, and the failure is silent — he would
+# simply not answer.
+#
+# Sound is a safe gate because missing nothing is the requirement: anything the
+# room says still reaches the full recogniser, and _strip_wake still decides
+# whether it was for him. The saving is real when he is sitting in a quiet
+# workshop, which is most of his life; in a loud hall he pays what he used to.
+SPEECH_FLOOR = 250
 # Seconds of audio kept so the *command* isn't lost while the full recogniser is
 # still cold. The detector fires part-way through his name, so the replay has to
 # reach back far enough to include the whole of it — 2 s is comfortably more than
@@ -434,14 +449,18 @@ class Listener:
                     self._replay.append(data)
                     if not barged and self._detect_name(brec, data):
                         barged = True
-                        hot_until = time.monotonic() + HOT_LINGER
-                        if rec is None:
-                            rec, _ = self._wake_full()
                         self._barge()
+                    if self._peak >= SPEECH_FLOOR:
+                        hot_until = time.monotonic() + HOT_LINGER
+                    if time.monotonic() >= hot_until:
+                        continue               # nothing being said over him
                     if rec is None:
-                        # Nobody has interrupted him, so there is no sentence to
-                        # transcribe — only the detector needs to be listening.
-                        continue
+                        # Transcribe whoever is talking over him even when the
+                        # detector didn't fire. Missing the interruption only
+                        # costs him a late stop; losing the sentence costs them
+                        # the whole request, and _strip_wake still decides
+                        # whether it was for him.
+                        rec, _ = self._wake_full()
                     if rec.AcceptWaveform(data):
                         text = json.loads(rec.Result()).get("text", "").strip()
                         if text:
@@ -450,7 +469,17 @@ class Listener:
                                 # landing in one chunk. Stop him now.
                                 barged = True
                                 self._barge()
-                            if barged:
+                            if not barged:
+                                # The detector didn't fire, so route it the
+                                # ordinary way: his name has to be in the
+                                # sentence or it was not for him. This is what
+                                # keeps a television talking through his reply
+                                # from becoming a command.
+                                try:
+                                    self._dispatch(text, time.monotonic())
+                                except Exception as exc:  # noqa: BLE001
+                                    print(f"[Listener] handler error: {exc}")
+                            else:
                                 # He was interrupted, so this was aimed at him.
                                 # If his name survived into this transcript let
                                 # the normal path strip it (and answer a bare
@@ -488,33 +517,30 @@ class Listener:
                 # on its own schedule, so the name can be found and gone again
                 # before rec has finished the sentence it belongs to.
                 self._replay.append(data)
-                if not name_seen and self._detect_name(brec, data):
-                    name_seen = True
+                if not name_seen:
+                    name_seen = self._detect_name(brec, data)
+                # The full recogniser costs about ten times the detector (88% of a
+                # core against 9%, measured over the same audio), and in a quiet
+                # room every bit of that is spent on silence. It runs while there
+                # is sound to transcribe and for a little after, and sleeps
+                # otherwise — see SPEECH_FLOOR for why the gate is sound and not
+                # his name.
+                if self._peak >= SPEECH_FLOOR:
                     hot_until = time.monotonic() + HOT_LINGER
-                    if rec is None:
-                        rec, carried = self._wake_full()
-                        if carried:
-                            # The whole thing finished before the full recogniser
-                            # was up. Answer it rather than waiting for them to
-                            # say it again.
-                            try:
-                                self._dispatch(carried, time.monotonic())
-                            except Exception as exc:  # noqa: BLE001
-                                print(f"[Listener] handler error: {exc}")
-                            name_seen = False
-                            self._reset_rec(brec)
-                # Only the detector runs while nobody has addressed him. The full
-                # recogniser costs about ten times as much (measured: 88% of a
-                # core against 9% over the same audio) and spends all of it
-                # transcribing a room that is not talking to him. It runs once he
-                # has been named, stays up for the follow-up window so an answer
-                # needs no name, and then goes away again.
-                if not (name_seen or self.is_armed() or time.monotonic() < hot_until):
-                    if rec is not None:
-                        rec = None             # let it go; _wake_full rebuilds it
+                if not (self.is_armed() or time.monotonic() < hot_until):
+                    rec = None                 # let it go; _wake_full rebuilds it
                     continue
                 if rec is None:
-                    rec, _ = self._wake_full()
+                    rec, carried = self._wake_full()
+                    if carried:
+                        # A whole utterance finished before it was up. Answer it
+                        # rather than making them repeat themselves.
+                        try:
+                            self._dispatch(carried, time.monotonic())
+                        except Exception as exc:  # noqa: BLE001
+                            print(f"[Listener] handler error: {exc}")
+                        name_seen = False
+                        self._reset_rec(brec)
                 if not rec.AcceptWaveform(data):
                     continue
                 text = json.loads(rec.Result()).get("text", "").strip()
