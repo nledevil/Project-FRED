@@ -92,6 +92,20 @@ BARGE_NEEDS_WAKE_WORD = True
 # can't take a grammar, _run falls back to watching the ordinary recogniser and
 # says so once.
 BARGE_GRAMMAR = json.dumps(sorted(WAKE_WORDS) + ["[unk]"])
+# Consecutive partial results that must carry his name before it counts.
+#
+# A grammar recogniser can only ever output the words it was given, so while it
+# is deciding, ordinary speech briefly gets mapped onto one of them before the
+# decoder settles on "[unk]". Acting on a single partial made him answer a room
+# nobody had addressed. Its *finals* are reliable — nine seconds of television
+# produced "[unk]" every time — but waiting for a final means waiting for the
+# speaker to stop, which is the whole thing barge-in exists to avoid.
+#
+# Measured over that same television: a stray hypothesis survives at most two
+# consecutive chunks, while someone really saying his name holds for sixteen.
+# Four is comfortably clear of the noise and still reacts within half a second
+# (a chunk is 4000 bytes = 125 ms).
+NAME_MIN_PARTIALS = 4
 
 
 class Listener:
@@ -148,6 +162,7 @@ class Listener:
         # rather than a local — a plain float, written and read as one word.
         self._armed_until = 0.0
         self._warned_grammar = False           # only say "no grammar support" once
+        self._name_streak = 0                  # consecutive partials naming him
         self._heard_at = 0.0                  # monotonic, last chunk that wasn't silence
         self._captured_at = 0.0               # monotonic, last chunk of any kind
         # When the current unbroken run of digital silence began. Tracked as its
@@ -398,17 +413,9 @@ class Listener:
                     # the sentence they actually said. Asking one recogniser to do
                     # both is what failed: given the whole lexicon, "Fred, stop
                     # talking" decodes as "fresh start talking" and nothing fires.
-                    if not barged and brec is not None:
-                        if brec.AcceptWaveform(data):
-                            hit = json.loads(brec.Result()).get("text", "")
-                        else:
-                            # Partial: this is the half that has to be quick.
-                            # Waiting for a final means waiting for them to stop
-                            # talking, by which time he has talked over them.
-                            hit = json.loads(brec.PartialResult()).get("partial", "")
-                        if _wants_him(hit):
-                            barged = True
-                            self._barge()
+                    if not barged and self._detect_name(brec, data):
+                        barged = True
+                        self._barge()
                     if rec.AcceptWaveform(data):
                         text = json.loads(rec.Result()).get("text", "").strip()
                         if text:
@@ -453,13 +460,8 @@ class Listener:
                 # Latched rather than checked at the end: brec finishes utterances
                 # on its own schedule, so the name can be found and gone again
                 # before rec has finished the sentence it belongs to.
-                if brec is not None and not name_seen:
-                    if brec.AcceptWaveform(data):
-                        hit = json.loads(brec.Result()).get("text", "")
-                    else:
-                        hit = json.loads(brec.PartialResult()).get("partial", "")
-                    if _wants_him(hit):
-                        name_seen = True
+                if not name_seen and self._detect_name(brec, data):
+                    name_seen = True
                 if not rec.AcceptWaveform(data):
                     continue
                 text = json.loads(rec.Result()).get("text", "").strip()
@@ -482,20 +484,22 @@ class Listener:
         finally:
             self._close_proc()
 
-    @staticmethod
-    def _reset_rec(rec) -> None:
-        """Clear a recogniser between utterances, tolerating one that can't.
+    def _reset_rec(self, rec) -> None:
+        """Clear the name detector between utterances, tolerating one that can't.
+
+        Also drops the partial streak — it belongs to the utterance just ended.
 
         Guarded because this is the microphone loop: an AttributeError here
         propagates out of _run and FRED goes deaf for the rest of the session,
         which is a wildly disproportionate outcome for a detector that is only
         an optimisation over rebuilding the object.
         """
+        self._name_streak = 0
         if rec is None:
             return
         try:
             rec.Reset()
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001  (see the docstring)
             print(f"[Listener] could not reset the name detector: {exc}")
 
     def _new_barge_rec(self):
@@ -514,6 +518,23 @@ class Listener:
                 print(f"[Listener] no grammar support in this model ({exc}); "
                       "barge-in will be less reliable at hearing his name")
             return None
+
+    def _detect_name(self, brec, data) -> bool:
+        """Feed the name detector one chunk. True when it has really heard him.
+
+        A *final* carrying the name is taken at once; a *partial* has to persist
+        for NAME_MIN_PARTIALS chunks, for the reason recorded there.
+        """
+        if brec is None:
+            return False
+        if brec.AcceptWaveform(data):
+            self._name_streak = 0
+            return _wants_him(json.loads(brec.Result()).get("text", ""))
+        if _wants_him(json.loads(brec.PartialResult()).get("partial", "")):
+            self._name_streak += 1
+        else:
+            self._name_streak = 0
+        return self._name_streak >= NAME_MIN_PARTIALS
 
     def _barge(self) -> None:
         """Tell whoever is speaking to stop. Never lets a handler kill the loop."""
