@@ -57,16 +57,30 @@ FULL_SCALE = 32767              # int16, so a peak is a fraction of this
 LEVEL_HISTORY = 48
 
 # His name, plus what the recogniser actually produces when someone says it.
-# Every one of these was observed in logs/heard.jsonl rather than guessed:
-# "alfred" is "hey Fred" run together into a single token, and "fraud"/"bread"
-# are what a general lexicon reaches for when a short name competes with the
-# whole English vocabulary. Words that are *ordinary* English stay out however
-# close they sound — "are" and "from" also turned up, and either would make him
-# answer half the conversations in the room.
-# "fread" is deliberately absent: it is not in this model's vocabulary, so no
-# recogniser can ever emit it and listing it only makes Vosk log a warning per
-# grammar it builds. Checked, not assumed — the other six are all in there.
-WAKE_WORDS = ("fred", "friend", "frayed", "alfred", "fraud", "bread")
+# Observed in logs/heard.jsonl rather than guessed — "alfred" is "hey Fred" run
+# together into one token, "fraud" is what a general lexicon reaches for when a
+# short name has to compete with the whole of English.
+#
+# The bar for being here is both halves: it has to sound like the name, *and* a
+# room must not say it by accident. tools/wake_audit.py measures the second half
+# against the model's own lexicon; anything it calls ORDINARY is out however
+# well it sounds.
+#
+# Dropped on that test (2026-08-19):
+#   "friend" — 4 derived forms. Here from the beginning, and the TODO had
+#     already flagged it: "my friend told me" wakes him. Its cost is worse than
+#     the logs suggest, because a false wake is recorded with the word that
+#     caused it stripped off — invisible in the very file you would check. Never
+#     once observed standing in for his name.
+#   "bread" — 4 derived forms, and observed standing in for his name exactly
+#     once. A real but rare gain against a word a room says freely; the room wins.
+#
+# Considered and rejected: "right" tops the audit's evidence table for standing
+# where his name should be ("right stop", "what's right stop listening") and is
+# also the most ordinary word on it. Being a genuine mishearing is not enough.
+# "fread" is absent for a different reason — not in the model's vocabulary, so
+# nothing can ever emit it. Checked, not assumed.
+WAKE_WORDS = ("fred", "alfred", "frayed", "fraud")
 ARM_WINDOW = 6.0     # seconds to wait for the command after a bare "Fred"
 # Seconds the mic stays open after FRED has asked a question. Longer than the
 # window above because answering a question takes a beat more thought than
