@@ -822,6 +822,13 @@ def api_brain():
         _assistant.brain.set_vision(bool(data["vision"]))
         _settings.setdefault("brain", {})["vision"] = _assistant.brain.vision
         save_settings(_settings)
+    if "face_recall" in data:
+        # Whether he may notice a returning visitor. Nothing it holds is ever
+        # written down — see inmoov/face_id.py — but it is still a face being
+        # recognised, so it gets a switch and the switch is honoured at once.
+        _assistant.brain.set_face_recall(bool(data["face_recall"]))
+        _settings.setdefault("brain", {})["face_recall"] = _assistant.brain.face_recall
+        save_settings(_settings)
     if "web_search" in data:
         # Whether FRED may look things up on the internet. Claude-only and
         # billed per search, so it is a switch rather than a constant.

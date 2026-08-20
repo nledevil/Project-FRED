@@ -131,6 +131,18 @@ DEFAULT_SETTINGS = {
         # gets it. Billed per search, hence a switch. The location is what he
         # assumes when nobody names a place ("what's the weather?") — set it to
         # wherever he actually is.
+        # Notice a returning visitor within one conversation ("you asked me
+        # about servos earlier"). Held in memory only and forgotten on the same
+        # idle timeout as the transcript — nothing about a face is ever written
+        # to disk, which is the condition this was built under. See face_id.py.
+        "face_recall": True,
+        # Whether face recall may hold the camera open by itself. Off by design:
+        # Camera.acquire() does not light the viewer indicator, so this would
+        # mean a camera running with no outward sign of it at an event full of
+        # children. With it off he only recognises people while the camera is
+        # already streaming for some other reason — which means, in practice,
+        # while face tracking is on.
+        "face_hold_camera": False,
         "web_search": True,
         "web_search_location": {"city": "", "region": "", "country": "US",
                                 "timezone": ""},

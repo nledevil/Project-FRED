@@ -32,7 +32,7 @@ import os
 import re
 import time
 
-from . import commands, sysinfo
+from . import commands, face_id, sysinfo
 from .local_brain import (DEFAULT_HOST as LOCAL_HOST, DEFAULT_MODEL as LOCAL_MODEL,
                           LocalClient)
 
@@ -80,7 +80,11 @@ _CLAUSE_END = re.compile(r"(?<=[,;:—–])\s")
 _NEW_CONV = re.compile(
     r"\b(new conversation|start over|start fresh|starting over|"
     r"let'?s start (over|fresh|again)|forget (what|everything|all|that|it)|"
-    r"clear your memory|never ?mind (all )?(that|it))\b", re.I)
+    # "forget me" earns its place now that there is a face to forget as well as
+    # a transcript. Somebody who asks a robot at a public event to forget them
+    # should be able to say it the obvious way and have it actually happen.
+    r"forget (me|about me)|clear your memory|"
+    r"never ?mind (all )?(that|it))\b", re.I)
 
 # How much of the recent back-and-forth FRED replays into each Claude turn, so
 # follow-ups ("who was Einstein?" → "when was he born?") resolve. Exchanges, not
@@ -89,6 +93,8 @@ _NEW_CONV = re.compile(
 HISTORY_MAX_EXCHANGES = 6
 # Drop the whole history after this long with no interaction, so a fresh person
 # walking up to FRED isn't answered in the context of the last kid's questions.
+# The same number governs how long a *face* survives (see inmoov/face_id.py):
+# the two memories are halves of one conversation and expire together.
 HISTORY_IDLE_SECS = 180.0
 
 SYSTEM = (
@@ -158,6 +164,24 @@ SYSTEM_NO_WEB = (
     " You have no way to look anything up on the internet right now. If someone "
     "asks for something current, like the weather or the news, say that plainly "
     "rather than guessing at it."
+)
+
+# Face recall's half. Two rules, and the second one is the important one: FRED
+# must never be the one to decide he recognises somebody. The facts either say
+# so or they don't, and "don't" includes every turn where the camera saw nothing
+# — which at an event is most of them. Without this he will happily greet the
+# first person of the day as an old friend.
+#
+# The honesty line is not decoration either. Children ask "will you remember
+# me?", and the true answer is a good one: for a few minutes, and then it is
+# gone and there is no copy. He should be able to say that.
+SYSTEM_FACES = (
+    " You can tell when the person in front of you is one you have already been "
+    "talking to in this conversation — but only when the facts below say so. "
+    "Never say you recognise, remember or have met anyone unless it is stated "
+    "there, and never guess at a name. Your memory for a face lasts only as "
+    "long as this conversation, a few minutes, and nothing about it is stored "
+    "anywhere or kept afterwards. Say that plainly if anyone asks."
 )
 
 
@@ -267,9 +291,23 @@ class Brain:
                  backend: str = "auto", local_model: str | None = None,
                  local_host: str | None = None, vision: bool = True,
                  look_min_secs: float = LOOK_MIN_SECS,
-                 web_search: bool = True, web_location: dict | None = None):
+                 web_search: bool = True, web_location: dict | None = None,
+                 face_recall: bool = True, face_hold_camera: bool = False):
         self.ctx = ctx
         self.vision = bool(vision)
+        # Noticing a returning visitor. Rides on the same switch as vision — it
+        # is the same camera looking at the same person — and on the same idle
+        # timeout as the conversation, which is the promise the feature was
+        # agreed on. Nothing it holds is ever written down; see face_id.py.
+        self.face_recall = bool(face_recall)
+        # Off by default: face recall rides on frames the camera is producing
+        # anyway rather than asking for the camera itself. On a robot where face
+        # tracking is usually running that is free and sufficient; on one where
+        # it isn't, this is the switch that makes the feature work at all — at
+        # the price of the camera running because somebody spoke to him. See
+        # FaceId.attend.
+        self.face_hold_camera = bool(face_hold_camera)
+        self.faces = face_id.FaceId(idle_secs=history_idle_secs)
         # Web search costs money per search and only works on Claude. Switchable
         # like vision, and persisted the same way, because "no lookups today" is
         # an event-day decision rather than a code change.
@@ -309,6 +347,69 @@ class Brain:
             self._ai_error = "anthropic SDK not installed"
         else:
             self._ai_error = "no ANTHROPIC_API_KEY"
+
+    # ---- faces ------------------------------------------------------------
+    def _face_recall_on(self) -> bool:
+        """Whether FRED is noticing faces at all right now."""
+        return self.face_recall and self.vision and self.faces.available()
+
+    def attend_faces(self) -> None:
+        """Somebody is talking: let the recogniser watch for a while.
+
+        Public because ``respond()`` is slightly too late to be the only caller.
+        A burst needs about five frames — two and a half seconds at the sampler's
+        pace — and respond() builds its message immediately, so a visitor who
+        walks back up is recognised on their *second* question rather than their
+        first. Calling this from the wake word instead (Assistant._on_wake) buys
+        the whole length of the utterance plus the transcription, which is
+        usually enough. It is idempotent and cheap: it extends the window if the
+        loop is already running.
+
+        The frame source hands back None unless the sensor is already running
+        for some other reason (face tracking, someone watching the panel), so by
+        default face recall is a passenger on frames that exist anyway and never
+        turns a camera on — the cheap thing and the defensible one. Set
+        ``face_hold_camera`` if this robot's face tracking is usually off and
+        the feature would otherwise never see anyone.
+        """
+        if not self._face_recall_on():
+            return
+        cam = getattr(self.ctx, "camera", None)
+        if cam is None:
+            return
+        hold = (cam.acquire, cam.release) if self.face_hold_camera else None
+        self.faces.attend(
+            lambda: cam.capture_gray() if cam.is_streaming() else None, hold=hold)
+
+    def _face_facts(self) -> str:
+        """The one line about who is standing there, or "" for "no idea".
+
+        Only ever says somebody has come *back*. While they are still standing
+        there the conversation history already covers it, and the difference
+        between "I know you're here" and "I know you were here before" is the
+        whole feature.
+        """
+        if not self._face_recall_on():
+            return ""
+        who = self.faces.current()
+        if who is None or who.sightings < 2:
+            return ""
+        line = ("\n\nThe person in front of you now is the same one who was "
+                "talking to you earlier in this conversation, and has come "
+                "back.")
+        if who.notes:
+            said = "; ".join(f'"{n}"' for n in who.notes)
+            line += f" Earlier they said: {said}."
+        return line + " Mention it only if it fits naturally.\n"
+
+    def set_face_recall(self, on: bool) -> bool:
+        """Turn returning-visitor recognition on or off. Off forgets at once —
+        a switch that left the faces sitting in memory would be a lie."""
+        self.face_recall = bool(on)
+        if not self.face_recall:
+            self.faces.stop()
+            self.faces.forget_all()
+        return self.face_recall
 
     def _look(self, which: str, tool_input: dict | None = None):
         """Answer the vision tool — with a picture, or with why there isn't one.
@@ -350,6 +451,13 @@ class Brain:
             return why
         self._last_look[source] = now
         self._last_frame[source] = jpeg
+        if source == "eyes" and self._face_recall_on():
+            # A frame taken because somebody asked him to look is the best kind
+            # of evidence there is — he is pointed at the person. Only the eye
+            # camera: the wide one is a 3840x1080 panorama whose faces are small
+            # and lens-warped, and a cascade pass over it costs far more than
+            # the frame is worth.
+            self.faces.observe_jpeg(jpeg)
         return self._frame_blocks(jpeg, source, "right now")
 
     @staticmethod
@@ -394,6 +502,10 @@ class Brain:
         if not self.vision:
             self._last_frame.clear()
             self._last_look.clear()
+            # Same argument, one step further: the faces are a distillation of
+            # those same pictures, so "stop looking" has to drop them too.
+            self.faces.stop()
+            self.faces.forget_all()
         return self.vision
 
     def status(self) -> dict:
@@ -415,6 +527,13 @@ class Brain:
                                      and cam is not None and cam.available()),
                 "vision_wide_ready": bool(spotter is not None and spotter.is_running()),
                 "vision_min_seconds": self._look_min_secs,
+                # Faces: the switch, whether it could work, and how many people
+                # are in memory right now. Deliberately a count and not the
+                # visitors themselves — what somebody said to FRED is not
+                # something to put on a status page.
+                "face_recall": self.face_recall,
+                "face_recall_ready": self._face_recall_on(),
+                "faces_known": len(self.faces.status()["visitors"]),
                 # Same split as vision: the switch, and whether a lookup would
                 # land. Cloud-only, so a local-only robot reads "on, not ready"
                 # rather than looking broken.
@@ -428,10 +547,18 @@ class Brain:
         return self.web_search
 
     def _system_for(self, which: str) -> str:
-        """The system prompt this backend gets, told the truth about the web."""
+        """The system prompt this backend gets, told the truth about the web.
+
+        Face recall is in here rather than in the per-turn facts because the
+        rule that matters is the *prohibition* — never claim to recognise
+        anybody unless told — and a rule that only appears on the turns where
+        somebody was recognised is no rule at all. Both backends get it: the
+        fact it guards is plain text, so the local model can use it too.
+        """
+        faces = SYSTEM_FACES if self._face_recall_on() else ""
         if which == "claude" and self.web_search:
-            return SYSTEM + SYSTEM_WEB + _web_place(self._web_location)
-        return SYSTEM + SYSTEM_NO_WEB
+            return SYSTEM + faces + SYSTEM_WEB + _web_place(self._web_location)
+        return SYSTEM + faces + SYSTEM_NO_WEB
 
     def _tools_for(self, which: str) -> list:
         """The tool list that backend may actually use.
@@ -469,8 +596,15 @@ class Brain:
     # ---- conversation memory ---------------------------------------------
     def clear_history(self) -> None:
         """Forget the running conversation (idle timeout, reset phrase, or an
-        explicit control from the web panel)."""
+        explicit control from the web panel).
+
+        Takes the faces with it. "Let's start over" and "a new person walked
+        up" are the same event as far as this robot is concerned, and half a
+        reset — a cleared transcript with the last visitor's face still in
+        memory — would be the worst of both.
+        """
         self._history = []
+        self.faces.forget_all()
 
     def _remember(self, user_text: str, reply: str) -> None:
         """Append one completed exchange, trimmed to the last N. Stores plain
@@ -503,7 +637,13 @@ class Brain:
         now = time.monotonic()
         if self._history and (now - self._history_at) > self._idle_secs:
             self._history = []
+            self.faces.forget_all()
         self._history_at = now
+        # Somebody is talking to him, so somebody is standing in front of him:
+        # the one moment worth spending frames on. (FaceId expires faces on its
+        # own clock as well — the promise has to hold even if nobody ever speaks
+        # to him again.)
+        self.attend_faces()
 
         # "Let's start over" — an explicit spoken reset of the memory.
         if _NEW_CONV.search(text):
@@ -575,9 +715,12 @@ class Brain:
         brief = ("\n\nYou are at a public event: answer in one short sentence, "
                  f"under {cap} words. Someone is waiting behind this person.\n"
                  if cap else "")
+        # Who is standing there, when he has come back — a per-turn fact like
+        # the clock and the chip temperature, and here for the same reason: it
+        # changes every turn, so it must not be in the cached prefix.
         messages = self._history + [
             {"role": "user",
-             "content": f"{sysinfo.context_block()}{brief}\n\n{text}"}]
+             "content": f"{sysinfo.context_block()}{brief}{self._face_facts()}\n\n{text}"}]
         actions: list[str] = []
         said: list[str] = []                 # every sentence handed to emit()
         # Static per backend: see the note above. What the suffix says depends on
@@ -682,6 +825,12 @@ class Brain:
                 # "didn't catch that" fillers, which would just add noise to the
                 # replayed context.
                 self._remember(text, reply)
+                # ...and pin what they asked to the face in front of him, so
+                # "you were asking me about servos" has something to name. A
+                # no-op when no face has been seen: a note with nobody attached
+                # to it is just an unlabelled record of what a child said.
+                if self._face_recall_on():
+                    self.faces.remember(text)
             else:
                 reply = "Done." if actions else "Sorry, I didn't catch that."
                 emit(reply)

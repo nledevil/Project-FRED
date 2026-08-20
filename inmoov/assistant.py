@@ -56,7 +56,9 @@ class Assistant:
                            look_min_secs=float(bc.get("vision_min_seconds",
                                                       LOOK_MIN_SECS)),
                            web_search=bool(bc.get("web_search", True)),
-                           web_location=bc.get("web_search_location") or None)
+                           web_location=bc.get("web_search_location") or None,
+                           face_recall=bool(bc.get("face_recall", True)),
+                           face_hold_camera=bool(bc.get("face_hold_camera", False)))
         listener_kw = {}
         if asr_model:
             # A name under models/, not a path: the setting is edited by a human
@@ -264,9 +266,16 @@ class Assistant:
         — the check below is "nobody is near *any* of them", not "this one
         stopped seeing them".
         """
+        kind = str((event or {}).get("event"))
+        if kind == "approach":
+            # Somebody has walked up. Earlier than the wake word and earlier than
+            # the greeting, which is the only way a burst of agreeing frames is
+            # ready by the time they actually say something.
+            self.brain.attend_faces()
+            return
         if not self.stop_when_alone or not self._speaking:
             return
-        if str((event or {}).get("event")) != "depart":
+        if kind != "depart":
             return
         if time.monotonic() - self._speaking_since < self.DEPART_GRACE:
             return
@@ -349,6 +358,11 @@ class Assistant:
     def _on_wake(self) -> None:
         if self._log:
             self._log.event("Heard his name — listening…")
+        # Start watching for a face now rather than when the question arrives.
+        # Recognising somebody takes several frames that agree, and respond()
+        # does not have that long — without this a returning visitor is noticed
+        # on their *second* question, which is worse than not at all.
+        self.brain.attend_faces()
         self.speak("Yes?")
         # Restart the window now that the mic is live again. _run armed it before
         # this call, so without this the second or so spent saying "Yes?" comes
