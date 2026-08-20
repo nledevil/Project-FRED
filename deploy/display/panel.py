@@ -444,6 +444,10 @@ class Panel(QObject):
     def moveServo(self, name, angle, final):
         self._servos_page.set_angle(name, angle, self._net, final)
 
+    @Slot(bool)
+    def setVoiceAtBoot(self, on):
+        self._voice_page.toggle_at_boot(self._net, bool(on))
+
     @Slot()
     def restServos(self):
         self._net.post_rest()

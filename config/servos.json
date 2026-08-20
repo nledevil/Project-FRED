@@ -42,7 +42,7 @@
       "channel": 15,
       "min_angle": 15.0,
       "max_angle": 170.0,
-      "rest_angle": 84.0,
+      "rest_angle": 79.0,
       "actuation_range": 180,
       "pulse_min_us": 500,
       "pulse_max_us": 2500,

@@ -37,7 +37,8 @@ class Assistant:
     def __init__(self, controller, led, tracker, sound, *, api_key: str | None = None,
                  device: str = "plughw:0,0", log=None, mic_gain: float = 1.0,
                  model: str | None = None, sensors=None, brain_cfg: dict | None = None,
-                 asr_model: str | None = None, barge_in: bool = True):
+                 asr_model: str | None = None, barge_in: bool = True,
+                 stop_when_alone: bool = True):
         # sensors is the SensorHub, or None on a build with no sensor node — the
         # read_sensors action degrades to saying so rather than failing.
         self._ctx = types.SimpleNamespace(controller=controller, led=led,
@@ -76,6 +77,9 @@ class Assistant:
         # for one, so he stops on the sentence he is on rather than finishing
         # the whole answer to a room that has moved on.
         self._interrupt = threading.Event()
+        # Cut a reply short when the visitor walks off. See on_sensor_event.
+        self.stop_when_alone = bool(stop_when_alone)
+        self._speaking_since = 0.0
         # The thread running the current turn. Turns run off the listener thread
         # so the microphone keeps being read while he answers — without that,
         # nothing can hear the person interrupting.
@@ -240,6 +244,60 @@ class Assistant:
                            actions=result.get("actions"))
         return result
 
+    # Someone has to have walked well out of both cones for this: the firmware
+    # only calls it a departure past 145 cm, held for three cycles, so a visitor
+    # standing still while he answers does not trigger it.
+    NEAR_CM = 130.0
+    # He does not stop for a departure in the first moment of a reply. A person
+    # stepping sideways as he starts is common; abandoning the first sentence
+    # every time reads as a fault rather than as attentiveness.
+    DEPART_GRACE = 2.5
+
+    def on_sensor_event(self, node: str, event: dict) -> None:
+        """Stop talking when the person he was talking to leaves.
+
+        He will otherwise finish a thirty-second answer to an empty spot while
+        the queue behind waits, which at an event is the whole cost.
+
+        Deliberately narrow. There are two distance sensors, so one cone losing
+        somebody who merely moved into the other would cut him off mid-sentence
+        — the check below is "nobody is near *any* of them", not "this one
+        stopped seeing them".
+        """
+        if not self.stop_when_alone or not self._speaking:
+            return
+        if str((event or {}).get("event")) != "depart":
+            return
+        if time.monotonic() - self._speaking_since < self.DEPART_GRACE:
+            return
+        if self._somebody_near():
+            return
+        if self._log:
+            self._log.event("Stopped — they walked away.")
+        self.interrupt()
+
+    def _somebody_near(self) -> bool:
+        """Is any distance sensor still reading somebody in front of him?
+
+        Unknown counts as "yes": a sensor that has gone quiet is not evidence
+        that the room is empty, and the safe failure here is to keep talking.
+        """
+        hub = getattr(self._ctx, "sensors", None)
+        if hub is None:
+            return True
+        try:
+            nodes = (hub.state() or {}).get("nodes") or {}
+        except Exception:      # noqa: BLE001 - never let a sensor read stop speech
+            return True
+        for node in nodes.values():
+            for reading in (node.get("readings") or {}).values():
+                if reading.get("type") != "distance":
+                    continue
+                cm = reading.get("cm")
+                if cm is not None and float(cm) <= self.NEAR_CM:
+                    return True
+        return False
+
     def interrupt(self) -> None:
         """Stop the reply in progress. Someone is talking over him.
 
@@ -398,6 +456,8 @@ class Assistant:
             # Publish before raising _speaking, so the poll that first sees
             # "speaking" already carries the new envelope's sequence number.
             self._publish_mouth(levels, frame_dt, epoch)
+            if not self._speaking:
+                self._speaking_since = time.monotonic()
             self._speaking = True
             self._thinking = False      # sound is out: he's answering, not pondering
             self._animate_jaw(levels, frame_dt, epoch)

@@ -35,6 +35,29 @@ Item {
             onTapped: if (P.voiceView.live) P.toggleVoice()
         }
 
+        // Whether he starts listening by himself after a reboot — a different
+        // question from the big switch above, which is about right now.
+        RowLayout {
+            Layout.alignment: Qt.AlignHCenter
+            Layout.topMargin: 4
+            spacing: 10
+            visible: P.voiceView.live || false
+            Btn {
+                label: (P.voiceView.atBoot ? "[X]" : "[  ]")
+                preserveCase: true
+                implicitWidth: 64
+                on: P.voiceView.atBoot || false
+                onTapped: P.setVoiceAtBoot(!P.voiceView.atBoot)
+            }
+            Text {
+                text: "LISTEN AFTER A REBOOT"
+                color: Th.dimInk
+                font.pixelSize: Th.px["1"]; font.family: Th.font
+                font.letterSpacing: Th.tracking
+                verticalAlignment: Text.AlignVCenter
+            }
+        }
+
         Text {
             text: P.voiceView.status || ""
             color: inkOf(P.voiceView.statusInk)

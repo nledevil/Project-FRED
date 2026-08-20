@@ -152,6 +152,13 @@ class Net:
     def post_voice(self, on: bool) -> None:
         self._fire(f"{NUC}/api/voice", {"on": bool(on)})
 
+    def post_voice_at_boot(self, on: bool) -> None:
+        """Whether the wake-word listener starts by itself after a reboot.
+
+        A different thing from post_voice, which is about right now — this one
+        is persisted on the brain and read by the boot path."""
+        self._fire(f"{NUC}/api/voice", {"at_boot": bool(on)})
+
     def post_move(self, name: str, angle: float) -> None:
         """Move one servo. Fired and forgotten — see _fire."""
         self._fire(f"{NUC}/api/move", {"name": name, "angle": float(angle)})

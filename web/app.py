@@ -184,7 +184,9 @@ _assistant = Assistant(_ctrl, _status_led, _tracker, _sound,  # voice: wake word
                        brain_cfg=_settings.get("brain", {}),   # cloud/local routing
                        asr_model=_voice_cfg.get("asr_model"),
                        # Listen through his own replies so he can be interrupted.
-                       barge_in=bool(_voice_cfg.get("barge_in", True)))
+                       barge_in=bool(_voice_cfg.get("barge_in", True)),
+                       # Stop mid-reply when the visitor walks off.
+                       stop_when_alone=bool(_voice_cfg.get("stop_when_alone", True)))
 # Auto-greet: the first thing FRED does unprompted. Wired after the assistant
 # because it needs one, and attached to the hub afterwards because the hub was
 # needed to build the assistant — the dependency is genuinely circular.
@@ -193,7 +195,22 @@ _greeter = Greeter(_assistant, log=_log,
                    enabled=bool(_greet_cfg.get("enabled", True)),
                    cooldown=float(_greet_cfg.get("cooldown", 90.0)),
                    blocked=lambda: _handoff_released)
-_sensors.set_on_event(_greeter.on_event)
+def _on_sensor_event(node, event):
+    """Fan the sensor node's events out to everything that cares.
+
+    Two consumers now: the greeter speaks up when somebody arrives, and the
+    assistant shuts up when they leave. Each is wrapped so a fault in one
+    cannot stop the other hearing about it.
+    """
+    for name, hook in (("greeter", _greeter.on_event),
+                       ("assistant", _assistant.on_sensor_event)):
+        try:
+            hook(node, event)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[sensors] {name} hook failed: {exc}")
+
+
+_sensors.set_on_event(_on_sensor_event)
 _serial_sensors = SerialSensorReader(
     _sensors, port=_sensor_cfg.get("serial_port", "/dev/ttyACM0"),
     baud=int(_sensor_cfg.get("serial_baud", 115200)), log=_log)
@@ -1290,6 +1307,17 @@ def api_voice():
         # Stop him mid-sentence, the same way talking over him does. Handy from
         # the panel when he is answering the wrong question at an event.
         _assistant.interrupt()
+    if "at_boot" in data:
+        # Whether he starts listening by himself after a reboot. Distinct from
+        # "on", which is about right now — the chest panel offers both because
+        # leaving him deliberately deaf and having him wake up deaf are
+        # different intentions.
+        _settings.setdefault("voice", {})["enabled"] = bool(data["at_boot"])
+        save_settings(_settings)
+    if "stop_when_alone" in data:
+        _assistant.stop_when_alone = bool(data["stop_when_alone"])
+        _settings.setdefault("voice", {})["stop_when_alone"] = _assistant.stop_when_alone
+        save_settings(_settings)
     if "barge_in" in data:
         # Whether he listens through his own replies. Off in a noisy room where
         # background speech would keep cutting him off.

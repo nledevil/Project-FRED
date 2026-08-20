@@ -81,7 +81,18 @@ class VoicePage:
                 "on": bool(listening), "live": True,
                 "ink": "dim" if pending else ("ok" if listening else "ink"),
                 "status": status, "statusInk": "dim",
-                "hint": "TAP TO TURN " + ("OFF" if listening else "ON")}
+                "hint": "TAP TO TURN " + ("OFF" if listening else "ON"),
+                # The separate question of whether he starts listening by
+                # himself after a reboot. Deliberately not the same switch: the
+                # big one is "is he listening right now", and conflating the two
+                # is how you end up unable to leave him deaf on purpose.
+                "atBoot": bool((((snap.get("nuc") or {}).get("settings") or {})
+                                .get("voice") or {}).get("enabled")),
+                "atBootLive": True}
+
+    def toggle_at_boot(self, net, want: bool) -> None:
+        """Start listening by himself next time he boots, or don't."""
+        net.post_voice_at_boot(bool(want))
 
     def toggle(self, net) -> None:
         """What a tap on the button does, wherever the tap came from."""

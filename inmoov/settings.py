@@ -170,6 +170,10 @@ DEFAULT_SETTINGS = {
         # which is why it takes his name and not just any speech. Turn it off
         # where even that misfires.
         "barge_in": True,
+        # Cut a reply short when the visitor walks away rather than finishing a
+        # long answer to an empty spot while the queue waits. Needs the stomach
+        # node's distance sensors; with no sensors he simply keeps talking.
+        "stop_when_alone": True,
                                       # Haiku answers in ~0.7s vs Opus's ~1.7s; for one- or
                                       # two-sentence spoken replies that trade is worth it.
     },
