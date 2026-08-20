@@ -1,5 +1,53 @@
 # InMoov TODO
 
+## What changed 2026-08-19 — conversation, and the microphone underneath it
+
+A session about turn-taking: what it takes for someone to talk to him the way
+they would talk to a person. Two older claims in this file turned out to be
+false and are corrected where they sit (the half-duplex card, and `"friend"` in
+the wake words).
+
+**Built, and verified on the hardware unless noted:**
+
+- **Relax actually relaxes.** It cut the servo pulses and the face tracker put
+  them straight back within 1/fps, so the button looked like it did nothing.
+  Read off the PCA9685 to confirm the fix: all sixteen channels `FULL_OFF`.
+  Chest panel gained the matching button. *(Aside worth keeping: ~0.1 A at 6.3 V
+  with everything relaxed is the servos' own idle draw, not a failure to relax.
+  Nothing in software reaches zero — that needs a switch on the rail.)*
+- **He can look things up.** Anthropic's server-side web search, on the Claude
+  path only — the local model never gets a tool it cannot execute. Needed
+  `pause_turn` handling, and telling him where he is, because `user_location`
+  only tilts result ranking and the model cannot read it.
+- **The wake word is his name, and always was.** No code change; every string
+  around it said "Hey FRED", which is where the habit came from.
+- **He stopped dropping syllables.** A reply is one `aplay` per sentence and
+  every one reopens the device; `lead_in` was applied only to the first clip.
+  `gap_lead_in` pads the rest. Judged by ear as fixed.
+- **The mic stays open while he speaks** — see the corrected STOP item below for
+  the measurements. Removes a device reopen and a fresh recogniser per reply.
+- **Answering him needs no wake word.** When his reply ends on a question the
+  window opens *after* he stops talking, for voice turns only.
+- **Talking over him stops him**, if you use his name. Any-speech-interrupts was
+  tried first and is unusable: with a television on, four lines of dialogue in
+  seven seconds each cut him off *and* became commands.
+- **He stops when you walk away** — see the Then-the-rest list; narrow on
+  purpose, because two distance cones make the naive version cut him off when
+  somebody merely steps sideways.
+- **Idle listening got cheaper.** The full recogniser now runs only when there
+  is sound to transcribe: 50% of a core with a television on, against ~90%
+  before, and far less in a quiet room. Gated on *sound* and not on his name —
+  the name detector's persistence does not separate a real "Fred" (0-3
+  consecutive chunks) from "my friend told me about it" (7), and on the wake
+  path that failure is silent.
+- **`tools/wake_audit.py`** replaces hand-mining `heard.jsonl` to tune the wake
+  words. Compares sounds rather than spellings; its strongest signal is
+  positional. Read the caution attached to the wake-word item below before
+  trusting any file-derived number.
+
+**Not done, and now cheaper than it was:** the STOP button (two endpoints, still
+no UI), volume, the strictness knob for event mode, push-to-talk.
+
 ## Where things stand after 2026-08-12/16
 
 A long session that touched the brain, the GPU, the chest touchscreen, the cart
@@ -218,6 +266,10 @@ one place because they are otherwise scattered through the notes above.
 - **A child at three feet in a hall of four hundred**, which is the speech case
   the model decision was never able to test. `logs/heard.jsonl` is collecting
   the evidence now; feed the suspicious lines through `tools/bench_asr.py`.
+  *(2026-08-19: `tools/wake_audit.py` now does the wake-word half of this
+  automatically. And there is most of a core spare at idle that there wasn't
+  before, so a larger model is affordable in a way it previously wasn't — which
+  is the actual answer to this case.)*
 
 ## Where to go next (proposed 2026-08-12)
 
@@ -346,14 +398,25 @@ If venue WiFi dies, every open question becomes "my AI brain isn't connected."
 - ~~**Panel auth**~~ — done 2026-08-12: a 4-digit PIN gates the settings and
   everything that moves him; `/api/say` is deliberately still open, and the
   cart's STOP always is. See the note at the top of this file.
-- **Big STOP + volume control:** `/api/sound/stop` exists and — confirmed
-  2026-08-16 — has **zero callers in the UI**. Not "isn't prominent": there is
-  no button anywhere on the panel that stops him talking, on any tab, so the
-  only way to shut him up mid-sentence is curl. That is the cheapest item on
-  this list. Voice-"stop" mid-speech remains impossible (half-duplex card — the
-  mic is off while he talks). No volume control exists anywhere (card pinned at
-  100% via amixer) — add an amixer slider in admin + "quieter/louder" local
-  commands. Note `voice.gain` is *microphone* gain, not output; it is not this.
+- **Big STOP + volume control:** *Corrected 2026-08-19 — half of this item was
+  built on a false premise, and the other half is still true.*
+  - **The half-duplex claim was wrong.** This said voice-"stop" mid-speech
+    "remains impossible (half-duplex card — the mic is off while he talks)".
+    The Anker PowerConf A3301 is full duplex: capture and playback are separate
+    USB interfaces (`/proc/asound/card0/stream0`, endpoints 2 OUT / 3 IN), both
+    report `Running` together indefinitely, and a capture taken straight through
+    six seconds of continuous playback came back full-length and gap-free. It
+    also cancels its own output — a nine-word phrase no room would produce,
+    played and transcribed with gain applied, returned not one of those words
+    across three trials; correlation puts the echo near -43 dB. The mic stays
+    open through his replies now, and saying his name over him stops him.
+  - **Two stop endpoints now exist, and there is still no button.** Alongside
+    `/api/sound/stop` there is `POST /api/voice {"interrupt": true}`, which also
+    unwinds the reply rather than only killing the current clip. Both still have
+    **zero callers in the UI**. Unchanged as the cheapest item here.
+  - **Volume is still missing entirely** (card pinned at 100% via amixer) — add
+    an amixer slider in admin + "quieter/louder" local commands. `voice.gain` is
+    *microphone* gain, not output; it is not this.
 - **Visitor kiosk view:** read-only fullscreen `/kiosk` route — big face, live
   captions of heard/said (noisy rooms + accessibility), "Say 'Fred'…"
   prompt. Face SVG, envelope animation, transcript polling all exist already.
@@ -366,11 +429,26 @@ If venue WiFi dies, every open question becomes "my AI brain isn't connected."
   the ASR-miss log, one row per *utterance* with the route it took, and it is
   now the thing whose directory the `.gitignore` fix above actually covers —
   which is worth thinking about before writing full transcripts beside it.
-- **Wake-word noise robustness:** `WAKE_WORDS` still includes `"friend"`
-  (now `listener.py:50` — the old cite drifted) — crowd chatter saying
-  "my friend…" triggers him. Matching is single-token, so nothing requires the
-  "hey" at all, and event mode carries no strictness knob to add one. Push-to-talk
-  does not exist either: the chest VOICE page is a latching on/off, not a hold.
+- **Wake-word noise robustness:** *Partly cleared 2026-08-19.* `"friend"` is
+  gone, and so is `"bread"`, which had been added the same day chasing a
+  mishearing and was the same mistake. The bar is now both halves — it has to
+  sound like his name *and* a room must not say it by accident — and the second
+  half is measured by `tools/wake_audit.py` against the model's own 368k
+  lexicon rather than judged. friend and bread have four derived forms each;
+  fred, alfred, frayed and fraud have one or none.
+  Still open, and worth knowing:
+  - **Event mode still carries no strictness knob.** Now that a grammar-restricted
+    detector exists (`BARGE_GRAMMAR`, `NAME_MIN_PARTIALS`), the obvious form is
+    to raise the persistence threshold and require the name at the *start* of an
+    utterance when `event.enabled`.
+  - **Push-to-talk still does not exist** — the chest VOICE page is a latching
+    on/off, not a hold.
+  - **A caution for whoever tunes this next.** `logs/heard.jsonl` cannot give
+    you a false-wake rate: a correctly-ignored sentence is never logged, so
+    there is no denominator, and a false wake is logged with the word that
+    caused it already stripped off by `_strip_wake`. The file is therefore
+    systematically biased toward *keeping* ordinary words — which is exactly the
+    error that put "bread" in the list. `wake_audit.py` says so on every run.
 - **Thermal:** `get_throttled` already shows `0x80000` (soft temp limit hit on a
   desk). Buy a fan/heatsink before enclosing in the head shell. Software side:
   have FRED say "I'm running a bit hot" when `throttled_now` flips. Still open —
