@@ -338,6 +338,7 @@ class Listener:
         try:
             dropped = False       # audio was discarded -> restart the recogniser
             barged = False        # already cut this reply short
+            name_seen = False     # the detector heard his name in this utterance
             while not self._stop.is_set():
                 proc = self._proc
                 if proc is None:               # first start, or reopen after an EOF
@@ -431,29 +432,71 @@ class Listener:
                                 except Exception as exc:  # noqa: BLE001
                                     print(f"[Listener] handler error: {exc}")
                         barged = False
-                        if brec is not None:
-                            brec.Reset()       # next utterance starts clean
+                        name_seen = False
+                        self._reset_rec(brec)  # next utterance starts clean
                     continue
                 if dropped:
                     # Audio was thrown away, so the recogniser is mid-utterance on
                     # a gap it never saw the far side of. Start it clean. Cheap —
                     # this is the object, not the model.
                     rec = KaldiRecognizer(self._model, 16000)
+                    self._reset_rec(brec)
                     dropped = False
                 barged = False
+                # The same two-recogniser split as barge-in, for the same reason:
+                # deciding whether he was addressed and transcribing what was said
+                # are different jobs, and the first one loses badly when his name
+                # has to out-compete the whole lexicon. "hey Fred" comes back from
+                # the general model as the single token "alfred", which no amount
+                # of splitting on whitespace will match.
+                #
+                # Latched rather than checked at the end: brec finishes utterances
+                # on its own schedule, so the name can be found and gone again
+                # before rec has finished the sentence it belongs to.
+                if brec is not None and not name_seen:
+                    if brec.AcceptWaveform(data):
+                        hit = json.loads(brec.Result()).get("text", "")
+                    else:
+                        hit = json.loads(brec.PartialResult()).get("partial", "")
+                    if _wants_him(hit):
+                        name_seen = True
                 if not rec.AcceptWaveform(data):
                     continue
                 text = json.loads(rec.Result()).get("text", "").strip()
+                heard_name, name_seen = name_seen, False
+                self._reset_rec(brec)          # next utterance starts clean
                 if not text:
                     continue
                 try:                           # a handler crash must not stop listening
-                    self._dispatch(text, time.monotonic())
+                    # armed only when the detector heard his name and the sentence
+                    # itself doesn't carry it — i.e. the name was mangled on its
+                    # way through the general model. When it did survive, the
+                    # normal path strips it and still answers a bare name with
+                    # "Yes?".
+                    self._dispatch(text, time.monotonic(),
+                                   armed=heard_name and _strip_wake(text) is None)
                 except Exception as exc:  # noqa: BLE001
                     print(f"[Listener] handler error: {exc}")
         except Exception as exc:  # noqa: BLE001 - log a crash instead of dying silently
             print(f"[Listener] loop error: {exc}")
         finally:
             self._close_proc()
+
+    @staticmethod
+    def _reset_rec(rec) -> None:
+        """Clear a recogniser between utterances, tolerating one that can't.
+
+        Guarded because this is the microphone loop: an AttributeError here
+        propagates out of _run and FRED goes deaf for the rest of the session,
+        which is a wildly disproportionate outcome for a detector that is only
+        an optimisation over rebuilding the object.
+        """
+        if rec is None:
+            return
+        try:
+            rec.Reset()
+        except Exception as exc:  # noqa: BLE001
+            print(f"[Listener] could not reset the name detector: {exc}")
 
     def _new_barge_rec(self):
         """A recogniser that can only hear his name, for deciding to interrupt.
