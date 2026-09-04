@@ -86,6 +86,38 @@ def main() -> int:
     for raw in [(37, 42), (400, 240), (799, 479)]:
         check(f"{raw} unchanged", t0._scale(*raw) == raw, str(t0._scale(*raw)))
 
+    print("a blank screen takes a tap anywhere; everything else wants the cog")
+    import display_control as dc            # noqa: PLC0415 — needs the Pi's deps
+
+    check("\"off\" is the blank preset the rule is derived from",
+          dc.BLANK_PRESETS == {"off"}, str(sorted(dc.BLANK_PRESETS)))
+
+    cog_x, cog_y = W - 1, H - 1             # inside the hotspot, corner-most
+    mid_x, mid_y = W // 2, H // 2           # nowhere near it
+
+    check("blank: a tap in the middle opens the menu",
+          dc.opens_menu("off", "down", mid_x, mid_y))
+    check("blank: a tap on the cog still opens the menu",
+          dc.opens_menu("off", "down", cog_x, cog_y))
+    check("blank: a finger *lifting* does not",
+          not dc.opens_menu("off", "up", mid_x, mid_y))
+
+    check("an animation: the middle is ignored",
+          not dc.opens_menu("voice-hud-c", "down", mid_x, mid_y))
+    check("an animation: the cog is not",
+          dc.opens_menu("voice-hud-c", "down", cog_x, cog_y))
+
+    check("the panel app is left alone even on its cog",
+          not dc.opens_menu("reactor", "down", cog_x, cog_y))
+    check("...and the menu it hosts likewise",
+          not dc.opens_menu("settings", "down", cog_x, cog_y))
+
+    # The bug this ordering guards against: PRESET_BY_ID.get(id, {}).get("argv")
+    # is None for an unknown id exactly as it is for "off", so a membership test
+    # is what keeps a typo from swallowing every tap on the panel.
+    check("an unknown preset is not treated as blank",
+          not dc.opens_menu("no-such-preset", "down", mid_x, mid_y))
+
     print("a driver reporting its own axis range is still scaled")
     t2 = FakeTouch(0)
     t2._max_x, t2._max_y = 4095, 4095

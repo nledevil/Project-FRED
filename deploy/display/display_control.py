@@ -125,6 +125,42 @@ PRESETS = [
 PRESET_BY_ID = {p["id"]: p for p in PRESETS}
 DEFAULT_PRESET = "reactor"
 
+# The presets that run no child and so paint nothing. Derived from the table
+# rather than spelled "off", so a second blank-style preset cannot quietly miss
+# the tap-anywhere rule below.
+BLANK_PRESETS = frozenset(p["id"] for p in PRESETS if p["argv"] is None)
+
+
+def opens_menu(preset_id: str, kind: str, x: int, y: int) -> bool:
+    """Should this touch event open the settings menu?
+
+    Split out of CogWatcher so the rule can be checked without a touchscreen —
+    see tools/test_touch_map.py, which already owns the question of which taps
+    land on the cog.
+
+    Four cases, in order:
+
+    * the panel app is up — it draws its own cog and handles its own taps, so
+      the daemon keeps its hands off the screen entirely;
+    * a hidden preset — the menu is already showing and owns the touchscreen.
+      Both processes read the evdev node and get their own copy of every event,
+      so this is what stops them acting on the same tap;
+    * a blank preset — nothing is drawn, so there is no cog to aim at and no
+      animation whose taps could be stolen. Any tap opens the menu;
+    * anything else — an animation is painting the cog, so hit-test it.
+
+    An id that is not in the table is treated as "something is drawing": it must
+    not fall through to the blank case and swallow every tap on the panel.
+    """
+    preset = PRESET_BY_ID.get(preset_id)
+    if preset is not None and (preset["argv"] == ["panel.py"] or preset.get("hidden")):
+        return False
+    if kind != "down":
+        return False
+    if preset_id in BLANK_PRESETS:
+        return True
+    return cog_hud.hit(x, y)
+
 # Crash handling. A child that dies faster than _MIN_HEALTHY_RUN didn't really
 # run — but one fast exit isn't proof it's broken (someone may have just killed
 # it), so only give up after _MAX_FAST_FAILS in a row. That still can't hot-loop,
@@ -141,11 +177,70 @@ _RESPAWN_DELAY = 2.0
 CHILD_LOG = HERE / "child-stderr.log"
 
 
+def _detach_console() -> bool:
+    """Stop the text console from painting over the panel. True if it was bound.
+
+    The GPU animations take DRM master. When one exits, the kernel hands the
+    panel back to the framebuffer console, which repaints tty1 straight into the
+    gap between one animation being killed and the next drawing its first frame
+    — measured here at 0.16s after the child dies, in front of the ~1.2s of Qt
+    start-up. That is the login prompt people see when switching looks.
+
+    Unbinding the framebuffer console is what stops it. The getty on tty1 keeps
+    running; it simply stops being drawn on this screen. Nothing wants a console
+    on the chest panel — the browser terminal is an ssh from the NUC (see
+    fred-terminal-chest.service), so this display is output and never a way in.
+
+    Discovered rather than assumed to be vtcon1: the index depends on what else
+    registered a console first, and unbinding the *dummy* console instead would
+    silently do nothing.
+
+    Unbinding stops the console *painting*; it does not erase what it has
+    already painted, and those pixels sit in the fbdev buffer until something
+    overwrites them. The GPU animations never do — they draw through DRM, so
+    /dev/fb0 still held a login prompt underneath a running arc reactor here,
+    ready to appear in the next gap. So the buffer is cleared on the way past,
+    and only on the transition: a daemon restart finds the console already
+    unbound and leaves the last animation's frame alone rather than flashing
+    black over it.
+
+    Reversible without editing anything, if a console here is ever wanted:
+
+        echo 1 | sudo tee /sys/class/vtconsole/vtcon1/bind
+
+    ...or start the daemon with --keep-console.
+    """
+    for path in sorted(Path("/sys/class/vtconsole").glob("vtcon*")):
+        try:
+            if "frame buffer" not in (path / "name").read_text():
+                continue
+            if (path / "bind").read_text().strip() == "0":
+                return False                # already unbound; nothing to do
+            (path / "bind").write_text("0")
+        except OSError:
+            continue                        # not this one, or not root
+        _blank_screen()                     # drop whatever it left behind
+        return True
+    return False
+
+
 def _blank_screen() -> None:
-    """Black the panel. Only safe once the child has exited (it mmaps fb0 too)."""
+    """Black the panel. Only safe once the child has exited (it mmaps fb0 too).
+
+    Hides the console cursor as well as clearing the pixels. Every animation
+    calls ``hide_cursor`` for itself, so the cursor is invisible for as long as
+    one is running and comes straight back the moment one is killed — which is
+    exactly when this runs. Clearing without hiding leaves a cursor blinking on
+    an otherwise black screen, which reads as a hung panel rather than a blank
+    one deliberately chosen.
+
+    It is console state rather than ours, so it outlives this call; the next
+    animation to start sets it again anyway.
+    """
     try:
         sys.path.insert(0, str(HERE))
-        from fb import Framebuffer          # noqa: PLC0415 — optional, needs numpy
+        from fb import Framebuffer, hide_cursor   # noqa: PLC0415 — needs numpy
+        hide_cursor()
         with Framebuffer() as fb:
             fb.clear()
     except Exception:
@@ -523,7 +618,19 @@ class Handler(BaseHTTPRequestHandler):
 
 
 class CogWatcher:
-    """Opens the settings menu when the cog is tapped.
+    """Opens the settings menu when the cog is tapped — or anywhere, on a blank
+    screen.
+
+    The hit-test exists so that taps meant for an animation are not stolen by
+    the menu. A blank preset has no animation and draws no cog, so there is
+    nothing to steal and nothing to aim at: hit-testing it means aiming at an
+    invisible 92x92 target in the corner with no feedback on a miss, which is
+    indistinguishable from a panel that has hung. On blank, any tap opens the
+    menu.
+
+    Deliberately *not* extended to a latched crash, which is also a dead screen:
+    there the supervisor may be inside its respawn delay, and a tap that lands
+    in that window would open the menu over an animation that was coming back.
 
     Lives in the daemon rather than in the animations for the obvious reason:
     the animations are replaced constantly and half of them are a C binary. The
@@ -532,8 +639,11 @@ class CogWatcher:
 
     It reads the touchscreen even while the menu itself has it open — two
     processes reading one evdev node each get their own event queue, so neither
-    steals from the other. What stops them acting on the same tap is the guard
-    below: while a hidden preset is showing, this watcher does nothing at all.
+    steals from the other. What stops them acting on the same tap is the hidden
+    case in ``opens_menu``, which is also the one read of the current preset
+    this loop makes: it used to take the supervisor lock twice for the same
+    field, so a switch landing between the two reads was judged against one
+    preset and acted on under another.
     """
 
     def __init__(self, supervisor: Supervisor, target: str = "settings"):
@@ -557,16 +667,8 @@ class CogWatcher:
         try:
             while not self._stop.is_set():
                 for kind, x, y in dev.poll(timeout=0.2):
-                    # The panel app draws the cog and handles its own taps —
-                    # it owns the screen and the touchscreen while it runs. This
-                    # watcher is for the animations that do not: the native
-                    # voice HUD, and the numpy menu.
-                    if PRESET_BY_ID.get(self._sup.preset_id(), {}).get("argv") == ["panel.py"]:
+                    if not opens_menu(self._sup.preset_id(), kind, x, y):
                         continue
-                    if kind != "down" or not cog_hud.hit(x, y):
-                        continue
-                    if PRESET_BY_ID[self._sup.state()["animation"]].get("hidden"):
-                        continue            # the menu is up; it owns the screen
                     try:
                         self._sup.select(self._target, persist=False)
                     except KeyError:
@@ -602,6 +704,9 @@ def main() -> None:
                     help="don't drive the hoverboard base at all")
     ap.add_argument("--no-cog", action="store_true",
                     help="don't watch the touchscreen for the settings cog")
+    ap.add_argument("--keep-console", action="store_true",
+                    help="leave the text console bound to the panel; it will "
+                         "repaint tty1 in the gap between animations")
     args = ap.parse_args()
 
     # Children inherit this, which is how the settings menu authenticates its
@@ -609,6 +714,12 @@ def main() -> None:
     # the same way as DISPLAY_TOKEN=.
     if args.token:
         os.environ["DISPLAY_TOKEN"] = args.token
+
+    # Before the first animation starts, so nothing has to be drawn over.
+    if not args.keep_console:
+        print("framebuffer console: "
+              f"{'detached' if _detach_console() else 'already off or absent'}",
+              flush=True)
 
     sup = Supervisor(Path(args.dir))
     sup.start()
