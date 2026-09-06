@@ -38,7 +38,8 @@ class Assistant:
                  device: str = "plughw:0,0", log=None, mic_gain: float = 1.0,
                  model: str | None = None, sensors=None, brain_cfg: dict | None = None,
                  asr_model: str | None = None, barge_in: bool = True,
-                 stop_when_alone: bool = True):
+                 stop_when_alone: bool = True,
+                 mic_channels: int = 1, mic_channel: int = 0):
         # sensors is the SensorHub, or None on a build with no sensor node — the
         # read_sensors action degrades to saying so rather than failing.
         self._ctx = types.SimpleNamespace(controller=controller, led=led,
@@ -68,7 +69,9 @@ class Assistant:
         self.listener = Listener(on_command=self._on_command, on_wake=self._on_wake,
                                  on_barge=self.interrupt,
                                  barge_in=bool(barge_in),
-                                 device=device, gain=mic_gain, **listener_kw)
+                                 device=device, gain=mic_gain,
+                                 channels=mic_channels, channel=mic_channel,
+                                 **listener_kw)
         self._speaking = False
         # True from "FRED heard you" until the first audio of his reply — the
         # Claude round-trip made visible. The chest display shows it as a state.

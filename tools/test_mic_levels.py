@@ -8,6 +8,10 @@ diagnose, and these checks are mostly about that refusal holding — that silenc
 stays distinguishable from a low level, and that a paused mic is never reported
 as a silent one.
 
+Also checks the channel extraction, which sits just upstream and answers the
+same kind of question: what actually reaches the recogniser. On a mic array that
+is not whatever ALSA felt like averaging together.
+
 Runs against a Listener built without hardware; _note_level is fed raw PCM
 directly, which is exactly what the capture loop hands it.
 
@@ -39,6 +43,16 @@ def chunk(*samples: int) -> bytes:
     return struct.pack(f"<{len(samples)}h", *samples)
 
 
+def interleaved(frames: list[tuple[int, ...]]) -> bytes:
+    """Pack per-frame channel tuples the way a multi-channel capture arrives."""
+    flat = [s for frame in frames for s in frame]
+    return struct.pack(f"<{len(flat)}h", *flat)
+
+
+def samples(data: bytes) -> list[int]:
+    return list(struct.unpack(f"<{len(data) // 2}h", data))
+
+
 def main() -> int:
     lis = L.Listener(on_command=lambda *a: None, device="null")
 
@@ -54,6 +68,39 @@ def main() -> int:
     check("peak_recent is the loudest of the window", s["peak_recent"] == 12000,
           f"peak_recent={s['peak_recent']}")
     check("full_scale is int16", s["full_scale"] == 32767, f"{s['full_scale']}")
+
+    print("one channel is taken out of an array, not averaged with the rest")
+    # Six channels, as the reSpeaker Flex presents them: channel c of frame i
+    # carries 100*c + i, so a wrong channel is obvious rather than merely wrong.
+    six = interleaved([tuple(100 * c + i for c in range(6)) for i in range(3)])
+    check("the processed channel comes back on its own",
+          samples(L._take_channel(six, 6, 0)) == [0, 1, 2],
+          str(samples(L._take_channel(six, 6, 0))))
+    check("...and so does the last capsule",
+          samples(L._take_channel(six, 6, 5)) == [500, 501, 502],
+          str(samples(L._take_channel(six, 6, 5))))
+    check("nothing is averaged in: no sample is the mean of its frame",
+          250 not in samples(L._take_channel(six, 6, 0)))
+
+    # A read can end mid-frame, and reshaping that raises rather than returning
+    # the audio that did arrive — which would be a crash in the capture loop.
+    check("a read ending mid-frame keeps the whole frames it did get",
+          samples(L._take_channel(six[:-4], 6, 0)) == [0, 1],
+          str(samples(L._take_channel(six[:-4], 6, 0))))
+    check("less than one frame is nothing, not an exception",
+          L._take_channel(b"\x01\x02", 6, 0) == b"")
+    check("mono through the same helper is a passthrough",
+          samples(L._take_channel(chunk(7, -7, 0), 1, 0)) == [7, -7, 0])
+
+    print("a channel that does not exist cannot be selected")
+    check("channel is clamped to the last one there is",
+          L.Listener(on_command=lambda *a: None, device="null",
+                     channels=6, channel=99).channel == 5)
+    check("a channel count below one is still one",
+          L.Listener(on_command=lambda *a: None, device="null",
+                     channels=0).channels == 1)
+    check("the default is an ordinary mono microphone",
+          (lis.channels, lis.channel) == (1, 0), f"{lis.channels}/{lis.channel}")
 
     print("silence is a value, not a gap")
     # The distinction the whole feature rests on: a quiet room and a muted mic

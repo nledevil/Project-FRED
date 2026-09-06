@@ -28,6 +28,7 @@ so call yours whatever you like.
 | **Brain** | Local regex commands answer instantly and for free; anything else falls through to **Claude**, which gets the same actions as tool definitions so it can actually *drive the robot*, not just talk. |
 | **Voice out** | ALSA `aplay`, with a speech envelope published to the chest display so the animation's mouth matches the audio. |
 | **Vision** | Camera Module 3 via `picamera2`, a USB camera via V4L2, or another machine's MJPEG stream — one interface, three backends. Plus an OpenCV Haar-cascade face tracker on a PD loop that moves the eyes, neck and head tilt to hold a face centred. |
+| **Hearing direction** | The reSpeaker Flex (XVF3800) beamforms toward whoever is speaking and reports the angle. FRED turns his head toward a voice he cannot see — in the dark, or from behind. A third bearing source for the face tracker, ranked below a real face and above the ultrasonics; calibrated from the admin panel by talking to him. |
 | **Web panel** | Flask on `:8080` — live servo sliders, camera view, conversation transcript, calibration mode, and an admin screen. |
 | **Chest display** | A second Pi drives a 7" DSI panel with framebuffer animations (arc reactor, flux capacitor, animated face, voice HUD), switchable at runtime from the panel. |
 | **Sensors** | A Raspberry Pi Pico reads two HC-SR04 ultrasonics and a PIR, does its own echo timing and event detection, and streams JSON to the robot. Claude can read them, so "is anyone there?" and "did someone walk by?" are answered from actual hardware. |
@@ -185,6 +186,28 @@ Default channel map — edit in `config/servos.json`:
 | 3 | `neck` | rotate left / right |
 | 4 | `head_tilt_lr` | tilt side to side |
 | 5 | `head_tilt_fb` | nod forward / back |
+
+### Mic array control interface (direction of arrival)
+
+Audio works for anyone through ALSA, but the vendor USB interface that reports
+which way a voice came from is a raw endpoint, and udev gives those to root. One
+rule fixes it, and without it FRED would have to run the whole voice stack as
+root to turn toward a voice:
+
+```bash
+sudo cp deploy/99-respeaker-xvf3800.rules /etc/udev/rules.d/
+sudo udevadm control --reload-rules
+sudo udevadm trigger --subsystem-match=usb --attr-match=idVendor=2886
+```
+
+Your account needs to be in `plugdev` (`id -nG`). Check it took with the admin
+panel's **Hearing direction** page — the needle should move when you talk.
+
+Then calibrate once: stand directly in front of him, keep talking, and press
+**Capture forward**. Whatever direction the array is steering at that moment
+becomes straight ahead, so the mounting orientation is measured rather than
+worked out. Nothing else needs setting unless he turns the wrong way, which is
+the **Mirrored** toggle.
 
 ### Sensor node wiring
 

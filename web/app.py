@@ -57,6 +57,7 @@ from inmoov.event import EventMode  # noqa: E402
 from inmoov.settings import load_settings, save_settings  # noqa: E402
 from inmoov import auth  # noqa: E402
 from inmoov import whoami as whoami_mod  # noqa: E402
+from inmoov.mic_doa import MicDoa, TUNABLE as DOA_TUNABLE  # noqa: E402
 
 app = Flask(__name__)
 # Key order is meaning here: the phrase deck's tabs display in the order the
@@ -147,6 +148,12 @@ _sensors = SensorHub(on_event=None, log=_log,
 # Wide-angle spotter: the PanaCast on the chest touchscreen, looking out at
 # ~180 degrees. Built before the tracker because the tracker consumes it.
 _spot_cfg = _settings.get("spotter", {})
+# Third bearing source: which way a voice came from. Built before the tracker
+# for the same reason the spotter is — _bearing_hint closes over it.
+_doa_cfg = {k: v for k, v in (_settings.get("mic_doa") or {}).items()
+            if k in DOA_TUNABLE}         # same filter as "track": a hand-edited
+                                         # settings.json must not break startup
+_mic_doa = MicDoa(log=lambda m: print(m, flush=True), **_doa_cfg)
 _spotter = WideSpotter(device=int(_spot_cfg.get("device", 0)),
                        detect_hz=float(_spot_cfg.get("detect_hz", 4.0)),
                        detect_width=int(_spot_cfg.get("detect_width", 1920)),
@@ -175,6 +182,9 @@ def _bearing_hint():
         hint = _spotter.bearing()
         if hint is not None:
             return hint
+    hint = _mic_doa.bearing()               # None unless a voice was heard recently
+    if hint is not None:
+        return hint
     return _sensors.bearing(left=_sensor_cfg.get("bearing_left", "dist_left"),
                             right=_sensor_cfg.get("bearing_right", "dist_right"))
 
@@ -186,6 +196,10 @@ _tracker = FaceTracker(_camera, _ctrl,       # face-follow: eyes + neck + head t
 _assistant = Assistant(_ctrl, _status_led, _tracker, _sound,  # voice: wake word + Claude + lip-sync
                        device=_snd_cfg.get("device", "plughw:0,0"), log=_log,
                        mic_gain=float(_voice_cfg.get("gain", 1.0)),
+                       # Which channel of the mic to transcribe, for an array
+                       # that presents more than one. See settings.voice.
+                       mic_channels=int(_voice_cfg.get("mic_channels", 1)),
+                       mic_channel=int(_voice_cfg.get("mic_channel", 0)),
                        model=_voice_cfg.get("model") or None,
                        sensors=_sensors,
                        brain_cfg=_settings.get("brain", {}),   # cloud/local routing
@@ -292,6 +306,11 @@ def _apply_handoff(release: bool) -> None:
         _assistant.stop()          # stop the wake-word listener → frees the mic (arecord)
         _tracker.stop()            # stop face tracking → drops its camera hold
         _spotter.stop()            # release the PanaCast — it is shared hardware too
+        # The DOA reader touches a vendor USB interface, not ALSA, so it does not
+        # actually contend with anything MyRobotLab wants. It stops anyway: a
+        # handoff means this stack is not driving the head, and a bearing nobody
+        # acts on is a USB poll for nothing.
+        _mic_doa.stop()
         _camera.suspend()          # force-stop the sensor, report unavailable
         _sound.suspend()           # stop playback, block new
         _ctrl.suspend()            # relax servos + release the I2C/PCA9685 bus
@@ -302,6 +321,8 @@ def _apply_handoff(release: bool) -> None:
         _camera.resume()           # sensor restarts lazily on the next viewer
         if _spot_cfg.get("enabled", True):
             _spotter.start()       # retake the PanaCast; no-op if already running
+        if _doa_cfg.get("enabled", True):
+            _mic_doa.start()       # no-op if already running
         # The voice listener and face tracker are left OFF — re-arm them from
         # their own toggles, as after any boot.
     _handoff_released = release
@@ -429,7 +450,7 @@ def _state() -> dict:
     return {"mock": _ctrl.mock, "servo_link": _ctrl.status(),
             "channels": channels, "camera": camera,
             "sound": sound, "led": _status_led.status(), "track": _tracker.status(),
-            "spotter": _spotter.status(),
+            "spotter": _spotter.status(), "mic_doa": _mic_doa.status(),
             "voice": _assistant.status(), "servos": servos, "settings": _settings,
             "handoff": _handoff_state(), "audit": _audit_state(),
             "brain": _assistant.brain.status(),
@@ -1301,6 +1322,46 @@ def api_track():
     return jsonify(_tracker.status())
 
 
+@app.get("/api/mic")
+def api_mic_status():
+    return jsonify(_mic_doa.status())
+
+
+@app.post("/api/mic")
+@protected
+def api_mic():
+    """Start/stop the DOA reader, tune it, or calibrate which way is forward.
+
+    Body: ``{"on": true|false, "capture_forward": true, <tuning>...}``. Tuning
+    keys (enabled, mount_offset, span_deg, invert, stale_after, poll_hz) apply
+    whether or not ``on`` is present, so the panel can trim it while it runs.
+
+    ``capture_forward`` is the calibration: it reads whatever angle the array is
+    currently steering at and calls that straight ahead. It runs *after* the
+    tuning in this handler, so a request can reset the span and re-measure the
+    offset in one go, and it is persisted like any other change.
+    """
+    data = request.get_json(force=True) or {}
+    before = _mic_doa.tuning()
+    _mic_doa.configure(**data)                   # ignores non-tuning / None keys
+
+    captured = None
+    if data.get("capture_forward"):
+        captured = _mic_doa.capture_forward()
+        if not captured.get("ok"):
+            # Not an error state for the endpoint: nothing was heard, which the
+            # page needs to show as guidance rather than as a failure.
+            return jsonify({**_mic_doa.status(), "captured": captured})
+
+    after = _mic_doa.tuning()
+    if after != before:                          # persist only real changes
+        _settings["mic_doa"] = after
+        save_settings(_settings)
+    if "on" in data:
+        _mic_doa.start() if data["on"] else _mic_doa.stop()
+    return jsonify({**_mic_doa.status(), "captured": captured})
+
+
 @app.get("/api/voice")
 def api_voice_status():
     return jsonify(_assistant.status())
@@ -1682,6 +1743,51 @@ def api_sound_stop():
     return jsonify({"stopped": True})
 
 
+@app.get("/api/sound/volume")
+def api_sound_volume_get():
+    """How loud he is, read from the card's mixer.
+
+    Open, like the rest of the live status: a volume you cannot read is a panel
+    that has to guess, and the chest shows this before anyone has typed a PIN.
+    ``volume: null`` means this rig has no settable mixer — the panels hide the
+    control rather than showing a slider that does nothing.
+    """
+    return jsonify({"volume": _sound.volume(),
+                    "control": _sound._volume_ctl,
+                    "stored": _settings.get("sound", {}).get("volume")})
+
+
+@app.post("/api/sound/volume")
+@protected
+def api_sound_volume_set():
+    """Set the playback level, 0-100, and remember it. Body: {"volume": int}.
+
+    Gated, unlike /api/sound/play. Playing a sound is what the deck is for and
+    is deliberately open; turning him to 0 is a mute nobody standing at the
+    robot could explain, and turning him to 100 in a hall is its own kind of
+    disruption. Same class of decision as /api/display.
+    """
+    if (blocked := _blocked_by_handoff()):
+        return blocked                           # the card belongs to someone else
+    data = request.get_json(force=True) or {}
+    if "volume" not in data:
+        return jsonify({"error": "volume required"}), 400
+    try:
+        want = float(data["volume"])
+    except (TypeError, ValueError):
+        return jsonify({"error": "volume must be numeric"}), 400
+    if not 0.0 <= want <= 100.0:
+        return jsonify({"error": "volume must be between 0 and 100"}), 400
+    if not _sound.set_volume(want):
+        return jsonify({"error": "no mixer on this audio device"}), 503
+    # Store what we asked for, not what came back: the card quantises to its own
+    # steps (85% is 6161 of 7248 here), and persisting the rounded reading would
+    # walk the number a little further down on every save.
+    _settings.setdefault("sound", {})["volume"] = int(round(want))
+    save_settings(_settings)
+    return jsonify({"volume": _sound.volume()})
+
+
 # ---- terminator clips: upload / list / preview / delete --------------------
 def _safe_clip_stem(name: str) -> str:
     """A filesystem-safe stem from an uploaded filename (no path, no traversal)."""
@@ -1741,51 +1847,6 @@ def _term_clip_path(name: str) -> Path | None:
         return None
     p = TERMINATOR_DIR / name
     return p if p.is_file() else None
-
-
-@app.get("/api/sound/volume")
-def api_sound_volume_get():
-    """How loud he is, read from the card's mixer.
-
-    Open, like the rest of the live status: a volume you cannot read is a panel
-    that has to guess, and the chest shows this before anyone has typed a PIN.
-    ``volume: null`` means this rig has no settable mixer — the panels hide the
-    control rather than showing a slider that does nothing.
-    """
-    return jsonify({"volume": _sound.volume(),
-                    "control": _sound._volume_ctl,
-                    "stored": _settings.get("sound", {}).get("volume")})
-
-
-@app.post("/api/sound/volume")
-@protected
-def api_sound_volume_set():
-    """Set the playback level, 0-100, and remember it. Body: {"volume": int}.
-
-    Gated, unlike /api/sound/play. Playing a sound is what the deck is for and
-    is deliberately open; turning him to 0 is a mute nobody standing at the
-    robot could explain, and turning him to 100 in a hall is its own kind of
-    disruption. Same class of decision as /api/display.
-    """
-    if (blocked := _blocked_by_handoff()):
-        return blocked                           # the card belongs to someone else
-    data = request.get_json(force=True) or {}
-    if "volume" not in data:
-        return jsonify({"error": "volume required"}), 400
-    try:
-        want = float(data["volume"])
-    except (TypeError, ValueError):
-        return jsonify({"error": "volume must be numeric"}), 400
-    if not 0.0 <= want <= 100.0:
-        return jsonify({"error": "volume must be between 0 and 100"}), 400
-    if not _sound.set_volume(want):
-        return jsonify({"error": "no mixer on this audio device"}), 503
-    # Store what we asked for, not what came back: the card quantises to its own
-    # steps (85% is 6161 of 7248 here), and persisting the rounded reading would
-    # walk the number a little further down on every save.
-    _settings.setdefault("sound", {})["volume"] = int(round(want))
-    save_settings(_settings)
-    return jsonify({"volume": _sound.volume()})
 
 
 @app.post("/api/sounds/terminator/play")
@@ -1886,12 +1947,29 @@ if __name__ == "__main__":
             print(f"Wide spotter: PanaCast {s['size']} @ {s['detect_hz']} Hz")
         else:
             print(f"Wide spotter: unavailable — {_spotter.last_error}")
+    if _doa_cfg.get("enabled", True) and not _handoff_released:
+        # Same reasoning as the spotter above: this produces the bearing that
+        # tells the tracker there is somebody to turn toward, so it runs whether
+        # or not tracking is currently on.
+        if _mic_doa.start():
+            fw = _mic_doa.firmware()
+            print(f"Mic DOA: reSpeaker firmware {fw or '?'} @ "
+                  f"{_mic_doa.poll_hz:g} Hz, forward = {_mic_doa.mount_offset:g}deg")
+        else:
+            print(f"Mic DOA: unavailable — {_mic_doa.status()['error']}")
     # Load the local model AND read its prompt prefix now, off the conversation
     # path. Skipping this doesn't save the work, it just bills it to whoever asks
     # FRED the first question — as a ~10 s silence before he answers.
     if _assistant.brain.backend in ("auto", "local"):
         threading.Thread(target=_assistant.brain.warm_local,
                          name="local-warm", daemon=True).start()
+    # Before the chime, not after: the chime is the first thing anyone hears, so
+    # a level restored afterwards would be one clip too late every single boot.
+    # Absent = leave the card alone. Nobody has set a level here, and stamping a
+    # default over whatever alsactl restored would be us picking a volume for a
+    # robot whose owner never asked us to.
+    if _snd_cfg.get("volume") is not None and not _handoff_released:
+        _sound.set_volume(_snd_cfg["volume"])
     boot = _snd_cfg.get("boot_sound", "")
     if boot and _sound.available() and not _handoff_released:
         _sound.play(boot)                        # non-blocking chime on startup
@@ -1901,10 +1979,3 @@ if __name__ == "__main__":
     if _sensor_cfg.get("serial_enabled"):
         _serial_sensors.start()                  # read a USB-serial sensor node (no-WiFi fallback)
     app.run(host="0.0.0.0", port=8080, threaded=True)
-    # Before the chime, not after: the chime is the first thing anyone hears, so
-    # a level restored afterwards would be one clip too late every single boot.
-    # Absent = leave the card alone. Nobody has set a level here, and stamping a
-    # default over whatever alsactl restored would be us picking a volume for a
-    # robot whose owner never asked us to.
-    if _snd_cfg.get("volume") is not None and not _handoff_released:
-        _sound.set_volume(_snd_cfg["volume"])

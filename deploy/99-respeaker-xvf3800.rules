@@ -1,0 +1,18 @@
+# reSpeaker Flex / XVF3800 mic array control interface.
+#
+# Audio works for anyone through ALSA, but the vendor-specific interface the
+# direction-of-arrival readout lives on is a raw USB endpoint, and udev gives
+# those to root alone by default. Without this, reading DOA means running the
+# whole voice stack as root.
+#
+# uaccess hands it to whoever is logged in at the seat; the plugdev group covers
+# the headless case, which is how FRED actually runs.
+#
+# Matched on the vendor alone, deliberately. The product id changes with the
+# firmware build (C16K6Ch is 0x001e today) and a firmware update that moved it
+# would leave this rule silently not matching — the device still enumerates,
+# audio still works, and only the direction reading dies, with a permission
+# error nobody is looking at. inmoov/mic_doa.py does not pin the id either, for
+# the same reason; the two have to agree or the looser one is pointless.
+# The only 0x2886 device on this robot is the array.
+SUBSYSTEM=="usb", ATTR{idVendor}=="2886", TAG+="uaccess", GROUP="plugdev", MODE="0660"

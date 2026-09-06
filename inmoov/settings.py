@@ -58,6 +58,36 @@ DEFAULT_SETTINGS = {
         "detect_hz": 4.0,             # decode+detect rate — acquisition is a human-scale event
         "detect_width": 1920,         # downscale before detection (~10 ms/frame)
     },
+    "mic_doa": {
+        # Direction of arrival off the mic array (reSpeaker Flex / XVF3800): a
+        # third bearing source for the face tracker, so he turns toward a voice
+        # he cannot see. Ranks between the wide spotter and the ultrasonics —
+        # a voice is a person, which is more than a range-finder knows, but less
+        # accurate than an actual face detector. See inmoov/mic_doa.py.
+        "enabled": True,
+        # Which raw angle is "straight ahead". Depends on how the board is
+        # mounted, so it is measured rather than guessed: stand in front of him,
+        # talk, and press Capture forward on the admin panel.
+        "mount_offset": 0.0,
+        "span_deg": 90.0,             # degrees off-axis that mean a full-deflection hint
+        "invert": False,              # if he turns away from the voice instead of toward
+        "stale_after": 4.0,           # seconds a heard voice stays worth acting on;
+                                      # longer than the spotter's, because speech is
+                                      # bursty and a face is not
+        "poll_hz": 10.0,
+        # Where the direction comes from. "processed" is the device's own
+        # answer — speech energy weighed across its fixed beams, NaN when nobody
+        # is talking — and is what you want. "beam" reads one raw beam from
+        # AEC_AZIMUTH_VALUES instead, gated on speech energy; useful for
+        # diagnosis, and a trap otherwise, because the free-running beam (2)
+        # looks like the tracking one and is actually chasing room noise.
+        "source": "processed",
+        "beam": 2,                    # only consulted when source is "beam"
+        # Speech samples to take a circular median of before believing a
+        # direction. Half a second of lag at 10 Hz, in exchange for one stray
+        # frame not counting as the person having moved. 1 = off.
+        "smooth_n": 5,
+    },
     "hardware": {
         # When True, the app boots with the shared hardware RELEASED to another
         # owner (MyRobotLab): I2C/PCA9685 servos, the USB audio card, and the Pi
@@ -169,6 +199,17 @@ DEFAULT_SETTINGS = {
         "enabled": False,             # start the "Fred" wake-word listener at boot
         "gain": 1.0,                  # software mic boost (analog capture is already
                                       # maxed); 1.0 = off, ~2-3 for quiet/distant speech
+        # How the capture device presents itself. 1/0 is an ordinary mono mic and
+        # is what a USB speakerphone wants. A mic array offers several channels at
+        # once and both of these matter: ALSA's plughw does not *pick* a channel
+        # when asked for mono, it averages them all, so the beamformed output
+        # arrives mixed back in with the raw capsules and a sixth as loud. Measured
+        # on the reSpeaker Flex (XVF3800), which presents 6 at 16 kHz — two
+        # processed outputs and the four raw mics, with ch0 the processed one.
+        #   PowerConf / any plain mic:  channels 1, channel 0
+        #   reSpeaker Flex C16K6Ch:     channels 6, channel 0
+        "mic_channels": 1,
+        "mic_channel": 0,
         # Which Vosk model transcribes what he hears. A directory name under
         # models/. The small one is 68 MB and fast; the larger ones are more
         # accurate on the case that actually fails — children, at distance, in a

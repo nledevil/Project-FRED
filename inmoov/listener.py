@@ -156,6 +156,14 @@ class Listener:
     on_command : callable(str)   -- called with the recognised command text.
     on_wake : callable()         -- called on a bare "Fred" (say "Yes?").
     device : str                 -- ALSA capture device for arecord.
+    channels : int               -- how many channels that device presents. 1 is
+                                    an ordinary microphone. A mic array offers
+                                    several at once and must be asked for all of
+                                    them, because ALSA's plughw reduces a
+                                    multi-channel capture to mono by averaging.
+    channel : int                -- which of them to transcribe. On the reSpeaker
+                                    Flex that is the processed output, not one of
+                                    the raw capsules. See _take_channel.
     gain : float                 -- software mic boost applied to the raw PCM
                                     before Vosk sees it. The USB mic's analog
                                     capture is already maxed (+16 dB), so this is
@@ -172,7 +180,8 @@ class Listener:
 
     def __init__(self, on_command, on_wake=None, on_barge=None,
                  device: str = "plughw:0,0", model_path: str | Path = MODEL_PATH,
-                 gain: float = 1.0, barge_in: bool = True):
+                 gain: float = 1.0, barge_in: bool = True,
+                 channels: int = 1, channel: int = 0):
         self._on_command = on_command
         self._on_wake = on_wake or (lambda: None)
         # Called the moment somebody starts talking over him, so the reply can be
@@ -183,6 +192,12 @@ class Listener:
         # audio during a reply is read and dropped.
         self.barge_in = bool(barge_in)
         self.device = device
+        # How many channels to ask arecord for, and which one Vosk actually gets.
+        # 1/0 is an ordinary mono microphone and costs nothing: the extraction is
+        # skipped outright. See _take_channel for why a multi-channel array must
+        # not be left to plughw to reduce.
+        self.channels = max(1, int(channels))
+        self.channel = min(max(0, int(channel)), self.channels - 1)
         self.gain = max(1.0, float(gain))       # never attenuate below the captured level
         self.model_path = Path(model_path)
         self._thread: threading.Thread | None = None
@@ -405,7 +420,7 @@ class Listener:
                 if proc is None:               # first start, or reopen after an EOF
                     proc = subprocess.Popen(
                         ["arecord", "-q", "-D", self.device, "-f", "S16_LE",
-                         "-r", "16000", "-c", "1", "-t", "raw"],
+                         "-r", "16000", "-c", str(self.channels), "-t", "raw"],
                         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
                     # Publish only if nobody paused us while arecord was starting;
                     # otherwise this capture would run *during* playback, which is
@@ -428,12 +443,19 @@ class Listener:
                         # measured across the gap would be meaningless.
                         self._silent_since = 0.0
                 try:
-                    data = proc.stdout.read(4000)
+                    # Scaled by the channel count so that what survives the
+                    # extraction below is still 4000 bytes — 125ms, which every
+                    # timing constant in this file is written in terms of.
+                    data = proc.stdout.read(4000 * self.channels)
                 except (ValueError, OSError):  # pause() closed the pipe under us
                     data = b""
                 if not data:                   # arecord ended (killed by pause, or died)
                     self._close_proc()
                     continue
+                if self.channels > 1:
+                    data = _take_channel(data, self.channels, self.channel)
+                    if not data:               # a read that ended mid-frame
+                        continue
                 # Measured *before* gain: this is a question about the hardware,
                 # and scaling silence by 8 is still silence.
                 self._note_level(data)
@@ -719,6 +741,29 @@ def _reap(p) -> None:
         p.stdout.close()
     except Exception:          # noqa: BLE001
         pass
+
+
+def _take_channel(data: bytes, channels: int, channel: int) -> bytes:
+    """Pull one channel out of interleaved S16_LE PCM.
+
+    For a mic array that presents several channels at once. The reSpeaker Flex
+    (XVF3800) offers six at 16 kHz: two processed outputs and the four raw
+    capsules. Only the processed one is worth transcribing — measured on this
+    device, capturing ``-c 1`` through ALSA's ``plughw`` does not pick a channel,
+    it *averages all six*, which mixes the beamformed, echo-cancelled,
+    noise-suppressed output back together with the raw microphones at a sixth of
+    its level. That is worse than the plain mic it replaced: it re-adds the room
+    the array just removed, and quietly, because nothing errors.
+
+    Frame-aligned defensively. A short read at EOF can end mid-frame, and
+    reshaping that raises rather than returning the audio that did arrive.
+    """
+    frame = channels * 2                       # int16 per channel
+    usable = len(data) - (len(data) % frame)
+    if usable <= 0:
+        return b""
+    block = np.frombuffer(data, dtype=np.int16, count=usable // 2)
+    return block.reshape(-1, channels)[:, channel].tobytes()
 
 
 def _amplify(data: bytes, gain: float) -> bytes:

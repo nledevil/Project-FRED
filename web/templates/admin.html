@@ -198,6 +198,7 @@
       <a href="#sec-wifi" data-sec="sec-wifi">WiFi</a>
       <a href="#sec-display" data-sec="sec-display">Chest display</a>
       <a href="#sec-voice" data-sec="sec-voice">Voice &amp; AI</a>
+      <a href="#sec-doa" data-sec="sec-doa">Hearing direction</a>
       <a href="#sec-clips" data-sec="sec-clips">Sound clips</a>
       <a href="#sec-heard" data-sec="sec-heard">Heard log</a>
       <a href="#sec-dev" data-sec="sec-dev">Developer</a>
@@ -453,13 +454,13 @@
 
   <section class="panel" id="sec-voice">
     <p class="phead">Voice &amp; AI</p>
-    <div class="row">
     <div class="row" id="volRow">
       <div class="label"><b>Speaker volume</b><span>how loud he talks</span></div>
       <input type="range" id="volume" min="0" max="100" step="1"
              oninput="onVol(this.value)" onchange="setVolume(this.value)">
       <span class="lensval" id="volVal">&hellip;</span>
     </div>
+    <div class="row">
       <div class="label"><b>Wake word at boot</b><span>“Fred” listener</span></div>
       <label class="switch"><input type="checkbox" id="voiceEnabled"> Start listening automatically when FRED boots</label>
     </div>
@@ -485,11 +486,11 @@
       <input type="range" id="syncOffset" min="-0.5" max="0.5" step="0.01" oninput="onSync(this.value)">
       <span class="lensval" id="syncVal">0.00 s</span>
     </div>
-    <p class="hint">Needs the Vosk model + a microphone. Open-ended questions also need an
     <p class="hint"><b>Speaker volume</b> is the sound card's own mixer, so it applies to
        everything — speech, the sound board, the boot chime — and takes effect the moment you
        let go of the slider. It saves itself and is restored on every boot, so there's no Save
        to press for it. 0% is a mute; the same slider brings him back.</p>
+    <p class="hint">Needs the Vosk model + a microphone. Open-ended questions also need an
        Anthropic API key in <code>config/secrets.env</code> — built-in commands work without one.
        Raise the lead-in (≈0.4–0.6 s) if the speaker clips the first word or two while it
        wakes up; leave it at 0 for a device that starts instantly.</p>
@@ -501,6 +502,121 @@
        signal in software. 1× is off; try ≈2× for quiet or distant speech. Past ≈3× it mostly
        amplifies room noise and clips loud words, which <em>hurts</em> recognition — applied live,
        no reboot needed.</p>
+  </section>
+
+  <section class="panel" id="sec-doa">
+    <p class="phead">Hearing direction</p>
+
+    <div class="row" style="margin-bottom:12px">
+      <div class="label"><b>Mic array</b><span>which way a voice came from</span></div>
+      <div class="grow"></div>
+      <span class="dot" id="doaDot"></span>
+      <span class="badge" id="doaStat">…</span>
+    </div>
+
+    <div class="row" style="align-items:flex-start;gap:20px">
+      <!-- The dial is the whole point of this page. "Is it pointing at me?" is a
+           question a picture answers instantly and a number does not, and the
+           person calibrating it is standing in front of the robot talking, not
+           reading. Forward is up; the shaded wedge is the span that maps to a
+           full turn of the head. -->
+      <svg id="doaDial" viewBox="0 0 200 200" width="200" height="200"
+           style="flex:none">
+        <circle cx="100" cy="100" r="80" fill="none"
+                stroke="rgba(255,255,255,.12)" stroke-width="1"/>
+        <path id="doaWedge" fill="rgba(90,170,255,.10)"
+              stroke="rgba(90,170,255,.25)" stroke-width="1"/>
+        <!-- Forward marker, fixed: this is the direction "capture forward" set. -->
+        <line x1="100" y1="100" x2="100" y2="24"
+              stroke="rgba(255,255,255,.30)" stroke-width="1"
+              stroke-dasharray="3 3"/>
+        <text x="100" y="16" text-anchor="middle" font-size="10"
+              fill="rgba(255,255,255,.45)">forward</text>
+        <g id="doaNeedle" transform="rotate(0 100 100)" opacity="0.25">
+          <line x1="100" y1="100" x2="100" y2="36" stroke="#5aaaff"
+                stroke-width="3" stroke-linecap="round"/>
+          <circle cx="100" cy="36" r="6" fill="#5aaaff"/>
+        </g>
+        <circle cx="100" cy="100" r="3" fill="rgba(255,255,255,.35)"/>
+      </svg>
+
+      <div style="flex:1;min-width:200px">
+        <div class="row"><div class="label"><b>Heard at</b>
+          <span>relative to forward</span></div>
+          <div class="grow"></div><span class="badge" id="doaRel">—</span></div>
+        <div class="row"><div class="label"><b>Raw angle</b>
+          <span>as the board reports it</span></div>
+          <div class="grow"></div><span class="badge" id="doaRaw">—</span></div>
+        <div class="row"><div class="label"><b>Hint to the head</b>
+          <span>−1 left … +1 right</span></div>
+          <div class="grow"></div><span class="badge" id="doaBearing">—</span></div>
+        <div class="row"><div class="label"><b>Last voice</b>
+          <span>older than the hold is ignored</span></div>
+          <div class="grow"></div><span class="badge" id="doaAge">—</span></div>
+        <div class="row"><div class="label"><b>Beams</b>
+          <span>fixed · fixed · free · auto</span></div>
+          <div class="grow"></div><span class="badge" id="doaBeams">—</span></div>
+        <div class="row"><div class="label"><b>Energy</b>
+          <span>speech per beam; zero means nobody is talking</span></div>
+          <div class="grow"></div><span class="badge" id="doaEnergy">—</span></div>
+      </div>
+    </div>
+
+    <div class="row" style="margin-top:12px">
+      <div class="label"><b>Calibrate</b><span>teach it which way is forward</span></div>
+      <div class="grow"></div>
+      <button class="primary" onclick="captureForward()">🎯 Capture forward</button>
+    </div>
+    <p class="hint">Stand <b>directly in front of him</b>, keep talking, and press it.
+       Whatever direction the array is steering at that moment becomes straight ahead —
+       so it is measured, not worked out from how the board got mounted. The needle
+       should sit at the top afterwards while you are still speaking.</p>
+
+    <div class="row">
+      <div class="label"><b>Turn toward voices</b><span>feeds the face tracker</span></div>
+      <label class="switch"><input type="checkbox" id="doaOn"
+        onchange="onDoaEnabled(this.checked)"> Enabled</label>
+    </div>
+    <div class="row">
+      <div class="label"><b>Full-turn angle</b><span>off-axis for a full deflection</span></div>
+      <input type="range" id="doaSpan" min="30" max="180" step="5"
+             oninput="onDoaSpanPreview(this.value)" onchange="onDoaSpan(this.value)">
+      <span class="lensval" id="doaSpanVal">90°</span>
+    </div>
+    <div class="row">
+      <div class="label"><b>Direction from</b><span>which answer to believe</span></div>
+      <select id="doaSource" onchange="onDoaSource(this.value)">
+        <option value="processed">The array's own answer (recommended)</option>
+        <option value="beam">One raw beam (diagnosis)</option>
+      </select>
+    </div>
+    <p class="hint">The array weighs speech energy across its beams and reports where the
+       <em>speaker</em> is, saying nothing at all when nobody is talking. That is the answer
+       you want. A raw beam is for diagnosis — note the free-running one has the widest
+       swing of the four and is mostly chasing room noise, so "it moves the most" is
+       exactly the wrong way to choose.</p>
+    <div class="row" id="doaBeamRow">
+      <div class="label"><b>Which beam</b><span>only used for diagnosis</span></div>
+      <select id="doaBeam" onchange="onDoaBeam(this.value)">
+        <option value="0">Beam 0</option><option value="1">Beam 1</option>
+        <option value="2">Free-running</option><option value="3">Auto-select</option>
+      </select>
+    </div>
+    <p class="hint">Beams 0 and 1 are fixed, 2 free-runs, 3 auto-selects. Judge them against
+       the <b>Energy</b> row, never by movement alone: a beam that swings while every energy
+       reads zero is following the room, not a person.
+       <code>tools/doa_probe.py</code> shows all of them side by side.</p>
+    <div class="row">
+      <div class="label"><b>Mirrored</b><span>if he turns away from the voice</span></div>
+      <label class="switch"><input type="checkbox" id="doaInvert"
+        onchange="onDoaInvert(this.checked)"> Swap left and right</label>
+    </div>
+
+    <p class="hint">A face always wins: this only steers the head when the cameras have
+       nothing, which is what makes it useful — it works in the dark, and behind him.
+       It has an opinion only while somebody is actually talking, so the needle dims
+       between sentences rather than pointing at whoever spoke last.</p>
+    <p class="hint" id="doaHint" style="display:none"></p>
   </section>
 
   <section class="panel" id="sec-clips">
@@ -598,6 +714,33 @@ function onLens(v) { document.getElementById('lensVal').textContent = (+v).toFix
 function onLead(v) { document.getElementById('leadVal').textContent = (+v).toFixed(2) + ' s'; }
 function onSync(v) { document.getElementById('syncVal').textContent = (v > 0 ? '+' : '') + (+v).toFixed(2) + ' s'; }
 function onGain(v) { document.getElementById('gainVal').textContent = (+v).toFixed(1) + '×'; }
+function onVol(v) { document.getElementById('volVal').textContent = Math.round(v) + '%'; }
+
+// Volume applies and persists in one request, and deliberately has no part in
+// Save: a level you cannot hear while you are choosing it is a level you set by
+// trial and error. On 'change', not 'input' — a drag across the track fires
+// input per pixel, and each of those would be its own amixer process.
+async function setVolume(v) {
+  const s = await api('/api/sound/volume', {volume: +v});
+  if (s.error) { toast(s.error); return; }
+  if (s.volume === null || s.volume === undefined) return;
+  document.getElementById('volume').value = s.volume;   // the card's own step
+  onVol(s.volume);
+}
+
+// Read the mixer, not settings.json. The card is the truth: alsactl restores a
+// level at boot and the speakerphone has buttons of its own, so the stored
+// number can be stale in ways nobody did anything wrong to cause. A rig with no
+// settable mixer reports null, and then there is no honest slider to draw.
+async function loadVolume() {
+  let s;
+  try { s = await (await fetch('/api/sound/volume')).json(); } catch (e) { return; }
+  const row = document.getElementById('volRow');
+  if (s.volume === null || s.volume === undefined) { row.style.display = 'none'; return; }
+  row.style.display = '';
+  document.getElementById('volume').value = s.volume;
+  onVol(s.volume);
+}
 
 function fill(s) {
   const color = s.iris_color || DEFAULTS.iris_color;
@@ -714,33 +857,6 @@ async function loadAnimations(selected) {
   if (!list.length) { sel.innerHTML = '<option value="">(unavailable)</option>'; return; }
   sel.innerHTML = '';
   for (const a of list) {
-function onVol(v) { document.getElementById('volVal').textContent = Math.round(v) + '%'; }
-
-// Volume applies and persists in one request, and deliberately has no part in
-// Save: a level you cannot hear while you are choosing it is a level you set by
-// trial and error. On 'change', not 'input' — a drag across the track fires
-// input per pixel, and each of those would be its own amixer process.
-async function setVolume(v) {
-  const s = await api('/api/sound/volume', {volume: +v});
-  if (s.error) { toast(s.error); return; }
-  if (s.volume === null || s.volume === undefined) return;
-  document.getElementById('volume').value = s.volume;   // the card's own step
-  onVol(s.volume);
-}
-
-// Read the mixer, not settings.json. The card is the truth: alsactl restores a
-// level at boot and the speakerphone has buttons of its own, so the stored
-// number can be stale in ways nobody did anything wrong to cause. A rig with no
-// settable mixer reports null, and then there is no honest slider to draw.
-async function loadVolume() {
-  let s;
-  try { s = await (await fetch('/api/sound/volume')).json(); } catch (e) { return; }
-  const row = document.getElementById('volRow');
-  if (s.volume === null || s.volume === undefined) { row.style.display = 'none'; return; }
-  row.style.display = '';
-  document.getElementById('volume').value = s.volume;
-  onVol(s.volume);
-}
     const o = document.createElement('option');
     o.value = a.id; o.textContent = a.label;
     sel.appendChild(o);
@@ -1202,11 +1318,131 @@ loadHandoff();
 loadAudit();
 loadBrain();
 loadEvent();
+loadVolume();
 load();
 refreshDisplay();
 refreshUplink();
 refreshHotspot();
 loadHeard();
+
+// ---- hearing direction --------------------------------------------------
+// Polls only while its tab is open. The reading costs a USB control transfer on
+// the robot for every request, and this page is left sitting open on a phone —
+// a background poll would be a permanent load on the array for a panel nobody
+// is looking at.
+
+function doaWedgePath(span) {
+  const r = 80, c = 100;
+  // SVG angles run clockwise from +x, and forward here is up, hence the -90.
+  const a0 = (-span - 90) * Math.PI / 180, a1 = (span - 90) * Math.PI / 180;
+  const big = (span * 2 > 180) ? 1 : 0;
+  return `M ${c} ${c} L ${c + r * Math.cos(a0)} ${c + r * Math.sin(a0)} ` +
+         `A ${r} ${r} 0 ${big} 1 ${c + r * Math.cos(a1)} ${c + r * Math.sin(a1)} Z`;
+}
+
+function reflectDoa(s) {
+  if (!s) return;
+  const dot = document.getElementById('doaDot');
+  const stat = document.getElementById('doaStat');
+  if (!s.available) {
+    dot.className = 'dot'; stat.textContent = 'no array found';
+  } else if (!s.running) {
+    dot.className = 'dot off'; stat.textContent = s.error || 'stopped';
+  } else {
+    dot.className = 'dot on';
+    stat.textContent = s.speech ? 'hearing a voice' : 'listening';
+  }
+  const hint = document.getElementById('doaHint');
+  if (s.error) { hint.textContent = s.error; hint.style.display = ''; }
+  else { hint.style.display = 'none'; }
+
+  document.getElementById('doaRaw').textContent =
+    (s.angle === null || s.angle === undefined) ? '—' : s.angle + '°';
+  document.getElementById('doaRel').textContent =
+    (s.relative_deg === null || s.relative_deg === undefined)
+      ? '—' : (s.relative_deg > 0 ? '+' : '') + s.relative_deg + '°';
+  document.getElementById('doaBearing').textContent =
+    (s.bearing === null || s.bearing === undefined)
+      ? 'no opinion' : (s.bearing > 0 ? '+' : '') + s.bearing.toFixed(2);
+  const bx = document.getElementById('doaBeams');
+  if (s.beams) {
+    // The chosen beam is bracketed rather than coloured: this row is read at a
+    // glance while walking backwards across a workshop.
+    bx.textContent = s.beams.map((v, i) =>
+      i === s.beam ? '[' + v.toFixed(1) + ']' : v.toFixed(1)).join('  ');
+  } else { bx.textContent = '—'; }
+  document.getElementById('doaBeam').value = s.beam;
+  document.getElementById('doaSource').value = s.source;
+  // The beam picker only means anything when a raw beam is the source.
+  document.getElementById('doaBeamRow').style.display =
+    (s.source === 'beam') ? '' : 'none';
+  document.getElementById('doaEnergy').textContent = s.energy
+    ? s.energy.map(v => v > 0 ? Math.round(v).toLocaleString() : '0').join('  ')
+    : '—';
+  document.getElementById('doaAge').textContent =
+    (s.heard_age === null || s.heard_age === undefined)
+      ? 'never' : s.heard_age.toFixed(1) + 's ago';
+
+  // The needle points at the last *heard* direction and fades as that reading
+  // ages out, so "he has stopped believing this" is visible rather than being
+  // a number you have to compare against the hold.
+  const needle = document.getElementById('doaNeedle');
+  if (s.relative_deg !== null && s.relative_deg !== undefined) {
+    needle.setAttribute('transform', `rotate(${s.relative_deg} 100 100)`);
+    needle.setAttribute('opacity', s.bearing === null ? '0.25' : '1');
+  } else {
+    needle.setAttribute('opacity', '0.25');
+  }
+  document.getElementById('doaWedge').setAttribute('d', doaWedgePath(s.span_deg));
+
+  // Controls follow the server, so two browsers cannot disagree about state.
+  if (document.activeElement !== document.getElementById('doaSpan')) {
+    document.getElementById('doaSpan').value = s.span_deg;
+    document.getElementById('doaSpanVal').textContent = s.span_deg + '°';
+  }
+  document.getElementById('doaOn').checked = !!s.enabled;
+  document.getElementById('doaInvert').checked = !!s.invert;
+}
+
+async function refreshDoa() {
+  const sec = document.getElementById('sec-doa');
+  if (sec && sec.classList.contains('on')) {
+    try { reflectDoa(await api('/api/mic')); } catch (e) {}
+  }
+  setTimeout(refreshDoa, 250);
+}
+
+async function captureForward() {
+  const s = await api('/api/mic', { capture_forward: true });
+  reflectDoa(s);
+  if (s.captured && s.captured.ok) toast('Forward set — that direction is now 0°');
+  else toast((s.captured && s.captured.error) || 'Nothing heard', true);
+}
+
+async function onDoaEnabled(on) {
+  reflectDoa(await api('/api/mic', { enabled: on }));
+  toast(on ? 'He will turn toward voices he cannot see' : 'Turning toward voices off');
+}
+function onDoaSpanPreview(v) {
+  document.getElementById('doaSpanVal').textContent = v + '°';
+  document.getElementById('doaWedge').setAttribute('d', doaWedgePath(+v));
+}
+async function onDoaSpan(v) { reflectDoa(await api('/api/mic', { span_deg: +v })); }
+async function onDoaSource(v) {
+  reflectDoa(await api('/api/mic', { source: v }));
+  toast(v === 'processed' ? "Using the array's own direction"
+                          : 'Reading one raw beam');
+}
+async function onDoaBeam(v) {
+  reflectDoa(await api('/api/mic', { beam: +v }));
+  toast('Reading beam ' + v);
+}
+async function onDoaInvert(on) {
+  reflectDoa(await api('/api/mic', { invert: on }));
+  toast(on ? 'Left and right swapped' : 'Left and right normal');
+}
+
+refreshDoa();
 
 // ---- section tabs -------------------------------------------------------
 // One section shown at a time. Everything stays in the DOM — Save reads
@@ -1241,4 +1477,3 @@ loadHeard();
 </script>
 </body>
 </html>
-loadVolume();

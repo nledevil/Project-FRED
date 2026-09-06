@@ -75,6 +75,10 @@ GATED = [
     # a mute that looks like broken hardware to whoever is standing there, and
     # full scale in a hall is its own disruption. Reading it stays open.
     "/api/sound/volume",
+    # Reading which way a voice came from is open — it is a sensor, like
+    # /api/sensors. Writing is not: the same POST carries the calibration, and a
+    # wrong "forward" sends the head chasing the opposite side of the room.
+    "/api/mic",
 ]
 OPEN = [
     "/api/cart/stop",       # never, ever gated
