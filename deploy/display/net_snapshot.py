@@ -159,6 +159,14 @@ class Net:
         is persisted on the brain and read by the boot path."""
         self._fire(f"{NUC}/api/voice", {"at_boot": bool(on)})
 
+    def post_volume(self, percent: float) -> None:
+        """Set the brain's playback level, 0-100.
+
+        Brain-side because the sound card is: this Pi drives the screen, not
+        the speaker. Persisted there too, so a level set at the robot survives
+        the next boot without the chest having to remember anything."""
+        self._fire(f"{NUC}/api/sound/volume", {"volume": float(percent)})
+
     def post_move(self, name: str, angle: float) -> None:
         """Move one servo. Fired and forgotten — see _fire."""
         self._fire(f"{NUC}/api/move", {"name": name, "angle": float(angle)})

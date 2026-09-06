@@ -159,10 +159,17 @@ def _bearing_hint():
 
     The PanaCast answers first: it is an actual face detector across ~180
     degrees, so it can tell a person from the furniture and give a real bearing.
-    The chest ultrasonics remain the fallback for when it is off, blind or
-    starting up — they see a wide arc too, they just cannot tell you what they
-    are looking at. Both return None for "no opinion", which the tracker
-    distinguishes from "straight ahead".
+
+    The mic array answers next. A voice is a person — which is more than the
+    range-finders below can tell you — and it carries in the dark and from
+    behind the head, where no camera here reaches. It is second rather than
+    first because a face detector is far more accurate about *where*, and
+    because it only has an opinion while somebody is actually talking.
+
+    The chest ultrasonics remain the fallback for when the others are off, blind
+    or starting up — they see a wide arc too, they just cannot tell you what
+    they are looking at. All three return None for "no opinion", which the
+    tracker distinguishes from "straight ahead".
     """
     if _spot_cfg.get("enabled", True):
         hint = _spotter.bearing()
@@ -1736,6 +1743,51 @@ def _term_clip_path(name: str) -> Path | None:
     return p if p.is_file() else None
 
 
+@app.get("/api/sound/volume")
+def api_sound_volume_get():
+    """How loud he is, read from the card's mixer.
+
+    Open, like the rest of the live status: a volume you cannot read is a panel
+    that has to guess, and the chest shows this before anyone has typed a PIN.
+    ``volume: null`` means this rig has no settable mixer — the panels hide the
+    control rather than showing a slider that does nothing.
+    """
+    return jsonify({"volume": _sound.volume(),
+                    "control": _sound._volume_ctl,
+                    "stored": _settings.get("sound", {}).get("volume")})
+
+
+@app.post("/api/sound/volume")
+@protected
+def api_sound_volume_set():
+    """Set the playback level, 0-100, and remember it. Body: {"volume": int}.
+
+    Gated, unlike /api/sound/play. Playing a sound is what the deck is for and
+    is deliberately open; turning him to 0 is a mute nobody standing at the
+    robot could explain, and turning him to 100 in a hall is its own kind of
+    disruption. Same class of decision as /api/display.
+    """
+    if (blocked := _blocked_by_handoff()):
+        return blocked                           # the card belongs to someone else
+    data = request.get_json(force=True) or {}
+    if "volume" not in data:
+        return jsonify({"error": "volume required"}), 400
+    try:
+        want = float(data["volume"])
+    except (TypeError, ValueError):
+        return jsonify({"error": "volume must be numeric"}), 400
+    if not 0.0 <= want <= 100.0:
+        return jsonify({"error": "volume must be between 0 and 100"}), 400
+    if not _sound.set_volume(want):
+        return jsonify({"error": "no mixer on this audio device"}), 503
+    # Store what we asked for, not what came back: the card quantises to its own
+    # steps (85% is 6161 of 7248 here), and persisting the rounded reading would
+    # walk the number a little further down on every save.
+    _settings.setdefault("sound", {})["volume"] = int(round(want))
+    save_settings(_settings)
+    return jsonify({"volume": _sound.volume()})
+
+
 @app.post("/api/sounds/terminator/play")
 def api_term_play():
     """Preview a specific terminator clip through the speaker."""
@@ -1849,3 +1901,10 @@ if __name__ == "__main__":
     if _sensor_cfg.get("serial_enabled"):
         _serial_sensors.start()                  # read a USB-serial sensor node (no-WiFi fallback)
     app.run(host="0.0.0.0", port=8080, threaded=True)
+    # Before the chime, not after: the chime is the first thing anyone hears, so
+    # a level restored afterwards would be one clip too late every single boot.
+    # Absent = leave the card alone. Nobody has set a level here, and stamping a
+    # default over whatever alsactl restored would be us picking a volume for a
+    # robot whose owner never asked us to.
+    if _snd_cfg.get("volume") is not None and not _handoff_released:
+        _sound.set_volume(_snd_cfg["volume"])

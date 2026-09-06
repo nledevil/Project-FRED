@@ -454,6 +454,12 @@
   <section class="panel" id="sec-voice">
     <p class="phead">Voice &amp; AI</p>
     <div class="row">
+    <div class="row" id="volRow">
+      <div class="label"><b>Speaker volume</b><span>how loud he talks</span></div>
+      <input type="range" id="volume" min="0" max="100" step="1"
+             oninput="onVol(this.value)" onchange="setVolume(this.value)">
+      <span class="lensval" id="volVal">&hellip;</span>
+    </div>
       <div class="label"><b>Wake word at boot</b><span>“Fred” listener</span></div>
       <label class="switch"><input type="checkbox" id="voiceEnabled"> Start listening automatically when FRED boots</label>
     </div>
@@ -480,6 +486,10 @@
       <span class="lensval" id="syncVal">0.00 s</span>
     </div>
     <p class="hint">Needs the Vosk model + a microphone. Open-ended questions also need an
+    <p class="hint"><b>Speaker volume</b> is the sound card's own mixer, so it applies to
+       everything — speech, the sound board, the boot chime — and takes effect the moment you
+       let go of the slider. It saves itself and is restored on every boot, so there's no Save
+       to press for it. 0% is a mute; the same slider brings him back.</p>
        Anthropic API key in <code>config/secrets.env</code> — built-in commands work without one.
        Raise the lead-in (≈0.4–0.6 s) if the speaker clips the first word or two while it
        wakes up; leave it at 0 for a device that starts instantly.</p>
@@ -704,6 +714,33 @@ async function loadAnimations(selected) {
   if (!list.length) { sel.innerHTML = '<option value="">(unavailable)</option>'; return; }
   sel.innerHTML = '';
   for (const a of list) {
+function onVol(v) { document.getElementById('volVal').textContent = Math.round(v) + '%'; }
+
+// Volume applies and persists in one request, and deliberately has no part in
+// Save: a level you cannot hear while you are choosing it is a level you set by
+// trial and error. On 'change', not 'input' — a drag across the track fires
+// input per pixel, and each of those would be its own amixer process.
+async function setVolume(v) {
+  const s = await api('/api/sound/volume', {volume: +v});
+  if (s.error) { toast(s.error); return; }
+  if (s.volume === null || s.volume === undefined) return;
+  document.getElementById('volume').value = s.volume;   // the card's own step
+  onVol(s.volume);
+}
+
+// Read the mixer, not settings.json. The card is the truth: alsactl restores a
+// level at boot and the speakerphone has buttons of its own, so the stored
+// number can be stale in ways nobody did anything wrong to cause. A rig with no
+// settable mixer reports null, and then there is no honest slider to draw.
+async function loadVolume() {
+  let s;
+  try { s = await (await fetch('/api/sound/volume')).json(); } catch (e) { return; }
+  const row = document.getElementById('volRow');
+  if (s.volume === null || s.volume === undefined) { row.style.display = 'none'; return; }
+  row.style.display = '';
+  document.getElementById('volume').value = s.volume;
+  onVol(s.volume);
+}
     const o = document.createElement('option');
     o.value = a.id; o.textContent = a.label;
     sel.appendChild(o);
@@ -1204,3 +1241,4 @@ loadHeard();
 </script>
 </body>
 </html>
+loadVolume();

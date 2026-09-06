@@ -36,6 +36,12 @@ def check(label: str, ok: bool, detail: str = ""):
 # Every route that must require the PIN, and every route that must not. Written
 # out rather than derived, so that adding an endpoint and forgetting to decide
 # about it shows up here as an unlisted route instead of a silent default.
+#
+# A path is listed once, by verb-union: several routes here answer an open GET
+# and a gated POST on the same path (/api/voice, /api/sound/volume), because
+# reading what he is doing and changing it are different questions. Listing such
+# a path under GATED asserts the *write* is behind the PIN, which is the half
+# that can be got wrong silently.
 GATED = [
     "/api/settings", "/api/handoff", "/api/brain", "/api/audit",
     # Event mode relaxes as well as tightens: switching it off puts the cart's
@@ -65,6 +71,10 @@ GATED = [
     # What people said to him. Bystander speech is never logged, but this is
     # still a record of visitors' voices and belongs behind the PIN.
     "/api/heard", "/api/heard.jsonl",
+    # Playing a sound is open; choosing how loud everything is, is not. Zero is
+    # a mute that looks like broken hardware to whoever is standing there, and
+    # full scale in a hall is its own disruption. Reading it stays open.
+    "/api/sound/volume",
 ]
 OPEN = [
     "/api/cart/stop",       # never, ever gated

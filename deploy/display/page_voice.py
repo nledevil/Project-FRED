@@ -36,6 +36,17 @@ class VoicePage:
         voice = (snap.get("nuc") or {}).get("voice")
         return bool(voice and voice.get("available"))
 
+    @staticmethod
+    def _volume(snap: dict):
+        """His output level, or None when this rig has no settable mixer.
+
+        Read out of the brain's own state rather than asked for separately —
+        /api/state is already polled every tick, and a second request per tick
+        to learn one integer is a request the robot LAN does not need.
+        """
+        vol = ((snap.get("nuc") or {}).get("sound") or {}).get("volume")
+        return int(vol) if isinstance(vol, (int, float)) else None
+
     def view(self, snap: dict) -> dict:
         """The page as data: what the button says and whether it does anything.
 
@@ -56,9 +67,14 @@ class VoicePage:
             return {"label": "NO LINK", "on": False, "ink": "bad", "live": False,
                     "status": "CANNOT REACH THE BRAIN", "statusInk": "bad", "hint": ""}
         if not available:
+            # Volume still belongs on this page even here. "Voice unavailable"
+            # is about the *microphone* — no Vosk model, no capture device —
+            # and says nothing about the speaker: he can be unable to hear you
+            # and still be much too loud, which is precisely the moment someone
+            # reaches for this page.
             return {"label": "N/A", "on": False, "ink": "dim", "live": False,
                     "status": "VOICE UNAVAILABLE ON BRAIN", "statusInk": "dim",
-                    "hint": ""}
+                    "hint": "", "volume": self._volume(snap)}
 
         said = (snap.get("nuc") or {}).get("voice") or {}
         if said.get("speaking"):
@@ -88,7 +104,14 @@ class VoicePage:
                 # is how you end up unable to leave him deaf on purpose.
                 "atBoot": bool((((snap.get("nuc") or {}).get("settings") or {})
                                 .get("voice") or {}).get("enabled")),
-                "atBootLive": True}
+                "atBootLive": True,
+                # None when the card has no mixer to turn; the QML hides the
+                # row rather than drawing a slider that cannot move anything.
+                "volume": self._volume(snap)}
+
+    def set_volume(self, net, percent: float) -> None:
+        """How loud he is. Fired at the brain, which owns the sound card."""
+        net.post_volume(percent)
 
     def toggle_at_boot(self, net, want: bool) -> None:
         """Start listening by himself next time he boots, or don't."""

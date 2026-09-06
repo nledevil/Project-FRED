@@ -31,6 +31,10 @@ from collections import OrderedDict
 from pathlib import Path
 
 SOUNDS_DIR = Path(__file__).resolve().parent.parent / "sounds"
+# How long a playback-level reading stays good. Long enough that a polled
+# /api/state costs at most one amixer a second however many panels are watching,
+# short enough that the number on a slider is never visibly behind the hardware.
+VOLUME_TTL = 1.0
 # Optional Piper neural TTS: self-contained binary + voice model, preferred over
 # espeak when present. Convention: models/piper/bin/piper + models/piper/voices/*.onnx.
 PIPER_DIR = Path(__file__).resolve().parent.parent / "models" / "piper"
@@ -279,6 +283,17 @@ class Sound:
         # against "now" — see audio_epoch().
         self._audio_t0: float | None = None
         self._ok = shutil.which("aplay") is not None
+        # The playback level lives on the card's mixer; see set_volume. Kept
+        # separate from _ok because a rig can perfectly well play sound with no
+        # settable mixer, and that must not disable audio — it only means the
+        # panels have no volume slider to offer.
+        self._mixer_ok = shutil.which("amixer") is not None
+        self._volume_ctl: str | None = None     # discovered lazily, then cached
+        # Last reading and when it was taken. See volume() for why this is not
+        # optional: settings() is on a polled endpoint.
+        self._vol_read: int | None = None
+        self._vol_at = 0.0                      # monotonic; 0 = nothing cached
+        self._vol_lock = threading.Lock()
         self._espeak = shutil.which("espeak-ng") or shutil.which("espeak")
         # Piper is the preferred TTS (far more natural voice); espeak is the
         # fallback. render_tts()/speak() try piper first, then espeak.
@@ -356,7 +371,144 @@ class Sound:
                 "suspended": self._suspended, "audit": self._audit,
                 "lead_in": self.lead_in, "sync_offset": self.sync_offset,
                 "playing": self.is_playing(), "can_speak": self.can_speak(),
-                "tts": self.tts_engine(), "sounds": self.list()}
+                "tts": self.tts_engine(), "sounds": self.list(),
+                # Read live from the mixer rather than echoed back from
+                # settings.json: the knob is on the hardware, and something
+                # else (alsactl at boot, a person on the device's own buttons)
+                # can move it without us. Reporting the stored number would
+                # make the panel confidently wrong.
+                "volume": self.volume(), "volume_control": self._volume_ctl}
+
+    # ---- output level -----------------------------------------------------
+    #
+    # Playback level is the *card's* mixer, not something applied to the WAV:
+    # aplay has no volume of its own, and scaling samples in Python would cost
+    # a pass over every clip and lose bits on the way down. amixer is already a
+    # dependency in spirit — aplay is right beside it in alsa-utils.
+    #
+    # Everything here is best-effort and silent on failure. A robot with no
+    # mixer (audit mode, a dummy device, a card whose driver exposes no
+    # playback control) must still boot and still talk; it simply reports
+    # volume as None and the panels hide the control.
+
+    def _mixer_card(self) -> str | None:
+        """The card name amixer wants, dug out of the ALSA device string.
+
+        ``plughw:PowerConf,0`` -> ``PowerConf``, ``plughw:0,0`` -> ``0``. A
+        device with no card in it (``default``, ``pulse``) returns None, which
+        means "let amixer use its own default card".
+        """
+        dev = (self.device or "").strip()
+        if ":" not in dev:
+            return None
+        card = dev.split(":", 1)[1].split(",", 1)[0].strip()
+        return card or None
+
+    def _amixer(self, *args: str) -> str | None:
+        """Run amixer against our card. Returns stdout, or None on any failure."""
+        if not self._mixer_ok:
+            return None
+        card = self._mixer_card()
+        cmd = ["amixer"] + (["-c", card] if card else []) + list(args)
+        try:
+            out = subprocess.run(cmd, capture_output=True, text=True, timeout=2.0)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        return out.stdout if out.returncode == 0 else None
+
+    def _find_volume_control(self) -> str | None:
+        """The first simple control on this card that has a playback volume.
+
+        Discovered, never hardcoded: it is ``PCM`` on the PowerConf, ``Master``
+        on plenty of other cards, and ``Speaker`` on some. A cached hit is kept
+        for the life of the process — the control cannot change without the
+        card changing, and the card is in the device string. A *miss* is not
+        cached, so plugging the speakerphone in after boot starts working
+        without a restart.
+        """
+        if self._volume_ctl:
+            return self._volume_ctl
+        out = self._amixer("scontents")
+        if not out:
+            return None
+        name = None
+        for block in out.split("Simple mixer control ")[1:]:
+            head, _, body = block.partition("\n")
+            if "pvolume" in body.split("Limits:", 1)[0]:
+                # "'PCM',0" -> "PCM,0", which is the form sget/sset accept.
+                name = head.strip().replace("'", "")
+                break
+        self._volume_ctl = name
+        return name
+
+    def volume(self) -> int | None:
+        """Playback level as a percentage, or None when there is no mixer.
+
+        Cached for VOLUME_TTL, because this is read from ``settings()`` and
+        ``settings()`` is on ``/api/state`` — which the chest polls continuously
+        and the two web pages poll on top of that. Uncached, every one of those
+        spawned an ``amixer``: about 1.4 ms of process each, several times a
+        second, for a number that only changes when somebody moves it.
+
+        The cache matters most when the answer is None. A pulled speakerphone
+        leaves the card gone but the poll rate unchanged, so the failing path
+        was the one running most often — measured at 1.4 ms a call with the
+        PowerConf unplugged, forever, for a number that could not change.
+
+        Cost of the TTL: a level changed on the device's own buttons can be up
+        to a second stale on the panels. Ours is applied through set_volume,
+        which drops the cache, so the slider you just moved never lags.
+        """
+        now = time.monotonic()
+        with self._vol_lock:
+            if self._vol_at and now - self._vol_at < VOLUME_TTL:
+                return self._vol_read
+            # Read under the lock so a herd of pollers arriving on an expired
+            # cache produces one amixer between them, not one each.
+            val = self._read_volume()
+            self._vol_read, self._vol_at = val, now
+            return val
+
+    def _read_volume(self) -> int | None:
+        """Ask the card its level. The uncached half of volume()."""
+        ctl = self._find_volume_control()
+        if not ctl:
+            return None
+        out = self._amixer("sget", ctl)
+        if not out:
+            return None
+        # "  Mono: Playback 6161 [85%] [-4.31dB] [on]" — take the first
+        # percentage on a line that is about playback. A joined control has one
+        # line; a stereo one has two identical ones, so first is right either way.
+        for line in out.splitlines():
+            if "Playback" not in line:
+                continue
+            m = re.search(r"\[(\d{1,3})%\]", line)
+            if m:
+                return int(m.group(1))
+        return None
+
+    def set_volume(self, percent: float) -> bool:
+        """Set the playback level, 0-100. True when the card took it.
+
+        Also unmutes. A volume control that leaves the card's playback switch
+        off is a control that does nothing, and "I turned it up and heard
+        nothing" is a worse failure than the switch being touched — 0% is how
+        you mute here, and it is reversible from the same slider.
+        """
+        pct = int(round(max(0.0, min(100.0, float(percent)))))
+        ctl = self._find_volume_control()
+        if not ctl:
+            return False
+        if self._amixer("sset", ctl, f"{pct}%", "unmute") is None:
+            return False
+        # Drop the cache rather than storing pct: the card quantises to its own
+        # steps, so the next read is the only thing that knows what it actually
+        # took. Dropping it also makes the panels' round-trip honest — they show
+        # what the hardware did, not what we asked for.
+        with self._vol_lock:
+            self._vol_at = 0.0
+        return True
 
     # ---- hardware handoff -------------------------------------------------
     def is_suspended(self) -> bool:

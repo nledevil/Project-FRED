@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Layouts
+import QtQuick.Controls
 
 // The VOICE page: one big switch for the wake-word listener. Whether it is
 // pressable — the brain unreachable, or voice unavailable so a press would
@@ -54,6 +55,74 @@ Item {
                 color: Th.dimInk
                 font.pixelSize: Th.px["1"]; font.family: Th.font
                 font.letterSpacing: Th.tracking
+                verticalAlignment: Text.AlignVCenter
+            }
+        }
+
+        // How loud he is. Here rather than on its own tab because the strip is
+        // full at seven, and because this is the page you are already on when
+        // he is talking too loudly. Shown even when the listener is
+        // unavailable — that is the microphone's problem, not the speaker's.
+        RowLayout {
+            Layout.fillWidth: true
+            Layout.topMargin: 6
+            // A null volume means the brain has no settable mixer, so there is
+            // nothing honest to draw. undefined covers the NO-LINK view, which
+            // carries no volume at all.
+            visible: P.voiceView.volume !== undefined && P.voiceView.volume !== null
+            spacing: 12
+            Text {
+                text: "VOLUME"; color: Th.dimInk
+                font.pixelSize: Th.px["1"]; font.family: Th.font
+                font.letterSpacing: Th.tracking
+                Layout.preferredWidth: 110
+                verticalAlignment: Text.AlignVCenter
+            }
+            Slider {
+                id: vol
+                Layout.fillWidth: true
+                // Replacing background with a size-less Item collapses the
+                // control's implicit height to zero: it still draws, and the
+                // touchable area is a zero-height line. Claim the height.
+                Layout.preferredHeight: 46
+                from: 0; to: 100; stepSize: 1
+                // Follows the robot except while a finger is on it, so a poll
+                // landing mid-drag cannot yank the knob out from under it.
+                value: pressed ? value : (P.voiceView.volume || 0)
+                // On release, not onMoved. Every set is an amixer process on
+                // the brain, and a drag across this track would fire dozens.
+                onPressedChanged: if (!pressed) P.setVolume(value)
+
+                background: Item {
+                    Rectangle {
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: parent.width; height: 10
+                        radius: 4
+                        color: Th.panel
+                        border.color: Th.edge; border.width: 1
+                        Rectangle {
+                            width: vol.visualPosition * parent.width
+                            height: parent.height; radius: parent.radius
+                            color: Th.panelOn
+                        }
+                    }
+                }
+                handle: Rectangle {
+                    x: vol.visualPosition * (vol.availableWidth - width)
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: 16; height: 32; radius: 4
+                    color: Th.ink
+                }
+            }
+            Text {
+                // The finger's number while dragging, the robot's after — same
+                // rule as the slider, so the two never disagree on screen.
+                text: Math.round(vol.pressed ? vol.value
+                                             : (P.voiceView.volume || 0)) + "%"
+                color: Th.ink
+                font.pixelSize: Th.px["2"]; font.family: Th.font
+                horizontalAlignment: Text.AlignRight
+                Layout.preferredWidth: 70
                 verticalAlignment: Text.AlignVCenter
             }
         }

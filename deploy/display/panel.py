@@ -433,9 +433,15 @@ class Panel(QObject):
     def pickTheme(self, name):
         theme.save_name(name)
         print(f"panel: theme -> {name}, restarting to wear it", flush=True)
+        # --reopen-menu, never --menu. Both land on the menu scene, but --menu
+        # also means "the daemon killed a renderer to put me here", and closing
+        # then asks it to restore instead of changing scene. The daemon rightly
+        # refuses — its preset is an ordinary look, not the hidden settings one —
+        # so the close did nothing while the gate re-locked underneath it, and
+        # the only way out of the menu was the keypad, forever.
         os.execv(sys.executable,
                  [sys.executable, os.path.join(_HERE, "panel.py"),
-                  "--menu", "--page", "4"])
+                  "--reopen-menu", "--page", "4"])
 
     def _info_page_turn(self, delta):
         self._info.turn_page(delta, len(self._info.rows(self._snap)))
@@ -447,6 +453,10 @@ class Panel(QObject):
     @Slot(bool)
     def setVoiceAtBoot(self, on):
         self._voice_page.toggle_at_boot(self._net, bool(on))
+
+    @Slot(float)
+    def setVolume(self, percent):
+        self._voice_page.set_volume(self._net, float(percent))
 
     @Slot()
     def restServos(self):
@@ -500,8 +510,13 @@ class Panel(QObject):
         """
         if self._opened_as_menu:
             self._net.post_restore()
-        else:
-            self.scene = "anim"
+        # Leave the menu either way. When the daemon put us here it is about to
+        # kill this process, so the scene change is harmless; when a restore is
+        # *refused* — the daemon's preset is a look, so there is nothing hidden
+        # to leave — this is the only thing that gets the operator out. Without
+        # it the close was a no-op that still re-locked the gate below, which
+        # trapped the panel on the keypad after every theme change.
+        self.scene = "anim"
         # Leaving re-locks, and leaves nothing armed behind it. Both matter
         # because this is one long-lived process now: without the first, one
         # unlock outlives the operator who typed it; without the second, a power
@@ -626,6 +641,12 @@ def main() -> int:
                     help="open the power overlay, for grabbing it")
     ap.add_argument("--menu", action="store_true",
                     help="open on the menu scene (the port is not wired to the cog yet)")
+    ap.add_argument("--reopen-menu", action="store_true",
+                    help="open on the menu scene after restarting ourselves, as "
+                         "a theme change does. Deliberately not --menu: that one "
+                         "also means the daemon killed a renderer to put us here "
+                         "and owes us a restore on the way out, which is only "
+                         "true when the daemon spawned the settings preset.")
     args = ap.parse_args()
 
     os.environ.setdefault("QT_QPA_PLATFORM", "eglfs")
@@ -658,8 +679,8 @@ def main() -> int:
     ramp = theme.ramp(name)
 
     overlay = Overlay()
-    panel = Panel(args.anim, "menu" if args.menu else "anim")
-    panel._opened_as_menu = bool(args.menu)
+    panel = Panel(args.anim, "menu" if (args.menu or args.reopen_menu) else "anim")
+    panel._opened_as_menu = bool(args.menu)     # --reopen-menu must not set this
     panel.page = args.page
     if args.no_gate:
         panel.unlock_for_testing()
