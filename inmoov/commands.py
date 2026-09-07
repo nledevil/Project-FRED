@@ -101,6 +101,92 @@ def _turn_head(ctx, direction: str) -> str:
     return "I can turn my head left, right, or center."
 
 
+# The two servos nothing could reach until now. head_tilt_fb nods (chin down and
+# up); head_tilt_lr tips the head sideways, ear toward shoulder. Between them
+# and neck/eyes/jaw, every servo on the robot has a tool.
+#
+# Which way is "down" is not a guess for head_tilt_fb. FaceTracker adds
+# ``dir_t * tilt_gain * cmd_y`` to it using the same signed command it gives
+# eye_y, and _look above records that a *larger* eye_y points DOWN — so a larger
+# head_tilt_fb tilts down too, and tracking has worked all along on that basis.
+#
+# head_tilt_lr genuinely is a guess: FaceTracker never touches it, so there is
+# nothing to infer a sense from. Larger is taken to mean tipping right. If he
+# leans the wrong way, swap the two angles here — the same note _look and
+# _turn_head carry about their own wiring.
+def _tilt_head(ctx, direction: str) -> str:
+    c = ctx.controller
+    fb, lr = c.servos.get("head_tilt_fb"), c.servos.get("head_tilt_lr")
+    d = (direction or "").lower()
+    if d in ("center", "centre", "level", "straight"):
+        moved = []
+        for name, s in (("head_tilt_fb", fb), ("head_tilt_lr", lr)):
+            if s:
+                c.move_smooth(name, s["rest_angle"], duration=0.5)
+                moved.append(name)
+        return "Head level." if moved else "My head tilt isn't wired up."
+    if d in ("up", "back"):
+        if not fb:
+            return "I can't tilt up and down — that servo isn't wired up."
+        c.move_smooth("head_tilt_fb", fb["min_angle"], duration=0.6)
+        return "Looking up."
+    if d in ("down", "forward"):
+        if not fb:
+            return "I can't tilt up and down — that servo isn't wired up."
+        c.move_smooth("head_tilt_fb", fb["max_angle"], duration=0.6)
+        return "Looking down."
+    if d in ("left", "right"):
+        if not lr:
+            return "I can't tip my head sideways — that servo isn't wired up."
+        c.move_smooth("head_tilt_lr",
+                      lr["min_angle"] if d == "left" else lr["max_angle"],
+                      duration=0.6)
+        return f"Tilting my head {d}."
+    return "I can tilt my head up, down, left, right, or level."
+
+
+def _nod(ctx, times: int = 2) -> str:
+    """Yes. Chin down and back up, and it must end where it started.
+
+    A gesture rather than a position: asked to nod, nobody wants the head parked
+    chin-down. Each move blocks (see ServoController.move_smooth), so this is
+    simply a sequence, and the last one always returns to rest — including when
+    the loop is cut short by a bad count.
+    """
+    c = ctx.controller
+    fb = c.servos.get("head_tilt_fb")
+    if not fb:
+        return "I can't nod — my head tilt servo isn't wired up."
+    n = max(1, min(5, int(times or 2)))     # five is already a long time to watch
+    rest = fb["rest_angle"]
+    # Part of the way, not the end stops: a nod is a gesture, and slamming to the
+    # limit and back looks like a fault rather than agreement.
+    down = rest + (fb["max_angle"] - rest) * 0.55
+    up = rest - (rest - fb["min_angle"]) * 0.35
+    for _ in range(n):
+        c.move_smooth("head_tilt_fb", down, duration=0.35)
+        c.move_smooth("head_tilt_fb", up, duration=0.35)
+    c.move_smooth("head_tilt_fb", rest, duration=0.3)
+    return "Nodding."
+
+
+def _shake_head(ctx, times: int = 2) -> str:
+    """No. Left and right on the neck, ending centred for the same reason."""
+    c = ctx.controller
+    nk = c.servos.get("neck")
+    if not nk:
+        return "I can't shake my head — my neck isn't wired up."
+    n = max(1, min(5, int(times or 2)))
+    rest = nk["rest_angle"]
+    left = rest - (rest - nk["min_angle"]) * 0.45
+    right = rest + (nk["max_angle"] - rest) * 0.45
+    for _ in range(n):
+        c.move_smooth("neck", left, duration=0.3)
+        c.move_smooth("neck", right, duration=0.3)
+    c.move_smooth("neck", rest, duration=0.3)
+    return "Shaking my head."
+
+
 def _speak_distance(cm: float) -> str:
     """A distance the way a person would say it out loud."""
     if cm >= 399:
@@ -556,6 +642,12 @@ def execute_action(ctx, name: str, **args) -> str:
     if name == "set_volume":
         return _set_volume(ctx, str(args.get("direction", "")),
                            args.get("percent"))
+    if name == "tilt_head":
+        return _tilt_head(ctx, str(args.get("direction", "")))
+    if name == "nod":
+        return _nod(ctx, args.get("times", 2))
+    if name == "shake_head":
+        return _shake_head(ctx, args.get("times", 2))
     if name == "diagnostic":
         return _diagnostic(ctx, str(args.get("check", "")),
                            str(args.get("unit", "")),
@@ -666,12 +758,22 @@ _PATTERNS = [
     (re.compile(r"\b(red )?(led|light)\b", re.I), "set_led", "toggle"),
     (re.compile(r"\btrack(ing)?\b.*\b(face|me|my face)\b", re.I), "set_tracking", "toggle"),
     (re.compile(r"\bwatch (me|my face)\b", re.I), "set_tracking", {"on": True}),
+    # Gestures first: "nod" is a thing to do, not a direction to hold.
+    (re.compile(r"\bnod\b", re.I), "nod", {}),
+    (re.compile(r"\b(shake (your |the )?head|shake it off)\b", re.I), "shake_head", {}),
+    # Head tilt, ahead of the eye rules: "tilt your head up" must move the head,
+    # not just the eyes, and "look up" alone still means the eyes.
+    (re.compile(r"\b(tilt|tip|lean)\b.*\b(head)?\b.*\b(?P<direction>up|down|left|right)\b", re.I), "tilt_head", "group"),
+    (re.compile(r"\b(tilt|tip|lean)\b.*\b(level|straight|center|centre)\b", re.I), "tilt_head", {"direction": "center"}),
+    (re.compile(r"\b(head|chin)\b.*\b(up|down)\b.*\b(tilt|tip)\b", re.I), "tilt_head", "group"),
     (re.compile(r"\blook (to (the )?)?(?P<direction>left|right|up|down)\b", re.I), "look", "group"),
     (re.compile(r"\blook (straight|ahead|forward|center|centre)\b", re.I), "look", {"direction": "center"}),
     # Head/neck rotation — distinct verbs ("turn", "face") so they don't clash
     # with the eye "look" commands above.
-    (re.compile(r"\bturn (your |the )?head (back )?(to (the )?)?(straight|forward|center|centre|front)\b", re.I), "turn_head", {"direction": "center"}),
-    (re.compile(r"\b(turn|face) (your |the )?head (to (the )?)?(?P<direction>left|right)\b", re.I), "turn_head", "group"),
+    # "move" and "point" belong here as much as "turn": people say "move your
+    # head to the right" constantly, and before this it fell through to the cart.
+    (re.compile(r"\b(turn|move|point|swing|face) (your |the )?head (back )?(to (the )?)?(straight|forward|center|centre|front)\b", re.I), "turn_head", {"direction": "center"}),
+    (re.compile(r"\b(turn|move|point|swing|face) (your |the )?head (to (the )?)?(?P<direction>left|right)\b", re.I), "turn_head", "group"),
     (re.compile(r"\bface (forward|front|straight ahead)\b", re.I), "turn_head", {"direction": "center"}),
     (re.compile(r"\bturn (to (the )?)?(?P<direction>left|right)\b", re.I), "turn_head", "group"),
     (re.compile(r"\bface (to (the )?)?(?P<direction>left|right)\b", re.I), "turn_head", "group"),
@@ -722,9 +824,45 @@ _PATTERNS = [
 ]
 
 
+# Parts of him that are not the wheels. If one of these is named, the utterance
+# is about moving a servo, and the driving rules below must not answer it.
+#
+# This is a safety guard, not tidiness. "Move your head to the right" matched
+# the cart's "(drive|move|go|roll) ... right" rule and answered "driving right";
+# "move your head back to centre" matched "... back" and drove the robot
+# backwards. Both reached the cart without ever going near the model. The base
+# weighs 350 lb and the person saying it is standing in front of him.
+_ABOUT_HIS_BODY = re.compile(
+    r"\b(head|neck|eyes?|eyeballs?|face|jaw|mouth|chin|gaze|nod|tilt)\b", re.I)
+# Only "drive" is guarded. cart_stop never is: a stop must not fail on a
+# technicality, which is the same rule _cart() follows for the same reason.
+_DRIVES_THE_ROBOT = ("drive",)
+
+
+# Somebody asking for more than one thing. The matcher answers exactly one
+# action and stops, so on "move right, then back to centre, then left" it did
+# the first step, reported it, and looked like a robot that had not listened.
+# There is no fixing that here — one pattern is one action — so a sequence is
+# handed to the model instead, which can call the tool as many times as it
+# takes. Costs a round trip on a request that was always going to take several
+# seconds of servo movement anyway.
+_A_SEQUENCE = re.compile(
+    r"\b(then|after that|followed by|and back|next,)\b"
+    r"|,\s*(then|and then)\b"
+    r"|\b(twice|three times|a few times|back and forth)\b", re.I)
+
+
 def match_local(text: str):
-    """Return ``(action_name, args)`` for the first matching pattern, or None."""
+    """Return ``(action_name, args)`` for the first matching pattern, or None.
+
+    None for anything that asks for several things in order — see _A_SEQUENCE.
+    """
+    if _A_SEQUENCE.search(text):
+        return None
+    about_body = bool(_ABOUT_HIS_BODY.search(text))
     for rx, name, spec in _PATTERNS:
+        if about_body and name in _DRIVES_THE_ROBOT:
+            continue                    # see _ABOUT_HIS_BODY
         m = rx.search(text)
         if not m:
             continue
@@ -803,6 +941,30 @@ CLAUDE_TOOLS = [
      "input_schema": {"type": "object", "properties": {
          "direction": {"type": "string", "enum": ["left", "right", "up", "down", "center"]}},
          "required": ["direction"]}},
+    {"name": "tilt_head", "description":
+        "Tilt FRED's head on its two tilt joints: up/down pivots his chin (a "
+        "nodding axis, held in position), and left/right tips his head sideways "
+        "toward a shoulder. Distinct from turn_head, which rotates the neck, and "
+        "from look, which moves only the eyes. Use 'center' to bring the head "
+        "level again.",
+     "input_schema": {"type": "object", "properties": {
+         "direction": {"type": "string",
+                       "enum": ["up", "down", "left", "right", "center"]}},
+         "required": ["direction"]}},
+    {"name": "nod", "description":
+        "Nod — chin down and up, ending level. This is the gesture for yes or "
+        "for agreeing, not a position to hold; use tilt_head if someone wants "
+        "his head left pointing up or down.",
+     "input_schema": {"type": "object", "properties": {
+         "times": {"type": "integer",
+                   "description": "How many nods, 1-5. Defaults to 2."}}}},
+    {"name": "shake_head", "description":
+        "Shake his head left and right, ending centred — the gesture for no or "
+        "for disagreeing. Uses the neck; distinct from turn_head, which leaves "
+        "the head where it is sent.",
+     "input_schema": {"type": "object", "properties": {
+         "times": {"type": "integer",
+                   "description": "How many shakes, 1-5. Defaults to 2."}}}},
     {"name": "turn_head", "description": "Physically rotate FRED's whole head/neck left, right, or back to center. Use this for 'turn your head', 'face left', etc. — distinct from 'look', which only moves the eyes.",
      "input_schema": {"type": "object", "properties": {
          "direction": {"type": "string", "enum": ["left", "right", "center"]}},
@@ -937,6 +1099,12 @@ def run_tool(ctx, tool_name: str, tool_input: dict) -> str:
         return execute_action(ctx, "set_tracking", on=bool(ti.get("enabled")))
     if tool_name == "set_terminator_mode":
         return execute_action(ctx, "set_led", on=bool(ti.get("enabled")))
+    if tool_name == "tilt_head":
+        return execute_action(ctx, "tilt_head", direction=ti.get("direction", "center"))
+    if tool_name == "nod":
+        return execute_action(ctx, "nod", times=ti.get("times", 2))
+    if tool_name == "shake_head":
+        return execute_action(ctx, "shake_head", times=ti.get("times", 2))
     if tool_name == "diagnostic":
         return execute_action(ctx, "diagnostic", check=ti.get("check", ""),
                               unit=ti.get("unit", ""))

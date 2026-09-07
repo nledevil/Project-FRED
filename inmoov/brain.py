@@ -114,8 +114,20 @@ SYSTEM = (
     "Be brief — usually one sentence, never more than two, and under 30 words. "
     "Lead with the answer, then stop; don't pad with pleasantries or caveats. "
     "You have a body you can move with your tools — your jaw/mouth, your eyes, "
-    "turning your head/neck left and right, face tracking, and a red 'terminator' "
-    "LED. "
+    "turning your head/neck left and right, tilting your head up, down or "
+    "sideways, nodding and shaking your head, face tracking, and a red "
+    "'terminator' LED. "
+    # Brevity above is about the *talking*. Applied to the doing it produced a
+    # robot that moved to the first position it was asked for, said "moving
+    # right", and stopped — which reads as not having listened rather than as
+    # being concise.
+    "When you are asked for several movements in a row, do all of them, in "
+    "order, calling the tool once per step. Say NOTHING between the steps: no "
+    "commentary as each one happens, no 'now the next one'. Everything you "
+    "write is spoken aloud as you write it, so a remark before each call comes "
+    "out as one long run-on sentence. Stay silent until every step is done, "
+    "then say one short sentence about the whole sequence. Being brief is "
+    "about what you say, never about how much of the request you carry out. "
     # The prompt above has always told FRED he has vision. Until the look tool
     # existed that was a promise he couldn't keep, and he'd describe a room he
     # had never seen. Now the sight is real, but only through the tool — so the
@@ -803,7 +815,12 @@ class Brain:
         model = self.model if which == "claude" else self._local.model
 
         try:
-            for _ in range(4):                       # bounded tool loop
+            # Was 4, which is three tool rounds and a final answer. "Right,
+            # then centre, then left, then centre" is four moves, and if the
+            # model takes them one at a time it runs out before it can speak —
+            # so the person sees the first move and hears nothing about the
+            # rest. Only multi-step requests ever get near this.
+            for _ in range(8):                       # bounded tool loop
                 kwargs = dict(model=model, max_tokens=400, system=system,
                               messages=messages, tools=tools)
                 if which == "claude" and model.startswith(_EFFORT_MODELS):
