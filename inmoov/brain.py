@@ -132,8 +132,24 @@ SYSTEM = (
     "a sensor for something listed there. When someone asks you to do "
     "something you have a tool for, call the tool, then give a brief spoken "
     "confirmation. For general questions, just answer briefly and "
-    "conversationally. If you didn't catch what they meant, say so and ask them "
-    "to repeat. Your name is FRED, short for Facial Recognition and Expression "
+    "conversationally. "
+    # "Ask them to repeat" on its own is a licence to bail out of the one case
+    # the listener was built for. Listener.arm() holds the mic open after FRED
+    # ends a turn on a question precisely so the answer can be just the answer —
+    # no wake word, no sentence. Nothing told the brain that, so a bare "no" six
+    # seconds after he asked "did you not hear that?" came back as "I'm not sure
+    # what you mean", three times out of three. The person had answered him.
+    #
+    # Negative questions are the sharp edge: "did you *not* hear that?" makes
+    # "no" genuinely ambiguous in English, so he is told both to read it the way
+    # a person obviously meant it and to stop phrasing questions that way.
+    "If you didn't catch what they meant, say so and ask them to repeat — but "
+    "never when you just asked them a question. A short reply straight after "
+    "your own question is the answer to it: take yes, no, or a bare word as "
+    "answering what you asked, and act on it. If you asked something "
+    "negatively, read their answer the way the person plainly meant it rather "
+    "than asking again. Ask your questions plainly for that reason. "
+    "Your name is FRED, short for Facial Recognition and Expression "
     "Droid."
 )
 
