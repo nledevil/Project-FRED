@@ -191,6 +191,69 @@ def _play_sound(ctx, name: str) -> str:
     return f"Played {match}."
 
 
+# How loud FRED may make himself when *asked out loud*, as against from the
+# panel. The panel keeps the full 0-100; this band is narrower on purpose, and
+# the reasoning is already written down in tools/test_auth.py, which gates the
+# panel's volume behind the PIN: "Zero is a mute that looks like broken hardware
+# to whoever is standing there, and full scale in a hall is its own disruption."
+#
+# A spoken command has no PIN and cannot have one — anybody standing in front of
+# him at an event can talk to him, including children who will absolutely try
+# "Fred, mute yourself". So the voice path gets a floor it cannot mute below and
+# a ceiling it cannot deafen a room with, and the operator keeps the real range
+# on the PIN-gated slider.
+VOICE_VOLUME_MIN = 20
+VOICE_VOLUME_MAX = 85
+VOICE_VOLUME_STEP = 10
+
+
+def _set_volume(ctx, direction: str = "", percent=None) -> str:
+    """Change how loud FRED speaks, on request. Never persisted — see below.
+
+    Deliberately does not write settings.json, which is the other half of the
+    same split: the level an operator chose from the panel is the one the robot
+    should come back to. If a visitor turns him down at an event, that lasts
+    until the next restart rather than becoming the robot's new idea of itself.
+    """
+    sound = getattr(ctx, "sound", None)
+    if sound is None or not sound.available():
+        return "I don't have any audio to set the level on."
+    now = sound.volume()
+    if now is None:
+        return "I can't change my volume — this sound card has no level control."
+
+    if percent is not None:
+        try:
+            want = int(round(float(percent)))
+        except (TypeError, ValueError):
+            return "I didn't get a level I could use."
+    elif direction:
+        step = VOICE_VOLUME_STEP if direction.lower().startswith("u") else -VOICE_VOLUME_STEP
+        want = now + step
+    else:
+        return f"I'm at {now} percent."
+
+    capped = min(max(want, VOICE_VOLUME_MIN), VOICE_VOLUME_MAX)
+    if capped == now:
+        # Saying "done" when nothing moved is how a robot gets asked four times.
+        # But "already at my limit" and "already at the level you asked for" are
+        # different facts, and reporting the first for the second told somebody
+        # 60 percent was his ceiling when it is 85.
+        if capped <= VOICE_VOLUME_MIN or capped >= VOICE_VOLUME_MAX:
+            edge = "quiet" if capped <= VOICE_VOLUME_MIN else "loud"
+            return f"That's already as {edge} as I go by voice — I'm at {now} percent."
+        return f"I'm already at {now} percent."
+    if not sound.set_volume(capped):
+        return "I couldn't change my volume."
+    if capped != want:
+        # Say that it *moved*, not just where the limit is. "That's as far as I
+        # go, I'm at 20 percent" got read back as "already at my quietest", which
+        # tells the person nothing changed when it just had.
+        return (f"I've set it to {capped} percent, which is as far as I go by "
+                "voice. Use the panel if you need more.")
+    return f"Volume {capped} percent."
+
+
 def _speak_uptime(sec: float) -> str:
     """Uptime as something sayable. Nobody wants "27143 seconds"."""
     if sec < 60:                 # only ever true just after a reboot
@@ -471,6 +534,9 @@ def execute_action(ctx, name: str, **args) -> str:
         return _set_chest_display(ctx, str(args.get("animation", "")))
     if name == "play_sound":
         return _play_sound(ctx, str(args.get("sound", "")))
+    if name == "set_volume":
+        return _set_volume(ctx, str(args.get("direction", "")),
+                           args.get("percent"))
 
     if name == "open_mouth":
         _jaw(ctx, True)
@@ -563,6 +629,16 @@ _TEMP_RX = re.compile(
 _PATTERNS = [
     (re.compile(r"\b(open|drop)\b.*\b(mouth|jaw)\b", re.I), "open_mouth", {}),
     (re.compile(r"\b(close|shut)\b.*\b(mouth|jaw)\b", re.I), "close_mouth", {}),
+    # Volume, before the LED rules: "turn it up" is a phrasing people reach for
+    # constantly and it costs nothing to answer without a Claude round trip.
+    # "louder"/"quieter" are their own rule because they carry the direction in
+    # one word, with no verb to match on.
+    (re.compile(r"\b(louder|turn (it |yourself |your voice |the volume )?up|"
+                r"speak up|volume up)\b", re.I), "set_volume", {"direction": "up"}),
+    (re.compile(r"\b(quieter|softer|turn (it |yourself |your voice |the volume )?down|"
+                r"volume down|keep it down)\b", re.I), "set_volume", {"direction": "down"}),
+    (re.compile(r"\b(how loud are you|what('?s| is) your volume|volume level)\b", re.I),
+     "set_volume", {}),
     (re.compile(r"\bterminator\b", re.I), "set_led", "toggle"),
     (re.compile(r"\b(red )?(led|light)\b", re.I), "set_led", "toggle"),
     (re.compile(r"\btrack(ing)?\b.*\b(face|me|my face)\b", re.I), "set_tracking", "toggle"),
@@ -653,6 +729,21 @@ CLAUDE_TOOLS = [
     {"name": "set_terminator_mode", "description": "Turn the red status LED (a.k.a. 'terminator mode') on or off.",
      "input_schema": {"type": "object", "properties": {
          "enabled": {"type": "boolean"}}, "required": ["enabled"]}},
+    {"name": "set_volume", "description":
+        "Change how loudly FRED speaks, or report the current level. Only use "
+        "this when someone asks — never adjust it on your own initiative. Give "
+        "'direction' for 'turn it up'/'louder'/'quieter', or 'percent' for an "
+        "absolute level like 'set your volume to 40'. Call it with neither to "
+        "answer 'how loud are you?'. By voice he is limited to a band well "
+        f"short of silent and of full scale ({VOICE_VOLUME_MIN}-{VOICE_VOLUME_MAX} "
+        "percent); if someone needs beyond that, tell them to use the control "
+        "panel. The change lasts until he restarts.",
+     "input_schema": {"type": "object", "properties": {
+         "direction": {"type": "string", "enum": ["up", "down"],
+                       "description": "Step the level up or down."},
+         "percent": {"type": "number",
+                     "description": "Absolute level, 0-100, clamped to the "
+                                    "band above."}}}},
     {"name": "look", "description": "Point FRED's eyes in a direction (moves the eyes only).",
      "input_schema": {"type": "object", "properties": {
          "direction": {"type": "string", "enum": ["left", "right", "up", "down", "center"]}},
@@ -791,6 +882,10 @@ def run_tool(ctx, tool_name: str, tool_input: dict) -> str:
         return execute_action(ctx, "set_tracking", on=bool(ti.get("enabled")))
     if tool_name == "set_terminator_mode":
         return execute_action(ctx, "set_led", on=bool(ti.get("enabled")))
+    if tool_name == "set_volume":
+        return execute_action(ctx, "set_volume",
+                              direction=ti.get("direction", ""),
+                              percent=ti.get("percent"))
     if tool_name == "look":
         return execute_action(ctx, "look", direction=ti.get("direction", "center"))
     if tool_name == "turn_head":
