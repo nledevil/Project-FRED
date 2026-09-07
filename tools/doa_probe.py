@@ -11,7 +11,8 @@ free-running beam got picked here once already.
 
 ``AEC_AZIMUTH_VALUES`` (33, 75) -> beam1, beam2, free-running, auto-select
     Per beam, not per microphone — a single omni capsule has no direction at
-    all, since direction only exists in the difference between capsules. Beams 1
+    all, since direction only exists in the difference between capsules. (The
+    six *audio* channels are beams too, while AEC_ASROUTONOFF is 1.) Beams 1
     and 2 are fixed and sit still. The **free-running** beam has the widest
     spread and is the trap: it wanders a hundred degrees through a silent room,
     which looks like tracking and is noise.

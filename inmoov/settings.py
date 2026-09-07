@@ -204,8 +204,9 @@ DEFAULT_SETTINGS = {
         # once and both of these matter: ALSA's plughw does not *pick* a channel
         # when asked for mono, it averages them all, so the beamformed output
         # arrives mixed back in with the raw capsules and a sixth as loud. Measured
-        # on the reSpeaker Flex (XVF3800), which presents 6 at 16 kHz — two
-        # processed outputs and the four raw mics, with ch0 the processed one.
+        # on the reSpeaker Flex (XVF3800), which presents 6 at 16 kHz. With the
+        # device's AEC_ASROUTONOFF at 1 (as shipped) those are beamformer
+        # outputs, not microphones — ch0 is the loud AGC'd one worth reading.
         #   PowerConf / any plain mic:  channels 1, channel 0
         #   reSpeaker Flex C16K6Ch:     channels 6, channel 0
         "mic_channels": 1,

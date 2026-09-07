@@ -747,8 +747,14 @@ def _take_channel(data: bytes, channels: int, channel: int) -> bytes:
     """Pull one channel out of interleaved S16_LE PCM.
 
     For a mic array that presents several channels at once. The reSpeaker Flex
-    (XVF3800) offers six at 16 kHz: two processed outputs and the four raw
-    capsules. Only the processed one is worth transcribing — measured on this
+    (XVF3800) offers six at 16 kHz. What they *are* depends on the device's
+    ``AEC_ASROUTONOFF``: at 1, which is how it ships, every channel is a
+    beamformer output rather than a microphone — so all six are already
+    echo-cancelled, and none of them is a raw capsule. (Set it to 0 and you get
+    the AEC residuals instead, one per microphone; that is what any
+    do-it-yourself beamforming would need, and it is not what is on here.)
+    Channel 0 carries the loud AGC'd output and is the one to transcribe —
+    measured on this
     device, capturing ``-c 1`` through ALSA's ``plughw`` does not pick a channel,
     it *averages all six*, which mixes the beamformed, echo-cancelled,
     noise-suppressed output back together with the raw microphones at a sixth of
