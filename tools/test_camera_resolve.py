@@ -38,6 +38,23 @@ def check(label: str, ok: bool, detail: str = ""):
         FAILURES.append(label)
 
 
+def _hub_port_from(devpath: str):
+    """W._hub_port's logic against a literal path, with no sysfs to resolve."""
+    from pathlib import Path as P
+    import re as _re
+    dev = P(devpath)
+    for parent in [dev, *dev.parents][:5]:
+        name = parent.name
+        if not _re.fullmatch(r"\d+-\d+(\.\d+)*", name):
+            continue
+        if "." in name:
+            hub, _, port = name.rpartition(".")
+            return hub, port
+        bus, _, port = name.partition("-")
+        return bus, port
+    return None
+
+
 def fake_sysfs(nodes: dict[str, tuple[str, int]]) -> str:
     """nodes: {"video1": ("Jabra PanaCast", 0), ...} -> a sysfs root."""
     root = tempfile.mkdtemp()
@@ -90,6 +107,18 @@ def main() -> int:
     check("int 2 stays 2", W._resolve_device(2, mixed) == 2)
     check("the string '1' is a number, not a name",
           W._resolve_device("1", mixed) == 1)
+
+    print("the USB port is derived from sysfs, not parsed out of a tool")
+    # uhubctl names a port as (hub location, port). The kernel already encodes
+    # that in the device path — "4-1.4" is port 4 of hub 4-1 by construction —
+    # so this reads it rather than scraping uhubctl's output.
+    for path, want in [("/sys/devices/pci0000:00/usb4/4-1/4-1.4/4-1.4:1.0", ("4-1", "4")),
+                       ("/sys/devices/pci0000:00/usb4/4-1/4-1.2/4-1.2:1.0", ("4-1", "2")),
+                       ("/sys/devices/pci0000:00/usb2/2-3/2-3.1.4/2-3.1.4:1.0", ("2-3.1", "4")),
+                       ("/sys/devices/pci0000:00/usb4/4-2/4-2:1.0", ("4", "2"))]:
+        got = _hub_port_from(path)
+        check(f"{path.rsplit('/', 2)[1]:10} -> hub {want[0]} port {want[1]}",
+              got == want, str(got))
 
     print("the node list is readable when it fails")
     listing = W._video_nodes(mixed)

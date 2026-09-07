@@ -45,6 +45,8 @@ tracker already treats as "no opinion".
 """
 from __future__ import annotations
 
+import re
+import subprocess
 from pathlib import Path
 import threading
 import time
@@ -87,6 +89,72 @@ def _video_nodes(root: str = V4L_SYSFS) -> list[str]:
         except OSError:
             continue
     return out
+
+
+def _hub_port(node: int) -> tuple[str, str] | None:
+    """(hub location, port) for /dev/videoN, as uhubctl names them.
+
+    Read out of the sysfs path rather than parsed from uhubctl's output: the
+    kernel already knows, and "4-1.4" means port 4 of hub 4-1 by construction.
+    A device straight on a root hub is "4-2" — bus 4, port 2 — and has no dot.
+    """
+    try:
+        dev = Path(f"{V4L_SYSFS}/video{node}/device").resolve()
+    except OSError:
+        return None
+    for parent in [dev, *dev.parents][:5]:
+        name = parent.name
+        if not re.fullmatch(r"\d+-\d+(\.\d+)*", name):
+            continue
+        if "." in name:
+            hub, _, port = name.rpartition(".")
+            return hub, port
+        bus, _, port = name.partition("-")
+        return bus, port
+    return None
+
+
+def power_cycle_camera(node: int, delay: float = 2.0, log=None) -> str:
+    """Cut power to the camera's USB port and bring it back. "" on success.
+
+    The software equivalent of pulling the lead out, which is the one thing that
+    fixed a PanaCast that opened and then delivered nothing. Neither of the
+    obvious alternatives does this: toggling sysfs ``authorized`` is a logical
+    disconnect and reloading uvcvideo re-binds the driver, and both leave the
+    device powered the whole time.
+
+    Needs a hub with per-port power switching, which is not universal — it is
+    reported as "ppps" by uhubctl and this one has it. On a hub without it there
+    is no software answer and the lead really does have to come out.
+
+    ``-e`` matters: without it uhubctl pairs the USB2 and USB3 halves of a hub
+    on purpose, and cycling one port here also cycled the matching port on the
+    other hub. That was harmless because it was empty, and would not have been.
+    """
+    where = _hub_port(node)
+    if where is None:
+        return "couldn't work out which USB port the camera is on"
+    hub, port = where
+    argv = ["sudo", "-n", "uhubctl", "-l", hub, "-p", port, "-e",
+            "-a", "cycle", "-d", str(delay)]
+    if log:
+        log(f"[spotter] power-cycling USB {hub} port {port}")
+    try:
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=30,
+                           check=False)
+    except FileNotFoundError:
+        return "uhubctl is not installed (apt install uhubctl)"
+    except Exception as exc:  # noqa: BLE001
+        return f"{type(exc).__name__}: {exc}"
+    if r.returncode != 0:
+        return ((r.stderr or r.stdout or "").strip().splitlines() or
+                [f"uhubctl exited {r.returncode}"])[-1]
+    # It comes back in a USB3 low-power state and refuses to open for a few
+    # seconds. Measured: an immediate retry failed, eight seconds later it
+    # streamed. Waiting here rather than in the caller keeps "it is back" and
+    # "it is ready" the same event.
+    time.sleep(6.0)
+    return ""
 
 
 def _resolve_device(device, root: str = V4L_SYSFS) -> int | None:
@@ -155,7 +223,7 @@ class WideSpotter:
                  min_face_px: int = 24, stale_after: float = 2.0,
                  size: tuple[int, int] = PANORAMA,
                  view_hz: float = VIEW_HZ, view_width: int = VIEW_WIDTH,
-                 view_quality: int = VIEW_QUALITY):
+                 view_quality: int = VIEW_QUALITY, log=None):
         # An index or a name. See _resolve_device: a V4L2 index is not a stable
         # way to name a camera, and this one moved without anybody touching it.
         self.device = device
@@ -168,6 +236,12 @@ class WideSpotter:
         self.view_width = int(view_width)
         self.view_quality = int(view_quality)
         self.last_error: str | None = None if cv2 is not None else str(_CV2_ERR)
+        # What to *do* about last_error, when there is something worth saying.
+        # Separate from the error so the UI can show the diagnosis and the
+        # remedy differently, and so a message meant for a person does not have
+        # to be squeezed into a log line.
+        self.last_hint: str | None = None
+        self._log = log
 
         self._cap = None
         self._cascade = None
@@ -206,6 +280,7 @@ class WideSpotter:
     def start(self) -> bool:
         if not self.available() or self.is_running():
             return False
+        self.last_hint = None
         node = _resolve_device(self.device)
         if node is None:
             self.last_error = (f"no camera matching {self.device!r} "
@@ -222,7 +297,27 @@ class WideSpotter:
         ok, frame = cap.read()
         if not ok or frame is None:
             cap.release()
+            # The one failure worth spelling out, because it looks like a dead
+            # camera and is not. The device enumerates, the driver binds, the
+            # node opens — and select() times out on every format at every
+            # resolution, as root, with nothing logged by USB or UVC.
+            #
+            # What fixes it is cutting power. Toggling sysfs "authorized" and
+            # reloading uvcvideo both re-enumerate and neither does that, and
+            # neither worked; pulling the lead did. recover() now does the same
+            # thing without the lead, on a hub that can switch port power.
+            #
+            # Link speed is deliberately *not* mentioned as a clue. It looked
+            # like one — the camera reads 5 Gbps on a 10 Gbps hub — but it
+            # streams perfectly happily at 5, so saying so would only send the
+            # next person after the wrong thing.
             self.last_error = f"/dev/video{node} opened but delivered no frame"
+            self.last_hint = (
+                "The camera is plugged in and answering, but sending no video. "
+                "Power-cycling its USB port fixes this; use the button, and if "
+                "that fails, unplug the lead and plug it back in. Restarting "
+                "FRED will not help — the camera needs its power cut, and "
+                "nothing in software does that except the port switch.")
             return False
         h, w = frame.shape[:2]
         self._frame_wh = (w, h)
@@ -237,6 +332,26 @@ class WideSpotter:
                                         daemon=True)
         self._thread.start()
         return True
+
+    def recover(self) -> dict:
+        """Power-cycle the camera's USB port and try to start again.
+
+        The whole point of finding this out once: a camera that opens and
+        delivers nothing is fixed by cutting its power, and now that does not
+        need anybody to be standing next to the robot with a cable.
+        """
+        was_running = self.is_running()
+        self.stop()
+        node = _resolve_device(self.device)
+        if node is None:
+            return {"ok": False, "error": f"no camera matching {self.device!r}"}
+        problem = power_cycle_camera(node, log=self._log)
+        if problem:
+            return {"ok": False, "error": problem}
+        started = self.start()
+        return {"ok": started, "running": started, "restarted": was_running,
+                "error": None if started else self.last_error,
+                "hint": None if started else self.last_hint}
 
     def stop(self) -> None:
         self._stop.set()
@@ -409,4 +524,5 @@ class WideSpotter:
                     "detect_hz": self.detect_hz,
                     "detect_ms": round(self._detect_ms, 1),
                     "viewers": viewers,
-                    "error": self.last_error}
+                    "error": self.last_error,
+                    "hint": self.last_hint}

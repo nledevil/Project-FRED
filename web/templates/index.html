@@ -801,6 +801,52 @@ function applyCamSource() {
     wide ? 'Wide camera off' : 'Camera off';
 }
 
+// A camera that opens and then delivers nothing looks identical to a dead one
+// from here: the button greys out and the tooltip says something true and
+// useless. It is worth a visible panel instead, because the fix is not obvious
+// and the last time it took an hour to rediscover — see WideSpotter.recover.
+function showWideTrouble() {
+  const sp = (STATE && STATE.spotter) || {};
+  let box = document.getElementById('wideTrouble');
+  const show = !!sp.hint && !sp.running;
+  if (!show) { if (box) box.remove(); return; }
+  if (!box) {
+    box = document.createElement('div');
+    box.id = 'wideTrouble';
+    box.style.cssText = 'margin:8px 0;padding:10px 12px;border-radius:8px;'
+      + 'background:rgba(255,170,0,.10);border:1px solid rgba(255,170,0,.35);'
+      + 'font-size:13px;line-height:1.45';
+    const msg = document.getElementById('camMsg');
+    (msg && msg.parentNode ? msg.parentNode : document.body)
+      .insertBefore(box, msg || null);
+  }
+  box.innerHTML =
+    '<b>Wide camera not delivering frames.</b><br>'
+    + '<span id="wideWhy"></span><br>'
+    + '<button id="wideFix" style="margin-top:8px">⟳ Power-cycle the camera</button>'
+    + ' <span id="wideFixMsg" style="opacity:.75"></span>';
+  document.getElementById('wideWhy').textContent = sp.hint;
+  document.getElementById('wideFix').onclick = fixWideCamera;
+}
+
+async function fixWideCamera() {
+  const btn = document.getElementById('wideFix');
+  const msg = document.getElementById('wideFixMsg');
+  if (btn) { btn.disabled = true; btn.textContent = '⟳ Cycling…'; }
+  if (msg) msg.textContent = 'cutting power, then waiting for it to come back…';
+  let r;
+  try { r = await api('/api/camera/wide/reset', {}); }
+  catch (e) { r = {ok: false, error: String(e)}; }
+  if (r && r.ok) {
+    if (msg) msg.textContent = 'back — the camera is streaming again.';
+    toast('Wide camera recovered');
+  } else {
+    if (btn) { btn.disabled = false; btn.textContent = '⟳ Power-cycle the camera'; }
+    if (msg) msg.textContent = (r && (r.error || r.hint)) || 'still not streaming.';
+    toast('Camera did not come back — the lead may need pulling', true);
+  }
+}
+
 function initCam() {
   const cam = STATE && STATE.camera;      // object of settings, or null if no camera
   const ok = !!cam;
@@ -809,6 +855,7 @@ function initCam() {
   sw.title = wideOk() ? 'The wide camera on the chest — a fixed ~180 degree view'
              : 'Wide camera unavailable: '
                + (((STATE && STATE.spotter) || {}).error || 'not running');
+  showWideTrouble();
   // The wide camera going away underneath us — hardware handoff, or the USB
   // lead pulled — must not strand the panel on a feed that will never arrive.
   // Before anything below reads CAM_SRC, because this can change it.

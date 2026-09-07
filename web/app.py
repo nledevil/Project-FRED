@@ -159,7 +159,8 @@ _mic_doa = MicDoa(log=lambda m: print(m, flush=True), **_doa_cfg)
 # See inmoov/diagnostic.py — the failure it guards is flipping this on in the
 # workshop and unpacking the robot at a school two days later.
 _diagnostic = DiagnosticMode(log=lambda m: print(m, flush=True))
-_spotter = WideSpotter(device=_spot_cfg.get("device", "PanaCast"),
+_spotter = WideSpotter(log=lambda m: print(m, flush=True),
+                       device=_spot_cfg.get("device", "PanaCast"),
                        detect_hz=float(_spot_cfg.get("detect_hz", 4.0)),
                        detect_width=int(_spot_cfg.get("detect_width", 1920)),
                        view_hz=float(_spot_cfg.get("view_hz", 10.0)),
@@ -1327,6 +1328,20 @@ def api_track():
     if "on" in data:
         _tracker.start() if data["on"] else _tracker.stop()
     return jsonify(_tracker.status())
+
+
+@app.post("/api/camera/wide/reset")
+@protected
+def api_wide_reset():
+    """Power-cycle the wide camera's USB port, then try to start it again.
+
+    For the failure where the camera enumerates, opens, and then delivers no
+    frame — see WideSpotter.recover. Gated because it cuts power to a USB port,
+    which is a physical act even if it is reached over HTTP.
+    """
+    if (blocked := _blocked_by_handoff()):
+        return blocked
+    return jsonify(_spotter.recover())
 
 
 @app.get("/api/diagnostic")

@@ -85,6 +85,8 @@ GATED = [
     # one unauthenticated POST away from on. Reading the state stays open: what
     # he has run is worth being able to see without a PIN.
     "/api/diagnostic",
+    # Cuts power to a USB port. Reached over HTTP, but it is a physical act.
+    "/api/camera/wide/reset",
 ]
 OPEN = [
     "/api/cart/stop",       # never, ever gated
