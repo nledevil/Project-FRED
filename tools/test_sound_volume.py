@@ -40,7 +40,7 @@ def check(label: str, ok: bool, detail: str = ""):
 def make(value=70, delay=0.0):
     """A Sound whose card read is counted rather than performed."""
     s = Sound(device="plughw:Fake,0")
-    s._volume_ctl = "PCM,0"          # as if discovered while the card was there
+    s._volume_ctls = ["PCM,0"]       # as if discovered while the card was there
     calls = []
 
     def fake_read():
@@ -104,6 +104,49 @@ s.set_volume(30)
 s.volume()
 check("a set makes the next read go to the card", len(calls) == before + 1,
       f"{len(calls) - before} read(s) after the set")
+
+print("a card with two controls in series")
+# The reSpeaker has a stereo PCM,0 and a mono PCM,1 and they multiply, so the
+# quieter one is what you hear. Driving only the first gave a robot that
+# reported full volume with its output 20 dB down, sincerely.
+SCONTENTS = """Simple mixer control 'PCM',0
+  Capabilities: pvolume pswitch
+  Limits: Playback 0 - 60
+  Front Left: Playback 60 [100%] [0.00dB] [on]
+Simple mixer control 'PCM',1
+  Capabilities: pvolume pvolume-joined pswitch
+  Limits: Playback 0 - 60
+  Mono: Playback 40 [67%] [-20.00dB] [on]
+Simple mixer control 'Headset',0
+  Capabilities: cvolume cswitch
+  Limits: Capture 0 - 60
+  Front Left: Capture 60 [100%] [0.00dB] [on]
+"""
+LEVELS = {"PCM,0": 100, "PCM,1": 67}
+sets: list[tuple] = []
+
+s = Sound(device="plughw:Fake,0")
+def amixer(*a):
+    if a[0] == "scontents":
+        return SCONTENTS
+    if a[0] == "sget":
+        return f"  Playback 0 [{LEVELS[a[1]]}%] [0.00dB] [on]"
+    if a[0] == "sset":
+        sets.append((a[1], a[2]))
+        LEVELS[a[1]] = int(a[2].rstrip("%"))
+        return "ok"
+    return None
+s._amixer = amixer
+
+check("both playback controls are found",
+      s._find_volume_controls() == ["PCM,0", "PCM,1"], str(s._find_volume_controls()))
+check("the capture control is not mistaken for one",
+      "Headset,0" not in (s._find_volume_controls() or []))
+check("it reports the quieter one, which is what you hear",
+      s.volume() == 67, str(s.volume()))
+check("setting writes to every control", s.set_volume(50) and
+      sorted(c for c, _ in sets) == ["PCM,0", "PCM,1"], str(sets))
+check("...and then they agree", s.volume() == 50, str(s.volume()))
 
 print("no mixer at all")
 # The case that made this necessary: speakerphone unplugged, everything still

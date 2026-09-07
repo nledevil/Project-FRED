@@ -288,7 +288,10 @@ class Sound:
         # settable mixer, and that must not disable audio — it only means the
         # panels have no volume slider to offer.
         self._mixer_ok = shutil.which("amixer") is not None
-        self._volume_ctl: str | None = None     # discovered lazily, then cached
+        # Plural: a card can present several playback controls in series, and
+        # driving only one of them is a bug this used to have. Discovered
+        # lazily, then cached.
+        self._volume_ctls: list[str] | None = None
         # Last reading and when it was taken. See volume() for why this is not
         # optional: settings() is on a polled endpoint.
         self._vol_read: int | None = None
@@ -377,7 +380,7 @@ class Sound:
                 # else (alsactl at boot, a person on the device's own buttons)
                 # can move it without us. Reporting the stored number would
                 # make the panel confidently wrong.
-                "volume": self.volume(), "volume_control": self._volume_ctl}
+                "volume": self.volume(), "volume_control": ",".join(self._volume_ctls) if self._volume_ctls else None}
 
     # ---- output level -----------------------------------------------------
     #
@@ -416,30 +419,36 @@ class Sound:
             return None
         return out.stdout if out.returncode == 0 else None
 
-    def _find_volume_control(self) -> str | None:
-        """The first simple control on this card that has a playback volume.
+    def _find_volume_controls(self) -> list[str] | None:
+        """Every simple control on this card with a playback volume, in order.
 
         Discovered, never hardcoded: it is ``PCM`` on the PowerConf, ``Master``
         on plenty of other cards, and ``Speaker`` on some. A cached hit is kept
-        for the life of the process — the control cannot change without the
+        for the life of the process — the controls cannot change without the
         card changing, and the card is in the device string. A *miss* is not
         cached, so plugging the speakerphone in after boot starts working
         without a restart.
+
+        **All of them, not the first.** This used to stop at the first match,
+        which was right for a card that has one. The reSpeaker has two — a
+        stereo ``PCM,0`` and a mono ``PCM,1`` — and they are in series, so the
+        quieter one governs whatever the other says. Setting only the first
+        produced a robot that reported full volume while its output sat 20 dB
+        down, and was completely sincere about it.
         """
-        if self._volume_ctl:
-            return self._volume_ctl
+        if self._volume_ctls is not None:
+            return self._volume_ctls
         out = self._amixer("scontents")
         if not out:
             return None
-        name = None
+        names = []
         for block in out.split("Simple mixer control ")[1:]:
             head, _, body = block.partition("\n")
             if "pvolume" in body.split("Limits:", 1)[0]:
                 # "'PCM',0" -> "PCM,0", which is the form sget/sset accept.
-                name = head.strip().replace("'", "")
-                break
-        self._volume_ctl = name
-        return name
+                names.append(head.strip().replace("'", ""))
+        self._volume_ctls = names or None
+        return self._volume_ctls
 
     def volume(self) -> int | None:
         """Playback level as a percentage, or None when there is no mixer.
@@ -470,23 +479,35 @@ class Sound:
             return val
 
     def _read_volume(self) -> int | None:
-        """Ask the card its level. The uncached half of volume()."""
-        ctl = self._find_volume_control()
-        if not ctl:
+        """Ask the card its level. The uncached half of volume().
+
+        The *lowest* of the playback controls, because they are in series and
+        the quietest one is what you actually hear. set_volume writes them all
+        to the same figure so they normally agree; they can still drift, since
+        alsactl restores a level at boot and the speakerphone has buttons of its
+        own. Reporting the loudest then would be the same lie this method was
+        rewritten to stop telling.
+        """
+        ctls = self._find_volume_controls()
+        if not ctls:
             return None
-        out = self._amixer("sget", ctl)
-        if not out:
-            return None
-        # "  Mono: Playback 6161 [85%] [-4.31dB] [on]" — take the first
-        # percentage on a line that is about playback. A joined control has one
-        # line; a stereo one has two identical ones, so first is right either way.
-        for line in out.splitlines():
-            if "Playback" not in line:
+        levels = []
+        for ctl in ctls:
+            out = self._amixer("sget", ctl)
+            if not out:
                 continue
-            m = re.search(r"\[(\d{1,3})%\]", line)
-            if m:
-                return int(m.group(1))
-        return None
+            # "  Mono: Playback 6161 [85%] [-4.31dB] [on]" — take the first
+            # percentage on a line about playback. A joined control has one
+            # line; a stereo one has two identical ones, so first is right
+            # either way.
+            for line in out.splitlines():
+                if "Playback" not in line:
+                    continue
+                m = re.search(r"\[(\d{1,3})%\]", line)
+                if m:
+                    levels.append(int(m.group(1)))
+                    break
+        return min(levels) if levels else None
 
     def set_volume(self, percent: float) -> bool:
         """Set the playback level, 0-100. True when the card took it.
@@ -497,10 +518,17 @@ class Sound:
         you mute here, and it is reversible from the same slider.
         """
         pct = int(round(max(0.0, min(100.0, float(percent)))))
-        ctl = self._find_volume_control()
-        if not ctl:
+        ctls = self._find_volume_controls()
+        if not ctls:
             return False
-        if self._amixer("sset", ctl, f"{pct}%", "unmute") is None:
+        # Every one of them. See _find_volume_control: on a card whose controls
+        # are in series, setting one and leaving the other is how the level ends
+        # up somewhere nobody asked for.
+        ok = False
+        for ctl in ctls:
+            if self._amixer("sset", ctl, f"{pct}%", "unmute") is not None:
+                ok = True
+        if not ok:
             return False
         # Drop the cache rather than storing pct: the card quantises to its own
         # steps, so the next read is the only thing that knows what it actually

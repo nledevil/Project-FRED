@@ -1800,7 +1800,7 @@ def api_sound_volume_get():
     control rather than showing a slider that does nothing.
     """
     return jsonify({"volume": _sound.volume(),
-                    "control": _sound._volume_ctl,
+                    "control": _sound._volume_ctls,
                     "stored": _settings.get("sound", {}).get("volume")})
 
 
