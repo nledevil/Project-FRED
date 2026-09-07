@@ -54,7 +54,15 @@ DEFAULT_SETTINGS = {
         # the head camera cannot see; falls back to the chest ultrasonics when
         # off or blind. See inmoov/wide_spotter.py.
         "enabled": True,
-        "device": 0,                  # V4L2 index; the PanaCast's second node does not stream
+        # A card name, matched against /sys/class/video4linux, or a bare V4L2
+        # index if you really want one. The name is the right answer: an index
+        # is not a stable way to identify a camera, and this one moved on its
+        # own — changing the audio hardware renumbered the video nodes, a config
+        # pinned to 0 pointed at a node that no longer existed, and the panel
+        # just showed the camera greyed out. The PanaCast offers two nodes and
+        # only the first streams; the resolver picks by the device's own index,
+        # which is the kernel's answer to "which is the real one".
+        "device": "PanaCast",
         "detect_hz": 4.0,             # decode+detect rate — acquisition is a human-scale event
         "detect_width": 1920,         # downscale before detection (~10 ms/frame)
     },

@@ -45,6 +45,7 @@ tracker already treats as "no opinion".
 """
 from __future__ import annotations
 
+from pathlib import Path
 import threading
 import time
 
@@ -72,6 +73,59 @@ _PANORAMA_MIN_ASPECT = 3.0
 VIEW_HZ = 10.0
 VIEW_WIDTH = 1280
 VIEW_QUALITY = 70
+
+
+V4L_SYSFS = "/sys/class/video4linux"
+
+
+def _video_nodes(root: str = V4L_SYSFS) -> list[str]:
+    """Every /dev/videoN the kernel currently has, as "videoN: name" strings."""
+    out = []
+    for path in sorted(Path(root).glob("video*")):
+        try:
+            out.append(f"{path.name}: {(path / 'name').read_text().strip()}")
+        except OSError:
+            continue
+    return out
+
+
+def _resolve_device(device, root: str = V4L_SYSFS) -> int | None:
+    """Turn a configured device into a /dev/videoN number, or None.
+
+    An integer is taken literally, which is what it always did. A *string* is
+    matched against the card names in sysfs — and that is the one worth using,
+    because a V4L2 index is not a stable name for a camera. This one moved on
+    its own: the PanaCast came up as video1/video2 after the audio hardware
+    changed, and a config pinned to index 0 pointed at a node that no longer
+    existed. The panel showed the camera greyed out and the only clue was one
+    line at startup.
+
+    A camera can present several nodes and only one of them streams — the
+    PanaCast offers two — so among matches, the one the *device* calls its own
+    index 0 is taken. That is the kernel's own answer to "which is the real
+    one", and it does not move when the numbering does.
+    """
+    if isinstance(device, int) or (isinstance(device, str) and device.isdigit()):
+        return int(device)
+    want = str(device).strip().lower()
+    if not want:
+        return None
+    best: tuple[int, int] | None = None       # (device's own index, node number)
+    for path in sorted(Path(root).glob("video*")):
+        try:
+            name = (path / "name").read_text().strip().lower()
+        except OSError:
+            continue
+        if want not in name:
+            continue
+        try:
+            own = int((path / "index").read_text().strip())
+        except (OSError, ValueError):
+            own = 0
+        node = int(path.name.removeprefix("video"))
+        if best is None or (own, node) < best:
+            best = (own, node)
+    return best[1] if best else None
 
 
 class WideSpotter:
@@ -102,7 +156,9 @@ class WideSpotter:
                  size: tuple[int, int] = PANORAMA,
                  view_hz: float = VIEW_HZ, view_width: int = VIEW_WIDTH,
                  view_quality: int = VIEW_QUALITY):
-        self.device = int(device)
+        # An index or a name. See _resolve_device: a V4L2 index is not a stable
+        # way to name a camera, and this one moved without anybody touching it.
+        self.device = device
         self.detect_hz = float(detect_hz)
         self.detect_width = int(detect_width)
         self.min_face_px = int(min_face_px)
@@ -150,9 +206,14 @@ class WideSpotter:
     def start(self) -> bool:
         if not self.available() or self.is_running():
             return False
-        cap = cv2.VideoCapture(self.device, cv2.CAP_V4L2)
+        node = _resolve_device(self.device)
+        if node is None:
+            self.last_error = (f"no camera matching {self.device!r} "
+                               f"(have: {', '.join(_video_nodes()) or 'none'})")
+            return False
+        cap = cv2.VideoCapture(node, cv2.CAP_V4L2)
         if not cap.isOpened():
-            self.last_error = f"cannot open /dev/video{self.device}"
+            self.last_error = f"cannot open /dev/video{node}"
             return False
         # MJPG first: the panorama is not offered as raw YUV at this size.
         cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
@@ -161,7 +222,7 @@ class WideSpotter:
         ok, frame = cap.read()
         if not ok or frame is None:
             cap.release()
-            self.last_error = f"/dev/video{self.device} opened but delivered no frame"
+            self.last_error = f"/dev/video{node} opened but delivered no frame"
             return False
         h, w = frame.shape[:2]
         self._frame_wh = (w, h)
