@@ -39,12 +39,15 @@ class Assistant:
                  model: str | None = None, sensors=None, brain_cfg: dict | None = None,
                  asr_model: str | None = None, barge_in: bool = True,
                  stop_when_alone: bool = True,
-                 mic_channels: int = 1, mic_channel: int = 0):
+                 mic_channels: int = 1, mic_channel: int = 0,
+                 diagnostic=None):
         # sensors is the SensorHub, or None on a build with no sensor node — the
-        # read_sensors action degrades to saying so rather than failing.
+        # read_sensors action degrades to saying so rather than failing. The same
+        # goes for diagnostic: absent, the tools say he hasn't got it rather
+        # than raising, which is what a build without the mode should look like.
         self._ctx = types.SimpleNamespace(controller=controller, led=led,
                                           tracker=tracker, sound=sound,
-                                          sensors=sensors)
+                                          sensors=sensors, diagnostic=diagnostic)
         self._sound = sound
         self._controller = controller
         self._log = log                           # ConversationLog (optional)

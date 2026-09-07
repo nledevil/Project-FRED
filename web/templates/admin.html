@@ -192,6 +192,7 @@
       <a href="#sec-brain" data-sec="sec-brain">Brain</a>
       <a href="#sec-event" data-sec="sec-event">Event mode</a>
       <a href="#sec-audit" data-sec="sec-audit">Audit mode</a>
+      <a href="#sec-diag" data-sec="sec-diag">Diagnostic mode</a>
       <a href="#sec-appearance" data-sec="sec-appearance">Appearance</a>
       <a href="#sec-camera" data-sec="sec-camera">Camera</a>
       <a href="#sec-led" data-sec="sec-led">Status LED</a>
@@ -329,6 +330,53 @@
        so nothing sags. <b>Switching back off returns the servos to rest</b>, since the readouts
        and the hardware will have drifted apart during the audit. Live switch (no Save needed);
        persists across reboots.</p>
+  </section>
+
+  <section class="panel" id="sec-diag">
+    <p class="phead">Diagnostic mode</p>
+
+    <div class="row" style="margin-bottom:12px">
+      <div class="label"><b>Status</b><span>whether he can inspect himself</span></div>
+      <div class="grow"></div>
+      <span class="dot" id="diagDot"></span>
+      <span class="badge" id="diagStat">…</span>
+    </div>
+
+    <div class="row">
+      <div class="label"><b>Diagnostic mode</b><span>ask him why something is wrong</span></div>
+      <label class="switch"><input type="checkbox" id="diagOn"
+        onchange="onDiag(this.checked)"> Let him check himself</label>
+    </div>
+    <p class="hint">Turns on a fixed set of checks — service status and logs on all three
+       machines, temperatures, disk, whether the Pis answer, and restarting his own
+       services. Then you can just ask: <em>"why is your chest display blank"</em>,
+       <em>"is your head Pi up"</em>, <em>"are you running hot"</em>.</p>
+    <p class="hint"><b>This switch is the lock, not his voice.</b> While it is on, anyone
+       who can say "Fred" can use it — the wake word is not a secret. It switches itself
+       off after <b id="diagTimeout">30</b> minutes with nothing asked of it, and it is
+       always off after a restart, so the risk is bounded to the time you are standing
+       in front of him.</p>
+
+    <div class="row">
+      <div class="label"><b>Unrestricted shell</b>
+        <span>arbitrary commands on his brain</span></div>
+      <label class="switch"><input type="checkbox" id="diagShell"
+        onchange="onDiagShell(this.checked)"> Let him run anything</label>
+    </div>
+    <p class="hint">Everything above, plus any command he decides is needed — the closest
+       thing to sitting at his terminal. Off by default, never remembered, and
+       <b>refused entirely while Event mode is on</b>. Obviously destructive commands are
+       still declined, but that is a guard against him being over-helpful, not a security
+       boundary: treat this as handing a shell to the room.</p>
+
+    <div class="row">
+      <div class="label"><b>What he has run</b><span>most recent first</span></div>
+      <div class="grow"></div>
+      <button onclick="refreshDiag()">↻ Refresh</button>
+    </div>
+    <pre id="diagAudit" style="max-height:220px;overflow:auto;font-size:12px;
+         background:rgba(0,0,0,.25);padding:10px;border-radius:6px;
+         white-space:pre-wrap">—</pre>
   </section>
 
   <section class="panel" id="sec-appearance">
@@ -1324,6 +1372,53 @@ refreshDisplay();
 refreshUplink();
 refreshHotspot();
 loadHeard();
+
+// ---- diagnostic mode ----------------------------------------------------
+
+function reflectDiag(s) {
+  if (!s) return;
+  const dot = document.getElementById('diagDot');
+  const stat = document.getElementById('diagStat');
+  if (!s.enabled) { dot.className = 'dot off'; stat.textContent = 'off'; }
+  else if (s.unrestricted) {
+    dot.className = 'dot on'; stat.textContent =
+      'ON — unrestricted · ' + Math.round(s.remaining / 60) + ' min left';
+  } else {
+    dot.className = 'dot on'; stat.textContent =
+      'ON — checks only · ' + Math.round(s.remaining / 60) + ' min left';
+  }
+  document.getElementById('diagOn').checked = !!s.enabled;
+  document.getElementById('diagShell').checked = !!s.unrestricted;
+  // The shell switch means nothing with the mode off, and offering it there
+  // invites turning it on and wondering why nothing happened.
+  document.getElementById('diagShell').disabled = !s.enabled;
+  document.getElementById('diagTimeout').textContent =
+    Math.round((s.idle_timeout || 1800) / 60);
+  const a = s.audit || [];
+  document.getElementById('diagAudit').textContent = a.length
+    ? a.slice().reverse().map(x =>
+        new Date(x.t * 1000).toLocaleTimeString() + '  ' +
+        (x.allowed ? '     ' : 'DENY ') + x.command +
+        (x.note ? '   (' + x.note + ')' : '')).join('\n')
+    : 'nothing yet';
+}
+
+async function refreshDiag() { reflectDiag(await api('/api/diagnostic')); }
+
+async function onDiag(on) {
+  reflectDiag(await api('/api/diagnostic', { on: on }));
+  toast(on ? 'He can inspect himself — off again in 30 minutes'
+           : 'Diagnostic mode off');
+}
+
+async function onDiagShell(on) {
+  const s = await api('/api/diagnostic', { on: true, unrestricted: on });
+  reflectDiag(s);
+  if (s.error) toast(s.error, true);
+  else toast(on ? 'Unrestricted — he can run anything' : 'Back to fixed checks only');
+}
+
+refreshDiag();
 
 // ---- hearing direction --------------------------------------------------
 // Polls only while its tab is open. The reading costs a USB control transfer on

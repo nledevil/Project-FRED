@@ -58,6 +58,7 @@ from inmoov.settings import load_settings, save_settings  # noqa: E402
 from inmoov import auth  # noqa: E402
 from inmoov import whoami as whoami_mod  # noqa: E402
 from inmoov.mic_doa import MicDoa, TUNABLE as DOA_TUNABLE  # noqa: E402
+from inmoov.diagnostic import DiagnosticMode, Refused as DiagRefused  # noqa: E402
 
 app = Flask(__name__)
 # Key order is meaning here: the phrase deck's tabs display in the order the
@@ -154,6 +155,10 @@ _doa_cfg = {k: v for k, v in (_settings.get("mic_doa") or {}).items()
             if k in DOA_TUNABLE}         # same filter as "track": a hand-edited
                                          # settings.json must not break startup
 _mic_doa = MicDoa(log=lambda m: print(m, flush=True), **_doa_cfg)
+# Deliberately not read from settings: diagnostic mode never survives a restart.
+# See inmoov/diagnostic.py — the failure it guards is flipping this on in the
+# workshop and unpacking the robot at a school two days later.
+_diagnostic = DiagnosticMode(log=lambda m: print(m, flush=True))
 _spotter = WideSpotter(device=int(_spot_cfg.get("device", 0)),
                        detect_hz=float(_spot_cfg.get("detect_hz", 4.0)),
                        detect_width=int(_spot_cfg.get("detect_width", 1920)),
@@ -200,6 +205,7 @@ _assistant = Assistant(_ctrl, _status_led, _tracker, _sound,  # voice: wake word
                        # that presents more than one. See settings.voice.
                        mic_channels=int(_voice_cfg.get("mic_channels", 1)),
                        mic_channel=int(_voice_cfg.get("mic_channel", 0)),
+                       diagnostic=_diagnostic,   # off until the panel says otherwise
                        model=_voice_cfg.get("model") or None,
                        sensors=_sensors,
                        brain_cfg=_settings.get("brain", {}),   # cloud/local routing
@@ -451,6 +457,7 @@ def _state() -> dict:
             "channels": channels, "camera": camera,
             "sound": sound, "led": _status_led.status(), "track": _tracker.status(),
             "spotter": _spotter.status(), "mic_doa": _mic_doa.status(),
+            "diagnostic": _diagnostic.status(),
             "voice": _assistant.status(), "servos": servos, "settings": _settings,
             "handoff": _handoff_state(), "audit": _audit_state(),
             "brain": _assistant.brain.status(),
@@ -1320,6 +1327,31 @@ def api_track():
     if "on" in data:
         _tracker.start() if data["on"] else _tracker.stop()
     return jsonify(_tracker.status())
+
+
+@app.get("/api/diagnostic")
+def api_diagnostic_status():
+    return jsonify(_diagnostic.status())
+
+
+@app.post("/api/diagnostic")
+@protected
+def api_diagnostic():
+    """Turn diagnostic mode on or off. Body: ``{"on": bool, "unrestricted": bool}``.
+
+    PIN-gated, and that gate is the actual security boundary: once this is on,
+    anyone who can say "Fred" can use it. Everything else — the two tiers, the
+    idle timeout, the audit trail — is about bounding a switch left on by
+    mistake rather than about keeping anyone out. See inmoov/diagnostic.py.
+    """
+    data = request.get_json(force=True) or {}
+    try:
+        st = _diagnostic.set(bool(data.get("on", True)),
+                             unrestricted=data.get("unrestricted"),
+                             at_event=bool(_event.enabled))
+    except DiagRefused as why:
+        return jsonify({"error": str(why), **_diagnostic.status()}), 409
+    return jsonify(st)
 
 
 @app.get("/api/mic")

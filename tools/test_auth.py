@@ -79,6 +79,12 @@ GATED = [
     # /api/sensors. Writing is not: the same POST carries the calibration, and a
     # wrong "forward" sends the head chasing the opposite side of the room.
     "/api/mic",
+    # The switch that lets him run commands because somebody spoke to him. This
+    # gate is the whole security boundary of diagnostic mode — see
+    # inmoov/diagnostic.py — so if this line ever stops asserting, the mode is
+    # one unauthenticated POST away from on. Reading the state stays open: what
+    # he has run is worth being able to see without a PIN.
+    "/api/diagnostic",
 ]
 OPEN = [
     "/api/cart/stop",       # never, ever gated

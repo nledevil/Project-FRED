@@ -397,6 +397,32 @@ class Brain:
         self.faces.attend(
             lambda: cam.capture_gray() if cam.is_streaming() else None, hold=hold)
 
+    def _diagnostic_facts(self) -> str:
+        """The one line about whether he may debug himself, or "" for off.
+
+        This has to be a per-turn fact for the same reason the clock is: the
+        panel flips it mid-conversation. Without it the model was told in the
+        tool description that the mode might be off, had no way to check, and
+        so answered "diagnostic mode is off, turn it on" while it was on —
+        never calling the tool at all. A tool whose availability the model
+        cannot see is a tool it will decline on your behalf.
+
+        Says nothing when off. The tool refuses on its own then, and that
+        refusal is the honest answer; what was missing was the other direction.
+        """
+        mode = getattr(self.ctx, "diagnostic", None)
+        if mode is None or not mode.enabled:
+            return ""
+        line = ("\n\nDiagnostic mode is ON right now, so your diagnostic tool "
+                "will work — use it rather than saying you cannot check.")
+        if mode.unrestricted:
+            line += (" Unrestricted mode is also on, so run_shell works too; "
+                     "prefer the diagnostic tool for anything it covers.")
+        else:
+            line += (" Unrestricted mode is OFF, so run_shell will refuse — "
+                     "that switch is separate and is on the same panel.")
+        return line
+
     def _face_facts(self) -> str:
         """The one line about who is standing there, or "" for "no idea".
 
@@ -736,7 +762,8 @@ class Brain:
         # changes every turn, so it must not be in the cached prefix.
         messages = self._history + [
             {"role": "user",
-             "content": f"{sysinfo.context_block()}{brief}{self._face_facts()}\n\n{text}"}]
+             "content": f"{sysinfo.context_block()}{brief}{self._face_facts()}"
+                        f"{self._diagnostic_facts()}\n\n{text}"}]
         actions: list[str] = []
         said: list[str] = []                 # every sentence handed to emit()
         # Static per backend: see the note above. What the suffix says depends on

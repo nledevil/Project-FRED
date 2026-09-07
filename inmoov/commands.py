@@ -20,7 +20,7 @@ import io
 import random
 import re
 
-from . import sysinfo, whoami
+from . import diagnostic, sysinfo, whoami
 
 # The one tool whose result is a picture rather than a sentence. brain.py
 # special-cases it (see Brain._look) because only there is it known which
@@ -252,6 +252,25 @@ def _set_volume(ctx, direction: str = "", percent=None) -> str:
         return (f"I've set it to {capped} percent, which is as far as I go by "
                 "voice. Use the panel if you need more.")
     return f"Volume {capped} percent."
+
+
+def _diagnostic(ctx, check: str = "", unit: str = "", command: str = "") -> str:
+    """Run a diagnostic on request. Off unless the panel switch is on.
+
+    Both tiers land here so there is one place that turns a Refused into
+    something FRED can say. The refusal text is deliberately spoken rather than
+    swallowed: "I can't do that right now, the switch is off" is an answer, and
+    silence is a robot that looks broken.
+    """
+    mode = getattr(ctx, "diagnostic", None)
+    if mode is None:
+        return "I don't have diagnostic mode on this build."
+    try:
+        if command:
+            return mode.run_shell(command)
+        return mode.run_check(check, unit)
+    except diagnostic.Refused as why:
+        return str(why)
 
 
 def _speak_uptime(sec: float) -> str:
@@ -537,6 +556,10 @@ def execute_action(ctx, name: str, **args) -> str:
     if name == "set_volume":
         return _set_volume(ctx, str(args.get("direction", "")),
                            args.get("percent"))
+    if name == "diagnostic":
+        return _diagnostic(ctx, str(args.get("check", "")),
+                           str(args.get("unit", "")),
+                           str(args.get("command", "")))
 
     if name == "open_mouth":
         _jaw(ctx, True)
@@ -744,6 +767,38 @@ CLAUDE_TOOLS = [
          "percent": {"type": "number",
                      "description": "Absolute level, 0-100, clamped to the "
                                     "band above."}}}},
+    # Two names rather than one tool with a mode flag: the safe tier and the
+    # shell are different decisions, and a model that has to pick the *name*
+    # "run_shell" has been made to notice which one it is reaching for.
+    {"name": "diagnostic", "description":
+        "Run a diagnostic check on yourself and report what it says. It needs "
+        "diagnostic mode switched on from the admin panel; the facts on this "
+        "turn tell you when it is on, and when they do, call this rather than "
+        "saying you cannot check. Use this for 'why is "
+        "your chest display blank', 'is the head Pi up', 'what does your log "
+        "say', 'are you running hot', 'have you got disk space'. Checks: "
+        + ", ".join(diagnostic.CHECKS) +
+        ". 'unit' is required for service_status, service_restart and logs, and "
+        "must be one of FRED's own services. Read the output and tell the person "
+        "the answer in a sentence — do not read the log out loud.",
+     "input_schema": {"type": "object", "properties": {
+         "check": {"type": "string", "enum": list(diagnostic.CHECKS)},
+         "unit": {"type": "string",
+                  "description": "Service name, for the checks that need one."}},
+         "required": ["check"]}},
+    {"name": "run_shell", "description":
+        "Run an arbitrary shell command on FRED's brain and report the output. "
+        "This needs BOTH diagnostic mode and unrestricted mode switched on from "
+        "the admin panel; if it refuses, tell the person which switch is off "
+        "rather than trying the diagnostic tool instead. Prefer the diagnostic "
+        "tool for anything it already covers — this is for the case it does "
+        "not. Keep commands short and read-only unless you have been asked for "
+        "a change; you are speaking the result aloud to somebody standing in "
+        "front of you, so summarise rather than reciting.",
+     "input_schema": {"type": "object", "properties": {
+         "command": {"type": "string",
+                     "description": "The command line to run."}},
+         "required": ["command"]}},
     {"name": "look", "description": "Point FRED's eyes in a direction (moves the eyes only).",
      "input_schema": {"type": "object", "properties": {
          "direction": {"type": "string", "enum": ["left", "right", "up", "down", "center"]}},
@@ -882,6 +937,11 @@ def run_tool(ctx, tool_name: str, tool_input: dict) -> str:
         return execute_action(ctx, "set_tracking", on=bool(ti.get("enabled")))
     if tool_name == "set_terminator_mode":
         return execute_action(ctx, "set_led", on=bool(ti.get("enabled")))
+    if tool_name == "diagnostic":
+        return execute_action(ctx, "diagnostic", check=ti.get("check", ""),
+                              unit=ti.get("unit", ""))
+    if tool_name == "run_shell":
+        return execute_action(ctx, "diagnostic", command=ti.get("command", ""))
     if tool_name == "set_volume":
         return execute_action(ctx, "set_volume",
                               direction=ti.get("direction", ""),
