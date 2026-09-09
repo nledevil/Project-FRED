@@ -358,6 +358,7 @@
 </style>
 <link rel="stylesheet" href="/static/pin.css">
 <script src="/static/pin.js"></script>
+<script src="/static/ui.js"></script>
 </head>
 <body data-view="cam">
 <div class="app">
@@ -554,11 +555,7 @@ const LABELS = { eye_x:'Look Left / Right', eye_y:'Look Up / Down',
 // api() comes from /static/pin.js — it raises the PIN keypad on a 401
 // and retries the call once the PIN lands.
 
-function toast(msg) {
-  const t = document.getElementById('toast');
-  t.textContent = msg; t.classList.add('show');
-  clearTimeout(t._t); t._t = setTimeout(() => t.classList.remove('show'), 1600);
-}
+// toast() comes from /static/ui.js — shared with the admin page.
 
 // ---- audit (dry run) mode ----------------------------------------------
 // One place that paints the state, so the checkbox and the banner can never

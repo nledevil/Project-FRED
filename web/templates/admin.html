@@ -176,6 +176,7 @@
 </style>
 <link rel="stylesheet" href="/static/pin.css">
 <script src="/static/pin.js"></script>
+<script src="/static/ui.js"></script>
 </head>
 <body>
 <div class="app">
@@ -722,11 +723,7 @@ const DEFAULTS = { iris_color:'#143a97', camera:{ flip:false, af_mode:0, lens_po
 // api() comes from /static/pin.js — it raises the PIN keypad on a 401
 // and retries the call once the PIN lands.
 
-function toast(msg, err) {
-  const t = document.getElementById('toast');
-  t.textContent = msg; t.className = 'show' + (err ? ' err' : '');
-  clearTimeout(t._t); t._t = setTimeout(() => t.className = '', 1800);
-}
+// toast() comes from /static/ui.js — shared with the control panel.
 
 function isHex(v) { return /^#[0-9a-fA-F]{6}$/.test(v); }
 function applyColor(v) {

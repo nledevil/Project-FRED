@@ -119,6 +119,16 @@
     if (r.status === 401 && !retried) {
       if (await open()) return window.api(path, body, true);
     }
-    return r.json();
+    // Never throw out of here. An unhandled exception in a route returns
+    // Werkzeug's HTML 500; r.json() then rejects, the caller's await blows up
+    // uncaught, and the UI shows nothing — the "button did nothing" failure
+    // this codebase keeps guarding against elsewhere. A parse failure becomes
+    // the same {error} shape every caller already branches on, so the broken
+    // request lights up a toast instead of dying silently in the console.
+    try {
+      return await r.json();
+    } catch (e) {
+      return {error: 'HTTP ' + r.status + (r.ok ? ' (bad JSON)' : '')};
+    }
   };
 })();
