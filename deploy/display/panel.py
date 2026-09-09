@@ -64,12 +64,19 @@ MENU_PAGES = (StatusPage, VoicePage, ServosPage, CartPage,
 def _pages():
     return MENU_PAGES
 
-from PySide6.QtCore import (QObject, QTimer, QUrl, Signal, Slot,  # noqa: E501
+from PySide6.QtCore import (QEvent, QObject, QTimer, QUrl, Signal, Slot,  # noqa: E501
                             Property, Qt)   # noqa: E402
 from PySide6.QtGui import QColor, QFontDatabase, QGuiApplication, QImage  # noqa: E402
 from PySide6.QtQuick import QQuickImageProvider, QQuickView               # noqa: E402
 
 W, H = 800, 480
+
+# Seconds the menu may sit with nobody touching the screen before it closes
+# itself. Exists because it once sat open for twenty-two hours: a stray tap
+# opened it, nothing ever closed it, and the visitor-facing animation was a
+# PIN keypad for a day. Long enough to walk around the robot and think;
+# short enough that a stray tap costs minutes, not the show.
+MENU_IDLE_S = 180.0
 
 # Two layouts, as everywhere else here: subdirectories beside the source in the
 # repo, and everything flat on the chest Pi, whose manifest flattens the tree.
@@ -184,6 +191,13 @@ class Panel(QObject):
         super().__init__()
         self._forced = forced
         self._scene = scene                # "anim" | "menu"
+        # Last touch anywhere on the screen, fed by eventFilter below — the
+        # menu's idle clock. Qt-level rather than QML-level on purpose: every
+        # control's press passes through the application before QML routes it,
+        # so no page has to remember to report activity (the class of bug where
+        # a control draws but does not respond is bad enough the other way
+        # round without inventing its twin).
+        self._last_touch = time.monotonic()
         self._opened_as_menu = False       # --menu: the daemon put us here
         self._no_gate = False              # --no-gate: stay open, for grabs
         self._page = 0
@@ -268,8 +282,19 @@ class Panel(QObject):
             self.apply(want)
 
     # ---- per-tick state -------------------------------------------------
+    def eventFilter(self, obj, ev):  # noqa: N802 - Qt's name
+        if ev.type() in (QEvent.Type.TouchBegin, QEvent.Type.TouchUpdate,
+                         QEvent.Type.MouseButtonPress, QEvent.Type.MouseMove):
+            self._last_touch = time.monotonic()
+        return False                       # observe, never consume
+
     def tick(self) -> None:
         t = time.monotonic() - self._start
+        # The menu times itself out. --no-gate is exempt: that flag exists so
+        # the page-grab harnesses can sit on a tab as long as a render takes.
+        if (self._scene == "menu" and not self._no_gate
+                and time.monotonic() - self._last_touch > MENU_IDLE_S):
+            self.closeMenu()
         # One snapshot per tick, off the poller's own thread. The network is
         # never on the drawing path — that rule predates this app and is why a
         # brain that has gone away makes the page say so rather than freezing
@@ -487,6 +512,7 @@ class Panel(QObject):
 
     @Slot()
     def openMenu(self):
+        self._last_touch = time.monotonic()   # the tap that opened it counts
         self.scene = "menu"
 
     def unlock_for_testing(self) -> None:
@@ -680,6 +706,7 @@ def main() -> int:
 
     overlay = Overlay()
     panel = Panel(args.anim, "menu" if (args.menu or args.reopen_menu) else "anim")
+    app.installEventFilter(panel)          # feeds the menu's idle clock
     panel._opened_as_menu = bool(args.menu)     # --reopen-menu must not set this
     panel.page = args.page
     if args.no_gate:

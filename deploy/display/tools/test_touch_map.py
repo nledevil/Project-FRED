@@ -118,6 +118,20 @@ def main() -> int:
     check("an unknown preset is not treated as blank",
           not dc.opens_menu("no-such-preset", "down", mid_x, mid_y))
 
+    print("a latched crash takes a tap anywhere — a dead screen must not need ssh")
+    # Latched means the watchdog gave up for good; the daemon painted an error
+    # where the animation was, and the only humane next step is a tap. During
+    # the respawn window latched is False, so the deliberate exclusion — never
+    # open the menu over an animation that is coming back — still holds.
+    check("latched: a tap in the middle opens the menu",
+          dc.opens_menu("reactor", "down", mid_x, mid_y, latched=True))
+    check("latched: even over a panel preset",
+          dc.opens_menu("face", "down", mid_x, mid_y, latched=True))
+    check("latched: a lift still does nothing",
+          not dc.opens_menu("reactor", "up", mid_x, mid_y, latched=True))
+    check("not latched keeps the old rule",
+          not dc.opens_menu("reactor", "down", mid_x, mid_y, latched=False))
+
     print("a driver reporting its own axis range is still scaled")
     t2 = FakeTouch(0)
     t2._max_x, t2._max_y = 4095, 4095

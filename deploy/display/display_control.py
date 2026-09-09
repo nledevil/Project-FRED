@@ -131,15 +131,23 @@ DEFAULT_PRESET = "reactor"
 BLANK_PRESETS = frozenset(p["id"] for p in PRESETS if p["argv"] is None)
 
 
-def opens_menu(preset_id: str, kind: str, x: int, y: int) -> bool:
+def opens_menu(preset_id: str, kind: str, x: int, y: int,
+               latched: bool = False) -> bool:
     """Should this touch event open the settings menu?
 
     Split out of CogWatcher so the rule can be checked without a touchscreen —
     see tools/test_touch_map.py, which already owns the question of which taps
     land on the cog.
 
-    Four cases, in order:
+    Five cases, in order:
 
+    * a latched crash — the child kept dying and the supervisor gave up, so
+      the screen is dead however the preset is spelled. Any tap opens the
+      menu; without this the only recovery was SSH, at an event, with the
+      head panel closed. Latched is not "respawning": during the respawn
+      window the animation is coming back, and a tap then must not open the
+      menu over it — is_latched() only answers True once the watchdog has
+      given up for good;
     * the panel app is up — it draws its own cog and handles its own taps, so
       the daemon keeps its hands off the screen entirely;
     * a hidden preset — the menu is already showing and owns the touchscreen.
@@ -152,10 +160,12 @@ def opens_menu(preset_id: str, kind: str, x: int, y: int) -> bool:
     An id that is not in the table is treated as "something is drawing": it must
     not fall through to the blank case and swallow every tap on the panel.
     """
+    if kind != "down":
+        return False
+    if latched:
+        return True
     preset = PRESET_BY_ID.get(preset_id)
     if preset is not None and (preset["argv"] == ["panel.py"] or preset.get("hidden")):
-        return False
-    if kind != "down":
         return False
     if preset_id in BLANK_PRESETS:
         return True
@@ -224,6 +234,33 @@ def _detach_console() -> bool:
     return False
 
 
+def _latched_screen(error: str) -> None:
+    """Paint what happened where the animation used to be.
+
+    A latched crash used to leave the last dead frame (or nothing) on the
+    panel with the explanation only in an API field — from in front of the
+    robot, a black screen and no way to know why. The child is gone, so the
+    framebuffer is free to write; say what broke and that a tap still works.
+    """
+    try:
+        sys.path.insert(0, str(HERE))
+        from fb import Framebuffer, hide_cursor   # noqa: PLC0415 — needs numpy
+        import font5x7                            # noqa: PLC0415
+        import numpy as np                        # noqa: PLC0415
+        hide_cursor()
+        with Framebuffer() as fb:
+            frame = np.zeros((fb.h, fb.w, 3), dtype=np.uint8)
+            font5x7.draw_text(frame, "ANIMATION CRASHED", 24, 180,
+                              (255, 80, 60), scale=3)
+            font5x7.draw_text(frame, (error or "no error recorded")[:90], 24, 230,
+                              (200, 200, 200), scale=1, preserve_case=True)
+            font5x7.draw_text(frame, "TAP ANYWHERE FOR THE MENU", 24, 270,
+                              (120, 170, 255), scale=2)
+            fb.show(frame)
+    except Exception:                             # noqa: BLE001 - a paint failure
+        pass                                      # must not take the daemon down
+
+
 def _blank_screen() -> None:
     """Black the panel. Only safe once the child has exited (it mmaps fb0 too).
 
@@ -259,6 +296,7 @@ class Supervisor:
         self._restore_to = DEFAULT_PRESET   # where the cog menu goes back to
         self._started_at = 0.0
         self._error = ""                    # last crash, surfaced in /api/state
+        self._touched_at = time.monotonic() # last touch the cog watcher saw
         self._fails = 0                     # consecutive too-fast exits
         self._stop = threading.Event()
         self._watch = threading.Thread(target=self._watchdog, daemon=True)
@@ -289,6 +327,23 @@ class Supervisor:
         """Which preset is showing. Read by the cog watcher, which stands down
         while the panel app is up because that app handles its own cog."""
         return self._preset
+
+    def note_touch(self) -> None:
+        """The cog watcher saw a finger. Feeds the settings-preset backstop."""
+        self._touched_at = time.monotonic()
+
+    def is_latched(self) -> bool:
+        """Has the watchdog given up on a repeatedly-crashing child?
+
+        Distinct from "between respawns": inside the respawn window _error is
+        still empty and the animation is coming back, so a tap must not treat
+        the screen as dead. Once latched, the screen belongs to the message
+        _latched_screen painted, and any tap may open the menu over it.
+        """
+        with self._lock:
+            preset = PRESET_BY_ID.get(self._preset)
+            return (self._proc is None and bool(self._error)
+                    and preset is not None and preset["argv"] is not None)
 
     def _spawn(self, preset: dict) -> None:
         argv = list(preset["argv"])
@@ -373,9 +428,24 @@ class Supervisor:
         return self.select(back, persist=False)
 
     def _watchdog(self) -> None:
-        """Respawn a child that dies on its own; give up only if it keeps failing."""
+        """Respawn a child that dies on its own; give up only if it keeps failing.
+
+        Also the backstop for a settings *process* nobody is using: when the
+        daemon itself put the panel into the menu (the voice-HUD cog path), the
+        menu is a whole preset rather than a scene, and panel.py's own idle
+        timeout ends with a restore request back to this daemon — but if that
+        process wedges, or the request is lost, the screen stays a menu
+        forever. It once did, for twenty-two hours. The watchdog already wakes
+        every second and the cog watcher already sees every touch, so the
+        backstop is one comparison. Generous margin over panel.py's own
+        MENU_IDLE_S (180 s), so the polite path always gets to go first.
+        """
         while not self._stop.wait(1.0):
             with self._lock:
+                if (self._preset == "settings"
+                        and time.monotonic() - self._touched_at > 300.0):
+                    self._touched_at = time.monotonic()   # one restore per idle spell
+                    threading.Thread(target=self.restore, daemon=True).start()
                 preset = PRESET_BY_ID[self._preset]
                 if preset["argv"] is None or self._proc is None:
                     continue                # nothing to supervise ("off", or latched)
@@ -388,6 +458,7 @@ class Supervisor:
                     # Repeatedly dying on startup: stop and report, don't hot-loop.
                     self._error = self._last_error(self._proc.returncode)
                     self._proc = None
+                    _latched_screen(self._error)
                     continue
                 self._proc = None
 
@@ -505,7 +576,13 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, {"error": "not found"})
 
     def do_POST(self):
-        if not self._authed():
+        # /api/cart/stop is exempt from the token, the same way it is exempt
+        # from the brain's PIN (tools/test_auth.py asserts that one twice): a
+        # stop must never fail on a technicality, and the moment you reach for
+        # it is the moment a mislaid secret must not matter. The whole path is
+        # exempt — clear_estop arrives on it too — matching the brain's rule;
+        # clearing re-arms nothing by itself, and driving still authenticates.
+        if self.path.rstrip("/") != "/api/cart/stop" and not self._authed():
             return
         if not (self.path.startswith("/api/animation")
                 or self.path.startswith("/api/voice")
@@ -667,7 +744,9 @@ class CogWatcher:
         try:
             while not self._stop.is_set():
                 for kind, x, y in dev.poll(timeout=0.2):
-                    if not opens_menu(self._sup.preset_id(), kind, x, y):
+                    self._sup.note_touch()
+                    if not opens_menu(self._sup.preset_id(), kind, x, y,
+                                      latched=self._sup.is_latched()):
                         continue
                     try:
                         self._sup.select(self._target, persist=False)
