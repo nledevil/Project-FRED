@@ -88,7 +88,15 @@ def write_state(**changes) -> None:
     d = read_state()
     d.update(changes)
     try:
-        STATE_PATH.write_text(json.dumps(d, indent=2) + "\n")
+        # Write-to-tmp-then-replace, the same pattern pin_gate.save uses and
+        # for the same reason: robots get hard-switched, and a power cut in the
+        # middle of an in-place write tears the file — boot then falls back to
+        # defaults and silently loses the chosen animation, the theme, and
+        # controller_mode, which is safety-adjacent. rename() on the same
+        # filesystem is atomic; a torn write loses only the tmp file.
+        tmp = STATE_PATH.with_suffix(".tmp")
+        tmp.write_text(json.dumps(d, indent=2) + "\n")
+        tmp.replace(STATE_PATH)
     except OSError:
         pass                              # read-only fs: the live change still works
 
