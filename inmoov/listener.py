@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import collections
 import json
+import select
 import subprocess
 import threading
 import time
@@ -442,12 +443,21 @@ class Listener:
                         # died, or the card went away), where a silence run
                         # measured across the gap would be meaningless.
                         self._silent_since = 0.0
-                try:
-                    # Scaled by the channel count so that what survives the
-                    # extraction below is still 4000 bytes — 125ms, which every
-                    # timing constant in this file is written in terms of.
-                    data = proc.stdout.read(4000 * self.channels)
-                except (ValueError, OSError):  # pause() closed the pipe under us
+                # Scaled by the channel count so that what survives the
+                # extraction below is still 4000 bytes — 125ms, which every
+                # timing constant in this file is written in terms of.
+                data = _read_chunk(proc.stdout, 4000 * self.channels,
+                                   WEDGE_TIMEOUT)
+                if data is None:
+                    # The pipe is open, arecord is alive, and nothing arrived
+                    # for WEDGE_TIMEOUT — on a card that emits 16 kHz PCM
+                    # continuously, silence included, that is not quiet, it is
+                    # wedged. Without this the blocking read() sat here forever
+                    # and FRED was silently deaf until a restart; the recovery
+                    # is the same close-and-reopen every other capture death
+                    # already takes.
+                    print(f"[Listener] capture wedged (no audio for "
+                          f"{WEDGE_TIMEOUT:g}s) — reopening")
                     data = b""
                 if not data:                   # arecord ended (killed by pause, or died)
                     self._close_proc()
@@ -534,12 +544,15 @@ class Listener:
                         self._reset_rec(brec)  # next utterance starts clean
                     continue
                 if dropped:
-                    # Audio was thrown away, so the recogniser is mid-utterance on
-                    # a gap it never saw the far side of. Start it clean. Cheap —
-                    # this is the object, not the model.
-                    rec = KaldiRecognizer(self._model, 16000)
+                    # Audio was thrown away, so the recognisers are mid-utterance
+                    # on a gap they never saw the far side of. Start clean: the
+                    # barge grammar is reset in place, and the full recogniser is
+                    # simply discarded — the hot path rebuilds it on the next
+                    # loud chunk. (This used to construct a KaldiRecognizer here
+                    # and immediately overwrite it with None — a wasted build per
+                    # resume, doing nothing.)
                     self._reset_rec(brec)
-                    rec = None                 # audio was dropped; start clean
+                    rec = None
                     dropped = False
                 barged = False
                 # The same two-recogniser split as barge-in, for the same reason:
@@ -741,6 +754,35 @@ def _reap(p) -> None:
         p.stdout.close()
     except Exception:          # noqa: BLE001
         pass
+
+
+# Seconds of a live arecord delivering nothing before the capture is declared
+# wedged. This card streams continuously — a quiet room is still 16 kHz of
+# near-zero samples — so genuine no-data means the device or the pipe has
+# stopped, not that nobody is talking. Comfortably above the 125 ms chunk
+# cadence and any startup lag.
+WEDGE_TIMEOUT = 3.0
+
+
+def _read_chunk(pipe, nbytes: int, timeout: float):
+    """One capture read that cannot hang the loop.
+
+    Returns the data, b"" on EOF or a pipe closed under us (pause() does
+    that), or None when the pipe stayed open but delivered nothing for
+    ``timeout`` — the wedged-but-alive case a bare read() would sit in
+    forever. select() rather than a reader thread: one extra syscall per
+    chunk, no new concurrency.
+    """
+    try:
+        ready, _, _ = select.select([pipe], [], [], timeout)
+    except (ValueError, OSError):          # closed while we were waiting
+        return b""
+    if not ready:
+        return None
+    try:
+        return pipe.read(nbytes)
+    except (ValueError, OSError):          # closed between select and read
+        return b""
 
 
 def _take_channel(data: bytes, channels: int, channel: int) -> bytes:

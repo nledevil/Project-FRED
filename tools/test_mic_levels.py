@@ -136,6 +136,26 @@ def main() -> int:
     check("levels keep flowing while paused, so the meter does not blank",
           len(lis.status()["levels"]) == L.LEVEL_HISTORY)
 
+    print("a capture read cannot hang the loop")
+    # The wedged-but-alive case: arecord running, pipe open, no data — a bare
+    # read() sat there forever and FRED was silently deaf until a restart.
+    # _read_chunk answers None on that timeout so the loop can close and
+    # reopen, exactly the recovery every other capture death already takes.
+    import os
+    r_fd, w_fd = os.pipe()
+    r_pipe = os.fdopen(r_fd, "rb")
+    os.write(w_fd, b"\x01\x02\x03\x04")
+    check("data that is there comes back",
+          L._read_chunk(r_pipe, 4, timeout=0.5) == b"\x01\x02\x03\x04")
+    check("an empty pipe times out to None, not a hang",
+          L._read_chunk(r_pipe, 4, timeout=0.15) is None)
+    os.close(w_fd)
+    check("EOF is b'', the existing reopen path",
+          L._read_chunk(r_pipe, 4, timeout=0.5) == b"")
+    r_pipe.close()
+    check("a closed pipe reads as EOF rather than raising",
+          L._read_chunk(r_pipe, 4, timeout=0.1) == b"")
+
     print("odd-length chunks are survivable")
     before = list(lis.status()["levels"])
     lis._note_level(b"\x01\x02\x03")            # not a whole number of int16s
