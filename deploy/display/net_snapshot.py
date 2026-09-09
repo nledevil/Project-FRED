@@ -41,6 +41,13 @@ def _post(url: str, payload: dict, timeout: float = NET_TIMEOUT) -> dict | None:
     # the environment — the head's panel gets it from its settings instead.
     if url.startswith(LOCAL) and os.environ.get("DISPLAY_TOKEN"):
         headers["X-Display-Token"] = os.environ["DISPLAY_TOKEN"]
+    # The head's servo server has a token of its own, and the one POST this
+    # panel sends it is poweroff — the pack-up sequence. Sending the display
+    # token there would 401, and "a head that quietly 401s is a head left
+    # running in a crate" (post_poweroff below). The env var rides in the same
+    # systemd drop-in as the others.
+    if url.startswith(HEAD) and os.environ.get("SERVO_TOKEN"):
+        headers["X-Servo-Token"] = os.environ["SERVO_TOKEN"]
     req = urllib.request.Request(url, data=json.dumps(payload).encode(),
                                  headers=headers)
     try:

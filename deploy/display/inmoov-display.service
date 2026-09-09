@@ -9,6 +9,10 @@ Type=simple
 # control API on :8081, so the head's admin panel picks the look at runtime.
 # The choice persists in /home/dietpi/display/state.json across reboots.
 # Set a shared secret to match the head's admin panel (leave unset for none):
+# (The live tokens are NOT here: they sit in a root-only drop-in,
+# /etc/systemd/system/inmoov-display.service.d/token.conf — DISPLAY_TOKEN,
+# SENSOR_TOKEN, and SERVO_TOKEN for the pack-up poweroff post to the head.
+# Set 2026-09-09; the NUC's half lives in config/settings.json.)
 #   Environment=DISPLAY_TOKEN=some-long-random-string
 #
 # This also relays the stomach sensor node (a Pico on USB) to the head over the

@@ -350,6 +350,15 @@ class _Handler(server.BaseHTTPRequestHandler):
                 return self._send(400, {"error": str(exc)})
 
         if path == "/api/poweroff":
+            # Refused outright when no token is configured, over and above the
+            # blanket _authed() gate (which passes everything when TOKEN is
+            # empty). Every other route degrades gracefully if a curious client
+            # pokes it; this one turns the machine off, and "the robot's head
+            # shut down mid-demo" is not a failure to discover the auth was
+            # never switched on by.
+            if not TOKEN:
+                return self._send(403, {"error": "poweroff disabled: no "
+                                                 "SERVO_TOKEN configured"})
             # Packing up at an event. Deferred so the reply gets out first — a
             # shutdown that races its own response looks, to whoever tapped, like
             # the button did nothing.

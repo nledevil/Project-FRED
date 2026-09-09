@@ -17,6 +17,10 @@ Environment=LED_PIN=16
 
 # Shared secret. Empty = no auth, which is fine on the robot LAN (10.0.0.0/24 is
 # a private segment behind the NUC), but set it if this ever sees a wider network.
+# The live token is NOT here: it sits in a root-only drop-in,
+# /etc/systemd/system/<unit>.service.d/token.conf, so this repo copy
+# stays secret-free. Set on all three machines 2026-09-09; the NUC's
+# half lives in config/settings.json.
 #Environment=LED_TOKEN=
 
 WorkingDirectory=/home/dietpi/inmoov
