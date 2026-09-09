@@ -1909,6 +1909,28 @@ if __name__ == "__main__":
             print(f"Wide spotter: PanaCast {s['size']} @ {s['detect_hz']} Hz")
         else:
             print(f"Wide spotter: unavailable — {_spotter.last_error}")
+
+            def _spotter_boot_retry():
+                # A camera slow to enumerate at boot used to stay off until
+                # somebody pressed the button: start() was one-shot. Retry with
+                # backoff until the first success, then get out of the way —
+                # once running, the spotter's own reopen loop covers every
+                # later loss, and recover() must not race a second starter.
+                for delay in (5, 10, 20, 30, 30, 30, 60, 60):
+                    if threading.main_thread().is_alive() is False:
+                        return
+                    time.sleep(delay)
+                    if _spotter.is_running():
+                        return
+                    if _spotter.start():
+                        st = _spotter.status()
+                        print(f"Wide spotter: up after retry — PanaCast "
+                              f"{st['size']} @ {st['detect_hz']} Hz")
+                        return
+                print(f"Wide spotter: gave up after retries — {_spotter.last_error}")
+
+            threading.Thread(target=_spotter_boot_retry, name="spotter-retry",
+                             daemon=True).start()
     if _doa_cfg.get("enabled", True):
         # Same reasoning as the spotter above: this produces the bearing that
         # tells the tracker there is somebody to turn toward, so it runs whether

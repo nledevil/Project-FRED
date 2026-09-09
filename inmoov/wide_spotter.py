@@ -64,6 +64,14 @@ from inmoov.face_tracker import CASCADE_PATH
 # resolution this device offers is a 16:9 crop. If we silently got a crop, the
 # bearing scale would be wrong (a face at the edge of a 90-degree crop is not at
 # the edge of the world), so the real aspect is checked and reported.
+# When every grab() has failed for this long, the camera is gone — unplugged,
+# renumbered, or wedged — and the loop moves from "one dropped frame" to
+# reopening the device. Failed grabs return immediately, so this is elapsed
+# time, not frame count.
+LOST_AFTER = 2.0
+# How often to retry the reopen while the camera stays gone.
+REOPEN_DELAY = 2.0
+
 PANORAMA = (3840, 1080)
 _PANORAMA_MIN_ASPECT = 3.0
 
@@ -277,19 +285,23 @@ class WideSpotter:
     def is_running(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
 
-    def start(self) -> bool:
-        if not self.available() or self.is_running():
-            return False
+    def _open(self):
+        """Resolve, open, and verify the camera. Returns a delivering capture,
+        or None with last_error/last_hint saying why. Shared by start() and the
+        reopen path in _run(), because the device can die *after* start too —
+        and when it does, the node may have been renumbered on the way back, so
+        every open re-runs the name resolution from scratch.
+        """
         self.last_hint = None
         node = _resolve_device(self.device)
         if node is None:
             self.last_error = (f"no camera matching {self.device!r} "
                                f"(have: {', '.join(_video_nodes()) or 'none'})")
-            return False
+            return None
         cap = cv2.VideoCapture(node, cv2.CAP_V4L2)
         if not cap.isOpened():
             self.last_error = f"cannot open /dev/video{node}"
-            return False
+            return None
         # MJPG first: the panorama is not offered as raw YUV at this size.
         cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.size[0])
@@ -318,7 +330,7 @@ class WideSpotter:
                 "that fails, unplug the lead and plug it back in. Restarting "
                 "FRED will not help — the camera needs its power cut, and "
                 "nothing in software does that except the port switch.")
-            return False
+            return None
         h, w = frame.shape[:2]
         self._frame_wh = (w, h)
         if w / max(h, 1) < _PANORAMA_MIN_ASPECT:
@@ -326,6 +338,14 @@ class WideSpotter:
             # much narrower arc than 180 degrees, so say so rather than pretend.
             self.last_error = (f"got {w}x{h} (aspect {w/h:.2f}), not the "
                                f"panorama — bearing covers a narrower arc")
+        return cap
+
+    def start(self) -> bool:
+        if not self.available() or self.is_running():
+            return False
+        cap = self._open()
+        if cap is None:
+            return False
         self._cap = cap
         self._stop.clear()
         self._thread = threading.Thread(target=self._run, name="wide-spotter",
@@ -372,17 +392,68 @@ class WideSpotter:
             self._view.notify_all()  # to the next viewer; wake the ones waiting
 
     # ---- the loop ---------------------------------------------------------
+    def _reopen(self) -> bool:
+        """The camera died mid-run: drop it, say so, and try to get it back.
+
+        This exists because the old loop spun on a failed grab() forever — no
+        reopen, no error, status still saying running: true — so an unplugged
+        or renumbered PanaCast (this project's known failure class) read as a
+        healthy spotter that mysteriously saw nobody. The stale bearing is
+        dropped immediately rather than left to age out: readings from a
+        camera that is gone are not merely old, they are unowned.
+
+        One reopen attempt per call; the loop paces the retries. True when the
+        camera is delivering again.
+        """
+        if self._cap is not None:
+            try:
+                self._cap.release()
+            except Exception:               # noqa: BLE001 - it's already gone
+                pass
+            self._cap = None
+        with self._lock:
+            self._bearing, self._faces = None, 0
+        if self.last_error is None:
+            self.last_error = "camera stopped delivering frames — reopening"
+            if self._log:
+                self._log(f"[spotter] {self.last_error}")
+        cap = self._open()                  # re-resolves the node by name too
+        if cap is None:
+            return False
+        if self._stop.is_set():             # stop() ran while we were opening
+            cap.release()
+            return False
+        self._cap = cap
+        self.last_error = None
+        if self._log:
+            self._log("[spotter] camera back — resuming")
+        return True
+
     def _run(self) -> None:
         detect_interval = 1.0 / max(self.detect_hz, 0.1)
         view_interval = 1.0 / max(self.view_hz, 0.1)
         next_detect = 0.0
         next_view = 0.0
+        failing_since = None                # monotonic start of a grab-failure run
         while not self._stop.is_set():
+            if self._cap is None:           # lost earlier; retry on a slow clock
+                if not self._reopen():
+                    self._stop.wait(REOPEN_DELAY)
+                continue
             # Cheap: pulls the frame off the device without decoding it, which
             # is what keeps the buffer from going stale between detections.
             if not self._cap.grab():
-                time.sleep(0.05)
+                now = time.monotonic()
+                if failing_since is None:
+                    failing_since = now
+                if now - failing_since >= LOST_AFTER:
+                    failing_since = None
+                    if not self._reopen():
+                        self._stop.wait(REOPEN_DELAY)
+                else:
+                    time.sleep(0.05)
                 continue
+            failing_since = None
             now = time.monotonic()
             want_detect = now >= next_detect
             with self._view:
