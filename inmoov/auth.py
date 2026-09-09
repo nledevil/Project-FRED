@@ -129,6 +129,37 @@ def is_trusted(addr: str, settings: dict) -> bool:
 
 
 # ---- rate limiting -------------------------------------------------------
+def redact_settings(settings: dict) -> dict:
+    """A copy of settings that is safe to serve off the robot's own LAN.
+
+    Exists because /api/state served the live settings dict whole — including
+    ``auth.pin.{salt,hash,iterations}`` and every device token — to any caller,
+    and /api/state is deliberately an open route. A guest on the access point
+    could fetch it once and sweep all ten thousand PINs offline against the
+    digest, walking straight past the rate limiter this module maintains. That
+    defeated the design stated twice in this file and once at
+    /api/auth/material: the hash is only ever served to the robot's own LAN.
+
+    Dropped: the whole ``auth`` subtree, any key containing ``token`` or
+    ``secret`` at any depth, and any key that *is* ``pin`` (substring matching
+    would eat innocents like "mapping"). Everything else passes through, so
+    the panel keeps its iris colour and the chest keeps its snapshot — both of
+    those callers are LAN-trusted anyway and never see this copy.
+
+    Returns a new structure; the live dict is never mutated.
+    """
+    def scrub(node):
+        if isinstance(node, dict):
+            return {k: scrub(v) for k, v in node.items()
+                    if k not in ("auth", "pin")
+                    and "token" not in k.lower()
+                    and "secret" not in k.lower()}
+        if isinstance(node, list):
+            return [scrub(v) for v in node]
+        return node
+    return scrub(dict(settings or {}))
+
+
 def locked_for(addr: str) -> float:
     """Seconds this address must wait before its next try. 0.0 if it may go."""
     with _lock:

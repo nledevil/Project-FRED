@@ -90,6 +90,12 @@ GATED = [
 ]
 OPEN = [
     "/api/cart/stop",       # never, ever gated
+    # /api/say is open by decorator, gated by hand inside: the phrase deck's
+    # lines pass without a PIN (they were chosen by the operator, and the deck
+    # is a one-tap event flow), free-form text does not — a stranger on the AP
+    # must not put words in a robot's mouth in front of children. The parser
+    # below cannot see a conditional gate, so the condition is asserted
+    # separately in "what leaves the LAN".
     "/api/say", "/api/sound/play", "/api/sound/stop",
     "/api/state", "/api/health", "/api/positions", "/api/mouth", "/api/log",
     "/api/sensors/ingest", "/api/auth/login", "/api/auth/logout",
@@ -207,6 +213,44 @@ def main() -> int:
         check(f"open:  {path}", decorators is not None and "@protected" not in decorators,
               "" if decorators is not None and "@protected" not in decorators
               else ("unexpectedly GATED" if decorators else "route not found"))
+
+    print("what leaves the LAN")
+    # /api/state is open on purpose — but served raw it carried the PIN digest
+    # and the device tokens, which hands an AP guest ten thousand offline
+    # guesses and defeats the rate limiter below. The route now redacts for
+    # untrusted callers; these checks hold both halves of that promise.
+    secretive = {"auth": {"pin": {"salt": "s", "hash": "h", "iterations": 1}},
+                 "display": {"host": "10.0.0.11", "token": "t"},
+                 "servo": {"remote_host": "10.0.0.10", "remote_token": "t"},
+                 "sensors": {"token": "t"},
+                 "sound": {"volume": 60}, "iris_color": "#143a97",
+                 "voice": {"mic_channels": 6}}
+    red = auth.redact_settings(secretive)
+    check("the auth subtree never leaves", "auth" not in red)
+    check("no key containing 'token' leaves",
+          not any("token" in k for sub in red.values()
+                  if isinstance(sub, dict) for k in sub))
+    check("the harmless keys still travel",
+          red.get("iris_color") == "#143a97"
+          and red.get("sound", {}).get("volume") == 60
+          and red.get("voice", {}).get("mic_channels") == 6, str(red))
+    check("the live dict is not mutated", "auth" in secretive)
+    check("redaction survives an empty or missing dict",
+          auth.redact_settings({}) == {} and auth.redact_settings(None) == {})
+
+    src = (ROOT / "web" / "app.py").read_text()
+    state_route = src[src.index('@app.get("/api/state")'):]
+    state_route = state_route[:state_route.index("\n@app.")]
+    check("/api/state's handler actually calls the redaction",
+          "redact_settings" in state_route and "is_trusted" in state_route)
+
+    say_route = src[src.index('@app.post("/api/say")'):]
+    say_route = say_route[:say_route.index("\n@app.")]
+    check("/api/say demands the PIN for text not on the deck",
+          "_authed()" in say_route and "phrases_mod.load()" in say_route
+          and "401" in say_route)
+    check("...and answers 401, so the keypad rises instead of a dead button",
+          '), 401' in say_route)
 
     # The one that matters most, said twice on purpose.
     check("STOP is reachable without a PIN, always",

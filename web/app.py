@@ -1472,17 +1472,35 @@ def api_command():
 
 @app.post("/api/say")
 def api_say():
-    """Speak arbitrary text aloud with lip-sync (no brain) — for testing audio."""
+    """Speak text aloud with lip-sync (no brain) — the deck, and the test box.
+
+    Deliberately not @protected, but not open either: free-form text needs the
+    PIN, and only lines already on the phrase deck pass without one. The
+    threat is specific — a stranger on the access point putting words in a
+    robot's mouth in front of children, tagged in the transcript as FRED — and
+    it was the one attractive thing the open route offered that volume and the
+    display, both gated on weaker rationale, did not. The deck stays open
+    because its lines were chosen by the operator, and gating the deck would
+    break the one-tap event flow it exists for. test_auth.py lists this route
+    as OPEN because the decorator test cannot see a conditional gate; the
+    condition is asserted separately there instead.
+    """
     if (blocked := _blocked_by_handoff()):
         return blocked
-    text = (request.get_json(force=True) or {}).get("text", "")
-    if not str(text).strip():
+    text = str((request.get_json(force=True) or {}).get("text", "")).strip()
+    if not text:
         return jsonify({"error": "text required"}), 400
+    if not _authed():
+        deck = {line.strip() for tab in phrases_mod.load().values() for line in tab}
+        if text not in deck:
+            # 401, not 403: pin.js raises the keypad on 401 and retries, so the
+            # operator's typed test line still works — one keypad, then speech.
+            return jsonify({"error": "PIN required for free-form speech"}), 401
     ok = _assistant.speak(str(text))
     if ok:
         # It came out of his speaker; the transcript should say so. "say" is
         # the tag for lines that bypassed the brain — the deck, the test box.
-        _log.fred(str(text).strip(), source="say")
+        _log.fred(text, source="say")
     return jsonify({"spoke": ok})
 
 
@@ -1530,7 +1548,18 @@ def api_mouth():
 
 @app.get("/api/state")
 def api_state():
-    return jsonify(_state())
+    """The whole robot, one poll. Open — the panels and the chest live on it.
+
+    Open does not mean the *settings* travel whole: served raw they carry the
+    PIN digest and the device tokens, which hands an AP guest ten thousand
+    offline guesses and defeats /api/auth/material's whole design. The robot's
+    own machines still get the full dict — the chest's snapshot page reads it —
+    and everyone else gets the redacted copy. See auth.redact_settings.
+    """
+    d = _state()
+    if not auth.is_trusted(request.remote_addr or "", _settings):
+        d["settings"] = auth.redact_settings(d["settings"])
+    return jsonify(d)
 
 
 def _vcgencmd(*args) -> str:
