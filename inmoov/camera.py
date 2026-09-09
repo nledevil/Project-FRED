@@ -79,12 +79,14 @@ class _FrameBroker:
     def __init__(self):
         self.frame: bytes | None = None
         self.seq = 0
+        self.at = 0.0                       # monotonic, when frame arrived
         self.cond = threading.Condition()
 
     def publish(self, buf) -> None:
         with self.cond:
             self.frame = bytes(buf)
             self.seq += 1
+            self.at = time.monotonic()
             self.cond.notify_all()
 
 
@@ -653,11 +655,27 @@ class Camera:
                         self._stop_locked()               # nobody left (no viewers, no holds)
 
     def snapshot(self, timeout: float = 5.0) -> bytes | None:
-        """Grab a single JPEG frame (starts/stops the camera if idle).
+        """Grab a single *fresh* JPEG frame (starts/stops the camera if idle).
 
-        The threaded backends need a moment to connect and deliver their first
-        frame, so unlike the picamera2 path this waits rather than assuming a
-        frame is already there.
+        Waits for a frame published after this call, never for merely "a frame".
+        That distinction is the whole method: the broker deliberately outlives
+        the source, so between snapshots — when nothing is streaming and nothing
+        holds the camera — the last frame stays sitting in it. This used to take
+        that frame, and so returned a picture from whenever the camera last
+        genuinely ran.
+
+        It failed silently and convincingly. FRED described the person who had
+        been standing there earlier, in detail, to somebody else entirely: the
+        image was real, sharp and completely current-looking, and the only thing
+        wrong with it was when it was taken. The live MJPEG stream never had
+        this bug because it waits on the condition for new frames; only this
+        path took what was lying around, and this is the path the vision tool
+        uses.
+
+        None when no new frame arrives in ``timeout`` — which the caller turns
+        into "I can't see", and that is the right answer. Describing a stale
+        frame is worse than admitting to a blind spot, because nobody can tell
+        it happened.
         """
         if not self.available():
             return None
@@ -666,9 +684,10 @@ class Camera:
             broker = self._broker
             deadline = time.monotonic() + timeout
             with broker.cond:
-                if broker.frame is None:
-                    broker.cond.wait_for(lambda: broker.frame is not None,
-                                         timeout=max(0.0, deadline - time.monotonic()))
-                return broker.frame
+                seen = broker.seq
+                broker.cond.wait_for(
+                    lambda: broker.seq != seen,
+                    timeout=max(0.0, deadline - time.monotonic()))
+                return broker.frame if broker.seq != seen else None
         finally:
             self.release()

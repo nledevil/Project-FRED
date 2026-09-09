@@ -693,6 +693,17 @@ class Brain:
             self._history = []
             self.faces.forget_all()
         self._history_at = now
+        # A new question is a new look. The frame cache below exists to stop the
+        # model spending money taking the same picture twice inside one answer,
+        # and that is all it should ever do: across turns, the person in front
+        # of him may not be the person who was there last time. A child asked
+        # him what he could see and was described her father, because he still
+        # had a picture of her father and it was less than the window old.
+        #
+        # The window stays for repeat looks *within* a turn; it can no longer
+        # reach across one.
+        self._last_frame.clear()
+        self._last_look.clear()
         # Somebody is talking to him, so somebody is standing in front of him:
         # the one moment worth spending frames on. (FaceId expires faces on its
         # own clock as well — the promise has to hold even if nobody ever speaks
