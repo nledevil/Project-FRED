@@ -755,7 +755,14 @@ _PATTERNS = [
     (re.compile(r"\b(how loud are you|what('?s| is) your volume|volume level)\b", re.I),
      "set_volume", {}),
     (re.compile(r"\bterminator\b", re.I), "set_led", "toggle"),
-    (re.compile(r"\b(red )?(led|light)\b", re.I), "set_led", "toggle"),
+    # The LED wants a verb or an explicit on/off, not the bare noun. The old
+    # rule fired on any sentence containing "light" — measured: "is it light
+    # outside?" switched the LED on, which is the same failure class as "move
+    # your head right" driving the cart. Child-facing chatter is full of the
+    # word; a command about the LED always carries a verb.
+    (re.compile(r"\b(turn|switch|shut|put|flip|enable|disable)\b"
+                r".*\b(red )?(led|light)s?\b", re.I), "set_led", "toggle"),
+    (re.compile(r"\b(red )?(led|light)s?\s+(on|off)\b", re.I), "set_led", "toggle"),
     (re.compile(r"\btrack(ing)?\b.*\b(face|me|my face)\b", re.I), "set_tracking", "toggle"),
     (re.compile(r"\bwatch (me|my face)\b", re.I), "set_tracking", {"on": True}),
     # Gestures first: "nod" is a thing to do, not a direction to hold.
@@ -819,7 +826,17 @@ _PATTERNS = [
     (re.compile(r"\b(what('?s| is)?\s+(the\s+|today'?s\s+)?date|what day (is it|is today)|what'?s today)\b", re.I), "say_date", {}),
     (_TEMP_RX, "say_temp", {}),
     (re.compile(r"\b((what('?s| is)?\s+)?(your |the )?)?i\.?p\.?(\s+address)?\b", re.I), "say_ip", {}),
-    (re.compile(r"\b(reset|rest|home|neutral|straighten up)\b", re.I), "reset", {}),
+    # Anchored to a short bare imperative, the same shape as the cart's "stop"
+    # rule above, because the old word-anywhere version moved every servo on
+    # "i need a rest" and "take me home" — measured, and exactly the sentences
+    # a tired visitor says near a robot. Longer sentences fall through to the
+    # model, whose reset_pose tool covers the phrasings this misses.
+    (re.compile(r"^\s*(please )?(fred[,!]? )?"
+                r"(reset( (yourself|your (pose|position|servos)))?"
+                r"|go (to ((your|the) )?)?(rest|home|neutral)( position)?"
+                r"|(rest|home|neutral)( position)?"
+                r"|straighten up)"
+                r"\s*[.!]?\s*$", re.I), "reset", {}),
     (re.compile(r"\brelax\b", re.I), "relax", {}),
 ]
 

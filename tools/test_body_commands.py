@@ -147,6 +147,40 @@ def main() -> int:
         check(f"{text!r:34} -> {want}",
               got is not None and got[0] == want, str(got))
 
+    print("chatter about light and rest does not throw switches or servos")
+    # The same failure class as the head/cart collision above, found by the
+    # architecture review: the LED rule fired on any sentence containing
+    # "light" — "is it light outside?" switched the LED on — and the reset
+    # rule fired on "rest"/"home" anywhere, so "i need a rest" and "take me
+    # home" moved every servo. A command carries a verb, or is a short bare
+    # imperative; conversation is neither.
+    for text, action in [("is it light outside", "set_led"),
+                         ("the light is pretty in here", "set_led"),
+                         ("do you like the northern lights", "set_led"),
+                         ("i need a rest", "reset"),
+                         ("take me home", "reset"),
+                         ("tell me about your home town", "reset"),
+                         ("is this your neutral expression", "reset")]:
+        got = C.match_local(text)
+        check(f"{text[:40]:42} is not {action}",
+              got is None or got[0] != action, str(got))
+
+    print("...while real commands for both still land")
+    for text, want in [("can you turn on the light", ("set_led", True)),
+                       ("turn the light off", ("set_led", False)),
+                       ("switch the red led on", ("set_led", True)),
+                       ("lights on", ("set_led", True)),
+                       ("terminator mode on", ("set_led", True))]:
+        got = C.match_local(text)
+        check(f"{text!r:30} -> led {'on' if want[1] else 'off'}",
+              got is not None and got[0] == want[0]
+              and got[1].get("on") == want[1], str(got))
+    for text in ("reset", "reset your pose", "please reset yourself",
+                 "go to rest position", "go home", "neutral", "straighten up"):
+        got = C.match_local(text)
+        check(f"{text!r:24} -> reset",
+              got is not None and got[0] == "reset", str(got))
+
     print("several things in a row go to the model, not to one pattern")
     # One pattern is one action, so answering these locally means doing the
     # first step and stopping — which is what it looked like from in front.
