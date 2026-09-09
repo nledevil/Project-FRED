@@ -26,8 +26,23 @@ times a second, and it must heal by itself when the Pi comes back.
 from __future__ import annotations
 
 import threading
+import time
 
 import requests
+
+
+# How long a TCP connect may take before the head is declared unreachable.
+# Separate from the read timeout because the failure modes differ: a head that
+# is *off* answers nothing at all, and a full 1.5 s of that per call collapses
+# the tracker's 15 Hz loop to under 1 Hz — measured as the whole motion path
+# feeling wedged whenever the head Pi was unplugged. A quarter second is still
+# ~100x a healthy connect on this wire (2.4 ms RTT).
+CONNECT_TIMEOUT = 0.25
+# Once offline, don't re-attempt the network for this long: serve the local
+# clamp immediately and probe again after the holdoff. Without it every one of
+# the tracker's calls paid the connect timeout for as long as the head was
+# down; with it the loop pays once per holdoff and stays at speed.
+OFFLINE_HOLDOFF = 2.0
 
 
 class RemoteServoError(Exception):
@@ -45,8 +60,9 @@ class RemoteServoController:
     token : str
         Shared secret, sent as ``X-Servo-Token``. Empty = no auth.
     timeout : float
-        Per-request timeout. Deliberately short — a stalled servo write must not
-        wedge the tracker loop.
+        Per-request *read* timeout. Deliberately short — a stalled servo write
+        must not wedge the tracker loop. The connect half is CONNECT_TIMEOUT,
+        shorter still, because a powered-off head answers nothing at all.
     config : dict, optional
         Local ``servos.json``. Used for local clamping while offline; when the
         server is reachable its config wins, since it owns the hardware.
@@ -61,12 +77,12 @@ class RemoteServoController:
         self._session = requests.Session()
         self._lock = threading.Lock()
         self._current: dict[str, float] = {}
-        self._suspended = False
         # Audit (dry run): clamp and record every command, but send none of them
         # to the head. See set_audit().
         self._audit = False
         self.online = False
         self.last_error: str | None = None
+        self._offline_until = 0.0        # monotonic; while now < this, don't probe
         self.locked: set[str] = set()
         # Mirrors ServoController.mock: True means commands reach a controller
         # that isn't driving real hardware. Refreshed from the server's state.
@@ -88,10 +104,18 @@ class RemoteServoController:
 
     def _request(self, method: str, path: str, payload: dict | None = None) -> dict:
         """One call to the head. Raises RemoteServoError; callers on the hot path
-        catch it and degrade rather than propagate."""
+        catch it and degrade rather than propagate.
+
+        While the link is inside its offline holdoff, this raises immediately
+        without touching the network — the caller's local-clamp fallback is the
+        answer, at full speed. See OFFLINE_HOLDOFF.
+        """
+        if not self.online and time.monotonic() < self._offline_until:
+            raise RemoteServoError(f"servo server offline ({self.last_error})")
         try:
             r = self._session.request(method, self._url(path), json=payload,
-                                      headers=self._headers(), timeout=self.timeout)
+                                      headers=self._headers(),
+                                      timeout=(CONNECT_TIMEOUT, self.timeout))
         except requests.RequestException as e:
             self._go_offline(f"cannot reach servo server at {self.host}:{self.port} ({e})")
             raise RemoteServoError(f"servo server unreachable: {e}") from e
@@ -113,6 +137,7 @@ class RemoteServoController:
             print(f"[RemoteServo] offline — {msg}")
         self.online = False
         self.last_error = msg
+        self._offline_until = time.monotonic() + OFFLINE_HOLDOFF
 
     def _go_online(self) -> None:
         if not self.online:
@@ -154,7 +179,6 @@ class RemoteServoController:
                     self._current[name] = float(s["current"])
         self.locked = set(state.get("locked") or [])
         self.mock = bool(state.get("mock", True))
-        self._suspended = bool(state.get("suspended", False))
 
     # ---- local fallbacks --------------------------------------------------
     def _require(self, name: str) -> dict:
@@ -175,7 +199,7 @@ class RemoteServoController:
             local = self._clamp(s, angle)
         else:
             local = max(0.0, min(s.get("actuation_range", 180), angle))
-        if self._suspended or name in self.locked:
+        if name in self.locked:
             return local
         if self._audit:
             with self._lock:
@@ -205,7 +229,7 @@ class RemoteServoController:
         self._refresh_if_stale()
         wanted = {n: float(a) for n, a in angles.items()
                   if n in self.servos and n not in self.locked}
-        if not wanted or self._suspended:
+        if not wanted:
             return {}
         if self._audit:
             applied = {n: self._clamp(self.servos[n], a) for n, a in wanted.items()}
@@ -325,32 +349,6 @@ class RemoteServoController:
         self._audit = on
         print(f"[RemoteServo] audit mode {'ON — motion suppressed' if on else 'OFF'}.")
 
-    # ---- hardware handoff -------------------------------------------------
-    def is_suspended(self) -> bool:
-        return self._suspended
-
-    def suspend(self) -> None:
-        """Release the head's I2C bus to another owner (MyRobotLab). Idempotent."""
-        if self._suspended:
-            return
-        try:
-            self._request("POST", "/api/suspend")
-        except RemoteServoError:
-            pass
-        self._suspended = True          # local intent holds even if the head is down,
-                                        # so we don't keep writing to a released bus
-
-    def resume(self) -> None:
-        """Take the head's servos back. Idempotent."""
-        if not self._suspended:
-            return
-        try:
-            self._request("POST", "/api/resume")
-        except RemoteServoError:
-            return                      # stay suspended: we could not confirm the retake
-        self._suspended = False
-        self._refresh()
-
     def refresh_state(self) -> None:
         """Re-read the head's state if our copy could be wrong — for callers that
         *report* state rather than command it (/api/state, the admin panel).
@@ -371,8 +369,7 @@ class RemoteServoController:
     def status(self) -> dict:
         """Link health, for the admin panel."""
         return {"host": self.host, "port": self.port, "online": self.online,
-                "mock": self.mock, "suspended": self._suspended,
-                "audit": self._audit,
+                "mock": self.mock, "audit": self._audit,
                 "locked": sorted(self.locked), "error": self.last_error}
 
     # context-manager sugar: relax everything on exit
