@@ -137,9 +137,17 @@ def state(brain=None, hotspot=None) -> dict:
             st = brain.status()
         except Exception:                       # noqa: BLE001 — identity, not health
             st = {}
+        # The model that is actually answering right now, not always the local
+        # one: this read local_model unconditionally, so the IDENTITY page
+        # called qwen "the model" even while Claude was doing the talking —
+        # misleading during exactly the "what is this robot running" check the
+        # page exists for.
+        active = st.get("active", "")
+        model = (st.get("claude_model") if active == "claude"
+                 else st.get("local_model")) or st.get("model", "")
         out["brain"] = {"backend": st.get("backend", ""),
-                        "active": st.get("active", ""),
-                        "model": st.get("local_model") or st.get("model", "")}
+                        "active": active,
+                        "model": model}
     if hotspot is not None:
         out["hotspot"] = hotspot
     return out

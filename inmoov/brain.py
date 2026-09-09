@@ -64,7 +64,11 @@ LOOK_MIN_SECS = 12.0
 
 # Only some models accept output_config={"effort": ...}; Haiku 4.5 rejects it
 # with a 400, so we send it only where it's supported.
-_EFFORT_MODELS = ("claude-opus-4", "claude-sonnet-5", "claude-fable-5")
+# Model families whose requests carry output_config.effort. claude-opus-5 was
+# missing from this tuple while opus-4 was in it — so a swap to the newer Opus
+# would have silently stopped sending effort, with nothing failing anywhere.
+_EFFORT_MODELS = ("claude-opus-4", "claude-opus-5", "claude-sonnet-5",
+                  "claude-fable-5")
 
 # A sentence ends at .!?… possibly followed by a closing quote/bracket, then
 # whitespace. Requiring the trailing whitespace keeps "3.5" and "8 p.m." intact.
@@ -663,9 +667,22 @@ class Brain:
     def warm_local(self) -> None:
         """Pre-load the local model and the prompt prefix it will reuse (see
         LocalClient.warm). Safe on any thread — this is the one place that knows
-        both halves of that prefix, so it hands them over."""
+        both halves of that prefix, so it hands them over.
+
+        The prefix is composed exactly as a live local turn composes it —
+        _system_for/_tools_for, not the bare constants. Warming with bare
+        SYSTEM violated warm()'s own contract ("pass the *same* system prompt")
+        and left the ~28 s prefix read to land on whoever asked the first real
+        question, which is precisely the bill warming exists to pay early.
+
+        One residual: _system_for's faces clause follows _face_recall_on(),
+        which can flip when face recall is toggled or the camera goes away —
+        and each flip changes the prefix, costing the local model one reread.
+        That is the honest price of the prompt actually changing; what this
+        fixes is paying it when nothing changed at all.
+        """
         if self.backend in ("auto", "local"):
-            self._local.warm(SYSTEM, commands.CLAUDE_TOOLS)
+            self._local.warm(self._system_for("local"), self._tools_for("local"))
 
     # ---- conversation memory ---------------------------------------------
     def clear_history(self) -> None:
