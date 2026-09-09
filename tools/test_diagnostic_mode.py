@@ -143,6 +143,38 @@ def main() -> int:
     check("...and a check refuses again",
           refused(m.run_check, "disk") is not None)
 
+    print("the web and the shell are never offered in the same turn")
+    # Search results are text written by strangers; a tool loop that can also
+    # run arbitrary commands must not read them. The word list in run_shell is
+    # explicitly not a security control, so the guarantee lives here: while
+    # unrestricted is armed, the brain withdraws the web tool and the prompt
+    # stops advertising it.
+    import types as _types
+    from inmoov.brain import Brain
+    diag = D.DiagnosticMode()
+    ctx = _types.SimpleNamespace(controller=None, led=None, tracker=None,
+                                 sound=None, sensors=None, event=None,
+                                 camera=None, diagnostic=diag)
+    b = Brain(ctx, web_search=True)
+    def has_web(tools):
+        return any(t.get("type", "").startswith("web_search") for t in tools)
+    check("web tool offered while the shell is safe",
+          has_web(b._tools_for("claude")))
+    diag.set(True, unrestricted=True)
+    check("...withdrawn the moment unrestricted arms",
+          not has_web(b._tools_for("claude")))
+    check("...and the prompt stops advertising the web too",
+          "look things up" not in b._system_for("claude"))
+    check("...while run_shell itself stays offered",
+          any(t.get("name") == "run_shell" for t in b._tools_for("claude")))
+    diag.set(False)
+    check("disarming brings the web back", has_web(b._tools_for("claude")))
+    check("a build with no diagnostic mode is unaffected",
+          has_web(Brain(_types.SimpleNamespace(
+              controller=None, led=None, tracker=None, sound=None,
+              sensors=None, event=None, camera=None),
+              web_search=True)._tools_for("claude")))
+
     print("everything that happened is written down")
     m = D.DiagnosticMode()
     m.set(True)

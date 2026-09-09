@@ -610,9 +610,18 @@ class Brain:
         fact it guards is plain text, so the local model can use it too.
         """
         faces = SYSTEM_FACES if self._face_recall_on() else ""
-        if which == "claude" and self.web_search:
+        if which == "claude" and self.web_search and not self._shell_armed():
             return SYSTEM + faces + SYSTEM_WEB + _web_place(self._web_location)
         return SYSTEM + faces + SYSTEM_NO_WEB
+
+    def _shell_armed(self) -> bool:
+        """Is the diagnostic shell live right now?
+
+        Asked per turn because the panel arms and disarms it mid-conversation.
+        While it is armed, the web tool is withdrawn — see _tools_for.
+        """
+        diag = getattr(self.ctx, "diagnostic", None)
+        return bool(diag is not None and diag.unrestricted)
 
     def _tools_for(self, which: str) -> list:
         """The tool list that backend may actually use.
@@ -620,8 +629,19 @@ class Brain:
         The web tool is Claude's alone — it is executed by Anthropic, so handing
         it to the local model would advertise a capability nothing on this robot
         can carry out. See commands.web_search_tool.
+
+        It is also withdrawn — along with its system-prompt half, above — while
+        the unrestricted diagnostic shell is armed. Search results are text
+        written by strangers, and handing them to a tool loop that can run
+        arbitrary commands is the one injection path the panel gate does not
+        already bound: everything else in diagnostic mode is reachable only by
+        somebody the operator can see. diagnostic.py's own word list is
+        explicitly not a security control, so the fix is to never have the two
+        capabilities in one turn — the same shape as unrestricted refusing to
+        arm during event mode. The panels' brain/diagnostic status pages both
+        keep working; only the model's tool list changes.
         """
-        if which != "claude" or not self.web_search:
+        if which != "claude" or not self.web_search or self._shell_armed():
             return commands.CLAUDE_TOOLS
         return commands.CLAUDE_TOOLS + [commands.web_search_tool(self._web_location)]
 
