@@ -103,9 +103,9 @@ def main() -> int:                                    # noqa: PLR0915
     check("...and the view shows the finger, not the stale robot",
           p.view(net_snap)["rows"][0]["angle"] == 45.0)
     blocked = ServosPage().view({"nuc": {"servos": servos,
-                                         "handoff": {"released": True}}})
-    check("a handoff blocks the sliders and says why",
-          blocked["blocked"] == "HANDED OFF TO MYROBOTLAB")
+                                         "audit": {"servo_audit": True}}})
+    check("audit mode blocks the sliders and says why",
+          blocked["blocked"] == "AUDIT MODE - NOTHING WILL MOVE")
 
     print("cart: the stop's arm-then-confirm")
     c = CartPage()

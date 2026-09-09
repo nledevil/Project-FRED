@@ -273,10 +273,6 @@ class Sound:
         # and let is_playing() answer from the clock.
         self._virtual_end: float | None = None
         self._lock = threading.Lock()
-        # Suspended = the audio card has been handed off to another owner (e.g.
-        # MyRobotLab). While suspended, playback is a no-op. (The mic/arecord is
-        # held by the Listener, which is stopped separately during a handoff.)
-        self._suspended = False
         self._proc: subprocess.Popen | None = None
         # Monotonic time at which the current clip's first sample is expected to
         # be audible. The jaw animation schedules itself against this, not
@@ -371,7 +367,7 @@ class Sound:
 
     def settings(self) -> dict:
         return {"device": self.device, "enabled": self.enabled,
-                "suspended": self._suspended, "audit": self._audit,
+                "audit": self._audit,
                 "lead_in": self.lead_in, "sync_offset": self.sync_offset,
                 "playing": self.is_playing(), "can_speak": self.can_speak(),
                 "tts": self.tts_engine(), "sounds": self.list(),
@@ -537,20 +533,6 @@ class Sound:
         with self._vol_lock:
             self._vol_at = 0.0
         return True
-
-    # ---- hardware handoff -------------------------------------------------
-    def is_suspended(self) -> bool:
-        return self._suspended
-
-    def suspend(self) -> None:
-        """Release the audio card: stop any current playback and refuse new
-        playback until resume(). Idempotent."""
-        self._suspended = True
-        self.stop()
-
-    def resume(self) -> None:
-        """Take the audio card back; playback works again. Idempotent."""
-        self._suspended = False
 
     # ---- text-to-speech backends -----------------------------------------
     @staticmethod
@@ -726,9 +708,8 @@ class Sound:
         startup, which delays the caller's lip-sync by that much when there's no
         lead-in to hide it — hence the shorter probe on continuation clips.
         """
-        if not self.available() or not self.enabled or self._suspended:
-            why = ("no aplay" if not self._ok
-                   else "handed off" if self._suspended else "muted")
+        if not self.available() or not self.enabled:
+            why = "no aplay" if not self._ok else "muted"
             print(f"[Sound] (silent) would play {path} [{why}]")
             return False
         path = Path(path)

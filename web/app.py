@@ -77,13 +77,9 @@ _UPLOAD_EXTS = {".wav", ".mp3", ".m4a", ".mp4", ".aac", ".ogg", ".oga",
 
 _config = load_config()
 _settings = load_settings()                  # admin-editable UI/camera preferences
-# Hardware handoff: when released, another process (MyRobotLab) owns the shared
-# I2C/audio/camera. If we boot into that state, don't grab the servos (skip the
-# rest sweep); the objects are suspended just after construction, below.
-_boot_released = bool(_settings.get("hardware", {}).get("released", False))
-# Audit (dry run) mode, persisted like the handoff. Read here — before the servo
-# controller is built — because booting into an audit must skip the rest sweep
-# too: the whole promise is that nothing moves.
+# Audit (dry run) mode, persisted. Read here — before the servo controller is
+# built — because booting into an audit must skip the rest sweep: the whole
+# promise is that nothing moves.
 _boot_audit = bool(_settings.get("audit", {}).get("enabled", False))
 _servo_cfg = _settings.get("servo", {})
 _servo_host = str(_servo_cfg.get("remote_host", "") or "").strip()
@@ -94,11 +90,11 @@ if _servo_host:
                                   port=int(_servo_cfg.get("remote_port", 8082)),
                                   token=str(_servo_cfg.get("remote_token", "") or ""),
                                   config=_config)
-    if not _boot_released and not _boot_audit:
+    if not _boot_audit:
         _ctrl.rest()                 # the local controller does this in its ctor
 else:
     _ctrl = ServoController(config=_config,  # auto mock when /dev/i2c-1 absent
-                            move_to_rest=not _boot_released and not _boot_audit)
+                            move_to_rest=not _boot_audit)
 _led_cfg = _settings.get("led", {})
 _led_indicator = bool(_led_cfg.get("camera_indicator", True))
 _led_host = str(_led_cfg.get("remote_host", "") or "").strip()
@@ -221,8 +217,7 @@ _assistant = Assistant(_ctrl, _status_led, _tracker, _sound,  # voice: wake word
 _greet_cfg = _settings.get("greet", {})
 _greeter = Greeter(_assistant, log=_log,
                    enabled=bool(_greet_cfg.get("enabled", True)),
-                   cooldown=float(_greet_cfg.get("cooldown", 90.0)),
-                   blocked=lambda: _handoff_released)
+                   cooldown=float(_greet_cfg.get("cooldown", 90.0)))
 def _on_sensor_event(node, event):
     """Fan the sensor node's events out to everything that cares.
 
@@ -243,7 +238,7 @@ _serial_sensors = SerialSensorReader(
     _sensors, port=_sensor_cfg.get("serial_port", "/dev/ttyACM0"),
     baud=int(_sensor_cfg.get("serial_baud", 115200)), log=_log)
 # The chest display Pi (a second Pi on the 7" DSI panel) — no host set = feature
-# off. Nothing here touches the head's hardware, so it ignores the handoff.
+# off.
 _display_cfg = _settings.get("display", {})
 _display = DisplayClient(host=str(_display_cfg.get("host", "") or ""),
                          port=int(_display_cfg.get("port", 8081)),
@@ -299,50 +294,7 @@ _assistant.ctx.display = _display
 _cart.speed_ceiling = lambda: _event.cart_speed
 _lock = threading.Lock()                     # serialize hardware access
 
-# Whether the shared hardware is currently released to another owner (MyRobotLab).
-# Seeded from persisted settings; the objects are actually suspended just below.
-_handoff_released = _boot_released
-
-
-def _apply_handoff(release: bool) -> None:
-    """Release the shared hardware (I2C servos, audio card, camera) to another
-    owner — MyRobotLab — or take it back. Only ONE stack may drive the hardware at
-    a time. Idempotent; safe to call at boot (nothing is running yet)."""
-    global _handoff_released
-    if release:
-        _assistant.stop()          # stop the wake-word listener → frees the mic (arecord)
-        _tracker.stop()            # stop face tracking → drops its camera hold
-        _spotter.stop()            # release the PanaCast — it is shared hardware too
-        # The DOA reader touches a vendor USB interface, not ALSA, so it does not
-        # actually contend with anything MyRobotLab wants. It stops anyway: a
-        # handoff means this stack is not driving the head, and a bearing nobody
-        # acts on is a USB poll for nothing.
-        _mic_doa.stop()
-        _camera.suspend()          # force-stop the sensor, report unavailable
-        _sound.suspend()           # stop playback, block new
-        _ctrl.suspend()            # relax servos + release the I2C/PCA9685 bus
-        _status_led.off()          # drop the status LED so nothing stays lit
-    else:
-        _ctrl.resume()             # re-open I2C, re-apply ranges, return to rest
-        _sound.resume()
-        _camera.resume()           # sensor restarts lazily on the next viewer
-        if _spot_cfg.get("enabled", True):
-            _spotter.start()       # retake the PanaCast; no-op if already running
-        if _doa_cfg.get("enabled", True):
-            _mic_doa.start()       # no-op if already running
-        # The voice listener and face tracker are left OFF — re-arm them from
-        # their own toggles, as after any boot.
-    _handoff_released = release
-
-
-def _handoff_state() -> dict:
-    return {"released": _handoff_released,
-            "servo_suspended": _ctrl.is_suspended(),
-            "sound_suspended": _sound.is_suspended(),
-            "camera_suspended": _camera.is_suspended()}
-
-
-# Audit (dry run) mode. Unlike the handoff, this blocks NOTHING at the API layer:
+# Audit (dry run) mode. This blocks NOTHING at the API layer:
 # every control still works and still reports what it would have done. The
 # suppression happens one level down, inside the controller/sound/cart objects,
 # which is what lets the panel stay fully interactive while the robot sits still.
@@ -374,8 +326,7 @@ def _apply_audit(on: bool) -> None:
         _sound.set_audit(False)
         _cart.set_audit(False)
         _ctrl.set_audit(False)
-        if not _handoff_released:
-            _ctrl.rest()           # re-sync hardware and readout to a known pose
+        _ctrl.rest()               # re-sync hardware and readout to a known pose
     _audit_mode = on
 
 
@@ -406,8 +357,8 @@ def _authed() -> bool:
 def _needs_pin():
     """A 401 when this request has not unlocked, else None.
 
-    Same shape as _blocked_by_handoff: guards read as one line at the top of the
-    handler, and the reason comes back as JSON the panel can act on.
+    A guard that reads as one line at the top of the handler, with the reason
+    coming back as JSON the panel can act on.
     """
     if _authed():
         return None
@@ -424,15 +375,6 @@ def protected(fn):
         return fn(*a, **kw)
     return wrapper
 
-
-def _blocked_by_handoff():
-    """A 409 response when the hardware is released to MyRobotLab, else None. Used
-    to reject endpoints that would otherwise grab the shared hardware back."""
-    if _handoff_released:
-        return jsonify({"error": "hardware is released to MyRobotLab — turn the "
-                                 "handoff off in the admin panel first",
-                        "handoff": _handoff_state()}), 409
-    return None
 
 
 def _state() -> dict:
@@ -460,7 +402,7 @@ def _state() -> dict:
             "spotter": _spotter.status(), "mic_doa": _mic_doa.status(),
             "diagnostic": _diagnostic.status(),
             "voice": _assistant.status(), "servos": servos, "settings": _settings,
-            "handoff": _handoff_state(), "audit": _audit_state(),
+            "audit": _audit_state(),
             "brain": _assistant.brain.status(),
             "event": _event.status(),
             "sensors": _sensors.state(), "greet": _greeter.state()}
@@ -651,9 +593,7 @@ def api_set_settings():
             _assistant.listener.gain = gain                   # live, no restart needed
         if "enabled" in voice:
             cur["enabled"] = bool(voice["enabled"])
-            # Persist the preference, but don't grab the mic back while the
-            # hardware is handed off to MyRobotLab — it takes effect on resume.
-            if cur["enabled"] and _assistant.available() and not _handoff_released:
+            if cur["enabled"] and _assistant.available():
                 _assistant.start()
             elif not cur["enabled"]:
                 _assistant.stop()
@@ -753,29 +693,6 @@ def api_set_settings():
 
     save_settings(_settings)
     return jsonify(_settings)
-
-
-@app.get("/api/handoff")
-def api_handoff_status():
-    return jsonify(_handoff_state())
-
-
-@app.post("/api/handoff")
-@protected
-def api_handoff():
-    """Release the shared hardware to MyRobotLab, or take it back.
-
-    Body: ``{"release": true|false}``. When released, the InMoov app drops the
-    I2C/PCA9685 servos, the USB audio card, and the Pi camera so MRL (port 8888)
-    can drive them; when taken back, the servos return to rest and audio/camera
-    work again. The choice persists so an event set-up survives a reboot."""
-    data = request.get_json(force=True) or {}
-    if "release" in data:
-        with _lock:
-            _apply_handoff(bool(data["release"]))
-        _settings.setdefault("hardware", {})["released"] = _handoff_released
-        save_settings(_settings)
-    return jsonify(_handoff_state())
 
 
 @app.get("/api/brain")
@@ -1314,8 +1231,6 @@ def api_track():
     invert_x/_y/_neck/_tilt, deadzone, neck_gain, tilt_gain, sat_margin,
     eye_recenter, fps, seek_gain) are applied whether or not ``on`` is present,
     so you can tune while it runs."""
-    if (blocked := _blocked_by_handoff()):
-        return blocked
     if not _tracker.available():
         return jsonify({"error": "face tracking unavailable (needs OpenCV + camera)"}), 503
     data = request.get_json(force=True) or {}
@@ -1339,8 +1254,6 @@ def api_wide_reset():
     frame — see WideSpotter.recover. Gated because it cuts power to a USB port,
     which is a physical act even if it is reached over HTTP.
     """
-    if (blocked := _blocked_by_handoff()):
-        return blocked
     return jsonify(_spotter.recover())
 
 
@@ -1422,8 +1335,6 @@ def api_voice():
     Also takes ``{"interrupt": true}`` to cut off the reply in progress, and
     ``{"barge_in": bool}`` to control whether talking over him does the same.
     """
-    if (blocked := _blocked_by_handoff()):
-        return blocked                           # starting it would re-grab the mic
     data = request.get_json(force=True) or {}
     if data.get("interrupt"):
         # Stop him mid-sentence, the same way talking over him does. Handy from
@@ -1461,8 +1372,6 @@ def api_voice():
 def api_command():
     """Send FRED a text command/question (types what you'd say). Runs the hybrid
     brain — local match or Claude — executes any action, and speaks the reply."""
-    if (blocked := _blocked_by_handoff()):
-        return blocked
     text = (request.get_json(force=True) or {}).get("text", "")
     if not str(text).strip():
         return jsonify({"error": "text required"}), 400
@@ -1485,8 +1394,6 @@ def api_say():
     as OPEN because the decorator test cannot see a conditional gate; the
     condition is asserted separately there instead.
     """
-    if (blocked := _blocked_by_handoff()):
-        return blocked
     text = str((request.get_json(force=True) or {}).get("text", "")).strip()
     if not text:
         return jsonify({"error": "text required"}), 400
@@ -1628,8 +1535,6 @@ def api_health():
 @app.post("/api/move")
 @protected
 def api_move():
-    if (blocked := _blocked_by_handoff()):
-        return blocked
     data = request.get_json(force=True)
     name = data["name"]
     angle = float(data["angle"])
@@ -1642,8 +1547,6 @@ def api_move():
 @app.post("/api/rest")
 @protected
 def api_rest():
-    if (blocked := _blocked_by_handoff()):
-        return blocked
     with _lock:
         _ctrl.rest()
     return jsonify(_state())
@@ -1664,8 +1567,6 @@ def api_relax():
     FRED is mid-sentence, and cutting a sentence short is worse than a jaw
     that goes slack a second later when the speech ends.
     """
-    if (blocked := _blocked_by_handoff()):
-        return blocked
     name = (request.get_json(silent=True) or {}).get("name")
     # Outside _lock on purpose: stop() joins the tracker thread, and that thread
     # is in and out of the controller on its own. Holding the route lock across
@@ -1703,8 +1604,6 @@ def api_channel():
     name = data["name"]
     if name not in _config["servos"]:
         return jsonify({"error": f"unknown servo {name}"}), 404
-    if (blocked := _blocked_by_handoff()):
-        return blocked
     try:
         channel = int(data["channel"])
     except (KeyError, TypeError, ValueError):
@@ -1724,8 +1623,6 @@ def api_channel():
 @protected
 def api_identify():
     """Wiggle one servo so the operator can see which physical port it's on."""
-    if (blocked := _blocked_by_handoff()):
-        return blocked
     data = request.get_json(force=True)
     name = data["name"]
     if name not in _config["servos"]:
@@ -1770,8 +1667,6 @@ def api_save():
 @protected
 def api_camera():
     """Adjust live camera settings: focus (af_mode/lens_position) and 180 flip."""
-    if (blocked := _blocked_by_handoff()):
-        return blocked
     if not _camera.available():
         return jsonify({"error": "no camera"}), 503
     data = request.get_json(force=True)
@@ -1799,8 +1694,6 @@ def api_sounds():
 @app.post("/api/sound/play")
 def api_sound_play():
     """Play a named sound (``sounds/<name>.wav``), non-blocking."""
-    if (blocked := _blocked_by_handoff()):
-        return blocked
     if not _sound.available():
         return jsonify({"error": "no audio"}), 503
     name = (request.get_json(force=True) or {}).get("name")
@@ -1843,8 +1736,6 @@ def api_sound_volume_set():
     robot could explain, and turning him to 100 in a hall is its own kind of
     disruption. Same class of decision as /api/display.
     """
-    if (blocked := _blocked_by_handoff()):
-        return blocked                           # the card belongs to someone else
     data = request.get_json(force=True) or {}
     if "volume" not in data:
         return jsonify({"error": "volume required"}), 400
@@ -1928,8 +1819,6 @@ def _term_clip_path(name: str) -> Path | None:
 @app.post("/api/sounds/terminator/play")
 def api_term_play():
     """Preview a specific terminator clip through the speaker."""
-    if (blocked := _blocked_by_handoff()):
-        return blocked
     p = _term_clip_path((request.get_json(force=True) or {}).get("name", ""))
     if p is None:
         return jsonify({"error": "clip not found"}), 404
@@ -2007,15 +1896,12 @@ def wide_snapshot():
 
 
 if __name__ == "__main__":
-    if _handoff_released:
-        _apply_handoff(True)                     # boot straight into the released
-        print("Hardware handoff: RELEASED to MyRobotLab (I2C/audio/camera held off).")
     if _audit_mode:
         # Sound already got it in its constructor; this arms the servos and cart.
         _apply_audit(True)
         print("AUDIT MODE: dry run — no audio out, no servo motion, cart held.")
     print(f"Serving InMoov control panel — mode: {'MOCK' if _ctrl.mock else 'LIVE'}")
-    if _spot_cfg.get("enabled", True) and not _handoff_released:
+    if _spot_cfg.get("enabled", True):
         # Runs whether or not tracking is on: the bearing it produces is what
         # tells the tracker there is somebody to turn toward in the first place.
         if _spotter.start():
@@ -2023,7 +1909,7 @@ if __name__ == "__main__":
             print(f"Wide spotter: PanaCast {s['size']} @ {s['detect_hz']} Hz")
         else:
             print(f"Wide spotter: unavailable — {_spotter.last_error}")
-    if _doa_cfg.get("enabled", True) and not _handoff_released:
+    if _doa_cfg.get("enabled", True):
         # Same reasoning as the spotter above: this produces the bearing that
         # tells the tracker there is somebody to turn toward, so it runs whether
         # or not tracking is currently on.
@@ -2044,13 +1930,12 @@ if __name__ == "__main__":
     # Absent = leave the card alone. Nobody has set a level here, and stamping a
     # default over whatever alsactl restored would be us picking a volume for a
     # robot whose owner never asked us to.
-    if _snd_cfg.get("volume") is not None and not _handoff_released:
+    if _snd_cfg.get("volume") is not None:
         _sound.set_volume(_snd_cfg["volume"])
     boot = _snd_cfg.get("boot_sound", "")
-    if boot and _sound.available() and not _handoff_released:
+    if boot and _sound.available():
         _sound.play(boot)                        # non-blocking chime on startup
-    if (_settings.get("voice", {}).get("enabled") and _assistant.available()
-            and not _handoff_released):
+    if _settings.get("voice", {}).get("enabled") and _assistant.available():
         _assistant.start(greet=True)             # "Fred" wake-word listener on at boot
     if _sensor_cfg.get("serial_enabled"):
         _serial_sensors.start()                  # read a USB-serial sensor node (no-WiFi fallback)

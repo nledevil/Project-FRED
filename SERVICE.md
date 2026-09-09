@@ -58,91 +58,6 @@ There is no separate build step. If you edit the unit file itself, run
   sudo systemctl daemon-reload && sudo systemctl restart inmoov
   ```
 
-# MyRobotLab service (headless, WebGui)
-
-[MyRobotLab](https://myrobotlab.org/) (MRL) runs alongside our own stack as a
-second systemd service — the InMoov community's Java robotics framework, headless
-(no Swing GUI), with its **WebGui** browser interface on port **8888**. Installed
-2026-07-10.
-
-- **Version:** Nixie **1.1.1611** (develop branch build). Java: **OpenJDK 21**
-  headless (`openjdk-21-jdk-headless`; MRL needs "Java 11 or newer").
-- **Install dir:** `/home/dietpi/mrl/myrobotlab-1.1.1611`, reached via the stable
-  symlink `/home/dietpi/mrl/current` (so an upgrade is just a re-point — no unit
-  edit). ~2.7 GB in `~/mrl` + ~1.7 GB of resolved deps cached in `~/.ivy2`.
-- **Unit file:** `/etc/systemd/system/myrobotlab.service` (repo copy at
-  `deploy/myrobotlab.service`). Runs `current/myrobotlab.sh` as `dietpi`,
-  `WorkingDirectory=current` (the script sets a *relative* `java.library.path`,
-  so cwd must be the install root). Auto-start at boot: **enabled**. Restart on
-  failure after 10 s.
-- **URL:** http://<pi-ip>:8888  — served by the WebGui service.
-- **Footprint:** ~231 MB RSS at idle; JVM heap left at the default ergonomic cap
-  (~25% of RAM ≈ 460 MB). Leaves ~900 MB free with the InMoov app also running.
-
-```bash
-sudo systemctl {start,stop,restart,status} myrobotlab
-sudo journalctl -u myrobotlab -f
-curl -s -o /dev/null -w '%{http_code}\n' http://localhost:8888/   # 200 when WebGui is up
-```
-
-## Notes / gotchas
-
-- **First run is slow (~20 min, one-time).** With no `libraries/repo.json`,
-  `myrobotlab.sh` runs `Runtime --install`, resolving+downloading the full
-  dependency tree (~1.9 GB) from Maven Central. Once `repo.json` exists,
-  subsequent starts skip it and WebGui comes up in ~25 s.
-- **Do NOT set `_JAVA_OPTIONS`/`JAVA_TOOL_OPTIONS`** in the unit to force `-Xmx`.
-  The JVM prints a `Picked up ...` banner that MRL's `java -version | head -1`
-  version check parses, so it mis-reads the version and refuses to start
-  ("incompatible version of java"). To cap the heap, append `-Xmx` to
-  `JAVA_OPTIONS` *inside* `myrobotlab.sh` instead. (Cost us one failed boot.)
-- **Ports:** MRL 8888, InMoov panel 8080, ttyd terminal 7681 — no clash.
-- **Hardware coexistence — NOT yet solved.** MRL and our app must not both drive
-  the PCA9685/I2C servos, the USB audio card, or the Pi camera at once. Today
-  nothing enforces that; the planned **hardware handoff toggle** in the InMoov
-  app (see `TODO.md`) is what will release those to MRL on demand. Until then,
-  don't arm both stacks against the hardware simultaneously.
-- **Reboot check:** the service is `enabled`, so it starts at boot via
-  `multi-user.target`. A reboot to confirm boot-start wasn't performed during
-  install (it would drop the remote session); do `sudo reboot` when convenient
-  and verify `systemctl is-active myrobotlab` + port 8888.
-- Reinstall the unit from the repo copy:
-  ```bash
-  sudo cp deploy/myrobotlab.service /etc/systemd/system/myrobotlab.service
-  sudo systemctl daemon-reload && sudo systemctl restart myrobotlab
-  ```
-
-## Hardware handoff toggle (InMoov ⇄ MyRobotLab)
-
-The InMoov app and MRL both want the *same* physical hardware — the PCA9685
-servos on I2C, the USB audio card, and the Pi camera — and only one process may
-drive each at a time. The **admin panel** ("MyRobotLab handoff" panel) has a live
-toggle that releases all three from the InMoov app so MRL can take them, and takes
-them back on toggle-off. Built 2026-07-10.
-
-- **API:** `GET /api/handoff` → state; `POST /api/handoff {"release": true|false}`.
-  `/api/state` also carries a `handoff` block.
-- **What "release" does** (each hardware object grew `suspend()`/`resume()`):
-  - **Servos** (`ServoController.suspend`): relaxes every servo (cuts pulses),
-    `deinit()`s the PCA9685, and drops the I2C handle. `set_angle`/`relax` become
-    no-ops. `resume()` re-opens I2C, re-applies ranges, returns to rest.
-  - **Audio** (`Sound.suspend`): stops playback and refuses new playback. The
-    mic/`arecord` is held by the voice **Listener**, so the coordinator also calls
-    `assistant.stop()` to free it.
-  - **Camera** (`Camera.suspend`): force-stops the sensor (even under viewers),
-    reports `available() == False` so streams 503. The coordinator also stops the
-    **face tracker** so its sensor hold is dropped.
-- **While released**, the hardware-actuating endpoints (`/api/move`, `/rest`,
-  `/relax`, `/channel`, `/identify`, `/camera`, `/voice`, `/track`, `/say`,
-  `/command`, sound playback) return **409** with a clear message; the camera
-  stream/snapshot return 503.
-- **Persistence:** the choice is saved to `config/settings.json` under
-  `hardware.released` and re-applied at boot (the app starts suspended, without a
-  servo-rest sweep), so an event set-up survives a reboot.
-- **Note:** this only frees *our* side. It does **not** start/stop the `myrobotlab`
-  service — do that separately (`sudo systemctl start myrobotlab`). Wiring the two
-  together is a noted follow-up in `TODO.md`.
-
 ## Local LLM brain (Ollama, Intel Arc iGPU)
 
 FRED goes places without reliable WiFi, so the cloud can't be the only brain. A
@@ -314,8 +229,8 @@ whatever was showing. Built 2026-08-12.
   calibration, so this page cannot ask for an angle calibration says is unsafe,
   and there is no raw/ignore-limits mode on purpose — that belongs on the panel
   where you can see what you are doing, not on a screen you are prodding while
-  leaning over the robot. The four states that stop a move (handoff, audit,
-  mock, no link) are shown rather than discovered by pressing.
+  leaning over the robot. The three states that stop a move (audit, mock,
+  no link) are shown rather than discovered by pressing.
 
 `settings_menu.py --page servos` opens straight onto a tab, for testing a page
 without a finger. The daemon never passes it.
@@ -371,10 +286,9 @@ would have done. Admin panel → "Audit mode". Built 2026-08-11.
 
 - **API:** `GET /api/audit` → state; `POST /api/audit {"audit": true|false}`.
   `/api/state` also carries an `audit` block, and `/api/sounds` an `audit` flag.
-- **Not a mute, and not the handoff.** `sound.enabled = false` makes playback
-  *fail*, which tells the lip-sync layer no audio is coming and kills the jaw and
-  the on-screen mouth with it. The handoff gives the devices away and 409s the
-  controls. Audit does neither: it simulates a *successful* playback of exactly
+- **Not a mute.** `sound.enabled = false` makes playback *fail*, which tells
+  the lip-sync layer no audio is coming and kills the jaw and the on-screen
+  mouth with it. Audit does not: it simulates a *successful* playback of exactly
   the right length, so the whole pipeline runs against a silent speaker.
 - **How each object suppresses** (each grew `set_audit()` / `is_audit()`):
   - **Audio** (`Sound`): `play_file()` opens no device and spawns no `aplay`. It
@@ -402,108 +316,8 @@ would have done. Admin panel → "Audit mode". Built 2026-08-11.
 - **Persistence:** saved to `config/settings.json` under `audit.enabled` and
   re-applied at boot — including skipping the startup rest sweep, so booting into
   an audit moves nothing.
-- **Endpoints are NOT blocked.** Unlike the handoff, every control still returns
-  success and reports what it would have done. That is the point: the panel stays
-  fully interactive.
-- **I2C access for MRL is confirmed at the OS level:** MRL runs as `dietpi`, which
-  is in the `i2c` group, and `/dev/i2c-1` is `crw-rw---- root i2c` — so MRL can
-  open the bus. Verified 2026-07-10 (`i2c-tools` installed): with the InMoov app
-  released, `i2cdetect -y -r 1` as `dietpi` sees the PCA9685 at **0x40** and
-  `i2cget -y 1 0x40 0x00` reads its MODE1 register. (i2cdetect/i2cget live in
-  `/usr/sbin` — not on the default user PATH; use the full path or `sudo`.)
-
-### MRL driving the PCA9685 — the WiringPi fix (REQUIRED)
-
-MRL's Pi-native I2C is the **`RasPi`** service (an `I2CController`), and the
-`Adafruit16CServoDriver` (the PCA9685) attaches to it. Out of the box on this Pi,
-starting `RasPi` failed with:
-```
-java.lang.UnsatisfiedLinkError: 'int com.pi4j.wiringpi.Gpio.wiringPiSetup()'
-```
-**Cause:** MRL's `RasPi` uses **Pi4J 1.4**, whose native `libpi4j-aarch64.so`
-*dynamically links* `libwiringPi.so` / `libwiringPiDev.so` (Pi4J 1.4 dropped its
-bundled WiringPi and expects a **system** WiringPi). None was installed, so
-`wiringPiSetup` and the `wiringPiI2C*` symbols were unresolved.
-
-**Fix (done 2026-07-10):** built + installed the maintained WiringPi (which does
-support Pi 4 / 64-bit / recent kernels):
-```bash
-git clone --depth 1 https://github.com/WiringPi/WiringPi.git ~/mrl/WiringPi
-cd ~/mrl/WiringPi && sudo ./build && sudo /usr/sbin/ldconfig
-gpio -v          # sanity: should report "Pi 4B" and user-level GPIO access
-```
-This installs **WiringPi 3.18** → `/usr/local/lib/libwiringPi.so.3.18` (+ the
-unversioned `/usr/lib/libwiringPi.so` symlink Pi4J links against) and survives a
-reboot (standard lib path + ld.so cache). It does **not** affect the InMoov
-Python app, which uses `adafruit_servokit`, not WiringPi.
-
-**After installing WiringPi, restart MRL** (a running JVM has already cached the
-failed native load): `sudo systemctl restart myrobotlab`. Then `RasPi` starts and
-the PCA9685 attaches. Verified end-to-end: `RasPi` inits, `Adafruit16CServoDriver`
-attaches on `bus 1 / 0x40`, and MRL wrote the chip (MODE2=0x04, PRESCALE=0x79 =
-50 Hz). Minimal MRL (Python) setup:
-```python
-raspi = runtime.start("raspi", "RasPi")
-head  = runtime.start("HeadDriver", "Adafruit16CServoDriver")
-head.setDeviceBus("1"); head.setDeviceAddress("0x40")
-head.attach("raspi")
-# then attach Servo services to channels on HeadDriver
-```
-NB: MRL services created in a session are **not persisted** unless you save the
-MRL config (or a startup script). And MRL driving the PCA9685 requires the InMoov
-app to be **released** (handoff on) — only one owner of the I2C bus at a time.
-
-### Camera into MyRobotLab (libcamera → OpenCV via an MJPEG stream)
-
-MRL's OpenCV service **works on this Pi** (bytedeco JavaCV, OpenCV 4.10 arm64 — it
-needs `libunicap2` installed). But it can't grab the camera *directly*: MRL's
-`Webcam` service (sarxos/v4l4j) has no arm64 native, and the camera is a **Pi
-Camera 3 (imx708) — libcamera/CSI**, not a V4L2 webcam. `VideoCapture(0)` fails
-with "Could not read frame". (The old myrobotlab.org "pi camera + opencv" guide is
-Jessie-era `bcm2835-v4l2` — that legacy stack doesn't support the imx708.)
-
-**Solution: feed OpenCV an MJPEG stream from libcamera.** A standalone streamer
-owns *only* the camera and serves MJPEG; MRL's built-in `MJpegFrameGrabber` reads
-the URL. (We evaluated writing a custom MRL "Libcamera" FrameGrabber plugin —
-possible but not worth it: libcamera has no Java binding so the plugin would shell
-out to `rpicam-vid` anyway, adding a new grabber type needs an MRL source patch,
-and MRL *already ships* an MJPEG grabber. See the git history of this file.)
-
-- **Streamer:** `deploy/camera_stream.py` (picamera2/libcamera → MJPEG), run by
-  **`camera-stream.service`** (repo copy `deploy/camera-stream.service`), serving
-  **:8081** — `GET /stream.mjpg`, `/snapshot.jpg`, `/`. Owns only the camera (no
-  I2C/audio), so it coexists with MRL driving the servos. Enabled at boot. Tuning
-  via env in the unit (`CAM_STREAM_SIZE=640x480`, `CAM_STREAM_FPS=15`,
-  `CAM_AF_MODE=0` manual, `CAM_LENS_POSITION=2.0`, `CAM_FLIP=0`).
-  ```bash
-  sudo systemctl {start,stop,restart,status} camera-stream
-  curl -s -o /dev/null -w '%{http_code}\n' http://localhost:8081/snapshot.jpg   # 200
-  ```
-- **Wire MRL's OpenCV to it** (Python tab, or REST):
-  ```python
-  cv = runtime.start("cv", "OpenCV")
-  cv.setGrabberType("MJpeg")
-  cv.setInputSource("imagefile")                              # INPUT_SOURCE_FILE
-  cv.setInputFileName("http://localhost:8081/stream.mjpg")
-  cv.capture()
-  ```
-  Verified end-to-end: `MJpegFrameGrabber` connects, `cv.isCapturing()==true`, and
-  OpenCV pulls ~18 KB JPEG frames from the imx708. Face detection etc. then run on
-  those frames like any OpenCV input.
-- **Note:** this camera path is independent of the servo/I2C handoff — the camera
-  and the I2C bus are different resources. So MRL can have the camera (via the
-  stream) *and* the servos (via `raspi`/`Adafruit16CServoDriver`) at the same time,
-  while the full InMoov app stays stopped.
-
-```bash
-curl -s localhost:8080/api/handoff                                   # state
-curl -sX POST localhost:8080/api/handoff -d '{"release":true}'  -H 'Content-Type: application/json'   # hand off to MRL
-curl -sX POST localhost:8080/api/handoff -d '{"release":false}' -H 'Content-Type: application/json'   # take it back
-
-curl -s localhost:8080/api/audit                                     # audit (dry run) state
-curl -sX POST localhost:8080/api/audit -d '{"audit":true}'  -H 'Content-Type: application/json'   # silent + still
-curl -sX POST localhost:8080/api/audit -d '{"audit":false}' -H 'Content-Type: application/json'   # back to live
-```
+- **Endpoints are NOT blocked.** Every control still returns success and reports
+  what it would have done. That is the point: the panel stays fully interactive.
 
 # Spoken IP announcement at boot
 

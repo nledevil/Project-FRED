@@ -12,7 +12,7 @@ choice ``camera_stream.py`` makes), so it needs nothing installed beyond what
 the controller itself imports.
 
 Endpoints:
-  GET  /api/health              liveness + mock/suspended flags, no hardware touched
+  GET  /api/health              liveness + mock flag, no hardware touched
   GET  /api/servos              full state: config, last-commanded angles, locks
   POST /api/servos              batch move: {"angles": {"eye_x": 90, "eye_y": 100}}
   POST /api/servos/<name>       single move: {"angle": 90, "enforce_limits": true}
@@ -20,8 +20,6 @@ Endpoints:
   POST /api/servos/<name>/identify  {"sweep": 12, "cycles": 3}
   POST /api/rest                every servo to its rest angle
   POST /api/relax               {"name": "jaw"} or {} for all — cuts pulses
-  POST /api/suspend             release the I2C bus (hand off to MyRobotLab)
-  POST /api/resume              take it back
   POST /api/config              adopt a new servos.json: {"servos": {...}}
 
 Every move returns the angle the controller *actually* applied after clamping,
@@ -179,7 +177,7 @@ def _adopt_config(body: dict) -> dict:
 
         # Pulse width and actuation range live on the PCA9685 channel, not only
         # in the dict, so they have to be re-applied to take effect.
-        if not _ctrl.mock and not _ctrl.is_suspended():
+        if not _ctrl.mock:
             with _ctrl._io_lock:
                 port = _ctrl._kit.servo[s["channel"]]
                 port.set_pulse_width_range(s["pulse_min_us"], s["pulse_max_us"])
@@ -256,7 +254,6 @@ class _Handler(server.BaseHTTPRequestHandler):
     def _state(self) -> dict:
         return {
             "mock": _ctrl.mock,
-            "suspended": _ctrl.is_suspended(),
             "locked": sorted(LOCKED),
             "servos": {
                 name: {
@@ -296,7 +293,6 @@ class _Handler(server.BaseHTTPRequestHandler):
             # cheap reads, and it saves adding a second endpoint and a second
             # request to a poll that already happens.
             return self._send(200, {"ok": True, "mock": _ctrl.mock,
-                                    "suspended": _ctrl.is_suspended(),
                                     "locked": sorted(LOCKED),
                                     "hostname": _hostname(),
                                     "uptime_s": _uptime_s()})
@@ -388,19 +384,6 @@ class _Handler(server.BaseHTTPRequestHandler):
                     _ctrl.relax(n)
             return self._send(200, {"relaxed": "all",
                                     "skipped_locked": sorted(LOCKED & set(_ctrl.servos))})
-
-        if path == "/api/suspend":
-            _ctrl.suspend()
-            return self._send(200, {"suspended": True})
-
-        if path == "/api/resume":
-            # resume() ends with a rest sweep, which would move locked servos —
-            # so refuse rather than quietly violate the lock.
-            if LOCKED:
-                return self._send(423, {"error": "cannot resume while servos are "
-                                                 f"locked: {sorted(LOCKED)}"})
-            _ctrl.resume()
-            return self._send(200, {"suspended": False})
 
         parts = path.strip("/").split("/")        # api/servos/<name>[/<action>]
         if len(parts) >= 3 and parts[0] == "api" and parts[1] == "servos":

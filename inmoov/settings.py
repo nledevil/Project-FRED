@@ -96,13 +96,6 @@ DEFAULT_SETTINGS = {
         # frame not counting as the person having moved. 1 = off.
         "smooth_n": 5,
     },
-    "hardware": {
-        # When True, the app boots with the shared hardware RELEASED to another
-        # owner (MyRobotLab): I2C/PCA9685 servos, the USB audio card, and the Pi
-        # camera are all handed off. Toggle live from the admin panel; the choice
-        # persists so an event set-up survives a reboot. See /api/handoff.
-        "released": False,
-    },
     "audit": {
         # Audit (dry run) mode: FRED stays fully interactive through the web
         # panel — the brain answers, the transcript fills, speech is synthesised
@@ -111,9 +104,8 @@ DEFAULT_SETTINGS = {
         # will not drive. The servo readouts keep tracking the commanded angles,
         # so the panel shows exactly what he *would* have done.
         #
-        # Distinct from "hardware.released" (which hands the devices to
-        # MyRobotLab and disables FRED's own controls) and from "sound.enabled"
-        # (a plain mute, which also kills the lip-sync). Persists across reboots
+        # Distinct from "sound.enabled" (a plain mute, which also kills the
+        # lip-sync). Persists across reboots
         # so a bench session can't be undone by a power cycle. See /api/audit.
         "enabled": False,
     },

@@ -16,9 +16,6 @@ every four seconds is worse than one that never does:
 * **Off the ingest path.** Speaking takes seconds; the sensor ingest that
   triggered it must not wait, or the relay's POST times out and payloads drop.
   The greeting runs on its own thread.
-* **Honours the handoff.** When the hardware is released to MyRobotLab, FRED
-  must not grab the jaw servo back to say hello.
-
 Canned phrases rather than a Claude round-trip: a greeting has to land while the
 person is still in front of him, and an API call per approach is both slow and
 billable for something that says "hello".
@@ -43,14 +40,12 @@ class Greeter:
     """Turns ``approach`` events into a spoken greeting. Never raises."""
 
     def __init__(self, assistant, log=None, enabled: bool = True,
-                 cooldown: float = 90.0, phrases=None, blocked=None):
-        # blocked() -> bool: something else owns the hardware right now.
+                 cooldown: float = 90.0, phrases=None):
         self._assistant = assistant
         self._log = log
         self._enabled = bool(enabled)
         self._cooldown = float(cooldown)
         self._phrases = tuple(phrases) if phrases else GREETINGS
-        self._blocked = blocked
         self._last = 0.0
         self._lock = threading.Lock()
 
@@ -78,8 +73,6 @@ class Greeter:
             if not self._enabled or not isinstance(event, dict):
                 return
             if str(event.get("event")) != "approach":
-                return
-            if self._blocked is not None and self._blocked():
                 return
             a = self._assistant
             if a is None or a.is_speaking() or a.is_thinking():

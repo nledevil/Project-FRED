@@ -18,8 +18,7 @@ it. There is no raw/ignore-limits mode on purpose: that belongs on the panel
 where you can see what you are doing, not on a screen you are prodding blind
 while leaning over the robot.
 
-The two states that stop a move are shown rather than discovered by pressing:
-a released **handoff** (the brain returns 409 — MyRobotLab owns the bus) and
+The state that stops a move is shown rather than discovered by pressing:
 **audit** mode (every call succeeds and nothing moves, which is exactly the
 thing you would otherwise waste ten minutes on).
 """
@@ -88,8 +87,6 @@ class ServosPage:
         nuc = snap.get("nuc") or {}
         if not nuc:
             return "NO LINK TO BRAIN"
-        if (nuc.get("handoff") or {}).get("released"):
-            return "HANDED OFF TO MYROBOTLAB"
         if (nuc.get("audit") or {}).get("servo_audit"):
             return "AUDIT MODE - NOTHING WILL MOVE"
         link = nuc.get("servo_link") or {}

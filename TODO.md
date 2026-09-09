@@ -337,7 +337,7 @@ item above, and conversation memory is what makes it matter.
 ### Priority 2 — auto-greeting when someone walks up (toggleable) — MOSTLY BUILT
 `inmoov/greeter.py` exists and does most of this: canned `GREETINGS`, a cooldown
 so a crowd is not re-greeted, never speaks over himself (checks speaking and
-thinking), respects the hardware handoff, speaks off-thread, and is a live
+thinking), speaks off-thread, and is a live
 settings toggle on the admin page. The setting is **`greet.enabled` /
 `greet.cooldown`**, not the `voice.auto_greet` guessed here, and it is **off on
 this robot today**. Its state is in `/api/state` under `greet`.
@@ -458,58 +458,18 @@ If venue WiFi dies, every open question becomes "my AI brain isn't connected."
 - **Rate limiting:** no throttle on `/api/command`; combined with no-auth, one
   bored kid with a phone = denial-of-Fred. Cheap token bucket.
 
-## MyRobotLab install (headless service)
+## MyRobotLab — RETIRED 2026-09-09
 
-Install [MyRobotLab](https://myrobotlab.org/) and run it headless as a service on
-the Pi with its web interface (WebGui) reachable on the LAN, started on boot.
-
-**DONE 2026-07-10** — MRL Nixie 1.1.1611 installed and running headless as a
-systemd service (WebGui on 8888, auto-starts on boot), the hardware handoff toggle
-is built, **and** MRL can now drive the PCA9685 over the Pi's native I2C (fixed
-the Pi4J/WiringPi `UnsatisfiedLinkError` by building + installing WiringPi 3.18 —
-Pi4J 1.4 dynamically links a *system* `libwiringPi.so`). Verified end-to-end:
-`RasPi` + `Adafruit16CServoDriver` attach on bus 1/0x40 and init the chip. Write-
-ups in `SERVICE.md` ("MyRobotLab service" incl. "the WiringPi fix" + "Hardware
-handoff toggle"). Remaining MRL work is InMoov-side config (attach Servo services
-to channels, save the MRL config), not infra.
-
-**Camera into MRL — DONE 2026-07-10.** MRL's OpenCV can't grab the imx708 directly
-(it's libcamera/CSI; MRL's `Webcam`/v4l4j has no arm64 native, and the legacy
-`bcm2835-v4l2` stack doesn't support Camera Module 3). Solution: a standalone
-libcamera→MJPEG streamer (`deploy/camera_stream.py` + `camera-stream.service`, on
-:8081) that MRL's built-in `MJpegFrameGrabber` consumes. Verified: `cv` OpenCV
-service captures live frames from the imx708. MRL's OpenCV native itself works on
-arm64 once `libunicap2` is installed. (Considered a custom MRL "Libcamera" plugin
-— rejected; MRL already ships an MJPEG grabber and libcamera has no Java binding.)
-The camera path is independent of the I2C handoff, so MRL can run camera + servos
-together with the InMoov app stopped.
-- ~~Install MRL (Java runtime + the MRL distribution); confirm it launches on
-  this Pi 4B / arm64 and note the pinned version.~~ OpenJDK 21 + MRL 1.1.1611.
-- ~~Run **headless** with the **WebGui** service enabled; pick a port and confirm
-  it doesn't clash with our Flask panel.~~ WebGui on 8888 (panel is 8080).
-- ~~Wrap it in a **systemd unit** so it auto-restarts and **starts on boot**.~~
-  `deploy/myrobotlab.service`, enabled. (Reboot-survival not yet re-verified —
-  see the note in SERVICE.md.)
-- ~~Coexistence: separate service, separate port + a *hardware* handoff.~~ Done.
-- ~~**Hardware handoff toggle in our app** — release the I2C bus (PCA9685), the
-  audio card, and the camera so MyRobotLab can drive them; re-acquire on toggle
-  off.~~ Built: admin-panel toggle → `POST /api/handoff {release}`. Each device
-  got `suspend()`/`resume()` (ServoController relaxes + deinits the PCA9685 and
-  drops the I2C handle; Sound stops+blocks playback; Camera force-stops the
-  sensor and reports unavailable). The coordinator also stops the voice listener
-  (frees the mic) and the face tracker (frees the sensor), and hardware-actuating
-  endpoints return 409 while released. The choice persists in `settings.json`
-  (`hardware.released`) and is applied at boot. Verified live on the real Pi:
-  release → all suspended + 409s + camera 503; resume → servos back to rest;
-  boot-into-released comes up without grabbing anything.
-  - *Possible follow-up:* have the toggle also **start/stop the `myrobotlab`
-    systemd service** (via a small sudoers rule), so one switch both frees our
-    hardware and boots MRL — today the operator releases here, then starts MRL
-    separately. *Still open on 2026-08-16: no sudoers rule for myrobotlab exists
-    (`/etc/sudoers.d/` has only the hotspot one and the login shell's), and
-    nothing in the app references the service. There is now a worked example to
-    copy — `sudoers-fred-hotspot` plus the `fred-ap-config` helper — so this is
-    a smaller job than it was when it was written.*
+MRL was installed, ran headless as a service, and could drive the PCA9685 and
+consume the camera stream — all of it worked, none of it was being used, and
+the hardware-handoff machinery it required put a suspend/resume path through
+every shared device plus a 15-endpoint guard through the web app. Removed
+whole: the myrobotlab.service unit, the /api/handoff endpoint, the handoff
+section of the admin panel, and suspend/resume on Sound, Camera and both servo
+controllers. The MJPEG camera streamer stays — the brain consumes it — and the
+SERVO_LOCKED eye-cable protection stays, because it guards a cable, not MRL.
+If MRL ever comes back, the git history up to this date has the working setup,
+including the WiringPi fix and the I2C coexistence notes.
 
 ## Facial tracking (Pi Camera 3 → eye/neck servos)
 

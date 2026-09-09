@@ -48,12 +48,9 @@ class ServoController:
         self.mock = mock
 
         self._current: dict[str, float] = {}
-        # Suspended = we've released the I2C bus / PCA9685 to another owner (e.g.
-        # MyRobotLab). While suspended, _kit is None and every write is a no-op.
-        self._suspended = False
         # Audit (dry run): the bus stays ours and every command is still clamped
-        # and recorded, but no pulse is emitted. Unlike suspend(), get_angle()
-        # keeps tracking the commanded position so the UI mirrors intent.
+        # and recorded, but no pulse is emitted — while get_angle() keeps
+        # tracking the commanded position so the UI mirrors intent.
         self._audit = False
         # Serialises hardware I2C writes. Several threads drive servos without
         # coordinating through the web app's lock — the lip-sync jaw animation,
@@ -83,7 +80,7 @@ class ServoController:
 
     def _build_kit(self) -> None:
         """Open the PCA9685 over I2C and apply each servo's pulse/actuation range.
-        Used at construction and again on resume() after a suspend() released it."""
+        Used at construction."""
         from adafruit_servokit import ServoKit
         i2c = self.config.get("i2c", {})
         self._kit = ServoKit(
@@ -127,14 +124,12 @@ class ServoController:
             target = self._clamp(s, angle)
         else:
             target = max(0.0, min(s.get("actuation_range", 180), angle))
-        if self._suspended:
-            return target        # bus released to another owner — don't touch it
         if target != angle:
             print(f"[ServoController] {name}: {angle:.1f}° clamped to {target:.1f}° "
                   f"(limits {s['min_angle']}–{s['max_angle']})")
         if self._audit:
-            # Dry run: record where he *would* be, drive nothing. Recording is the
-            # difference from suspend() — the panel's readout has to keep moving.
+            # Dry run: record where he *would* be, drive nothing — the panel's
+            # readout has to keep moving.
             self._current[name] = target
             return target
         phys = self._physical(s, target)
@@ -173,8 +168,8 @@ class ServoController:
 
         Pass a name to relax one servo, or nothing to relax all.
         """
-        if self._suspended or self._audit:
-            return                          # bus released, or dry run: touch nothing
+        if self._audit:
+            return                          # dry run: touch nothing
         names = [name] if name else list(self.servos)
         for n in names:
             s = self._require(n)
@@ -203,7 +198,7 @@ class ServoController:
         # Not gated on audit: remapping a port cuts a pulse and sets pulse ranges,
         # it never commands an angle — so it moves nothing, and blocking it would
         # break calibration during an audit for no safety gain.
-        if not self.mock and not self._suspended:
+        if not self.mock:
             with self._io_lock:
                 self._kit.servo[old].angle = None            # stop driving old port
                 self._kit.servo[channel].set_pulse_width_range(
@@ -251,10 +246,6 @@ class ServoController:
         self._audit = on
         print(f"[ServoController] audit mode {'ON — motion suppressed' if on else 'OFF'}.")
 
-    # ---- hardware handoff -------------------------------------------------
-    def is_suspended(self) -> bool:
-        return self._suspended
-
     def refresh_state(self) -> None:
         """No-op: this controller owns the hardware, so `mock`/`locked` are never
         out of date. Exists so reporting paths can call it on either controller
@@ -265,38 +256,7 @@ class ServoController:
         link — the bus is on this machine — so it reports as permanently online
         with no host, and callers get one answer to ask either controller."""
         return {"host": None, "port": None, "online": True, "mock": self.mock,
-                "suspended": self._suspended, "audit": self._audit,
-                "locked": [], "error": None}
-
-    def suspend(self) -> None:
-        """Release the I2C bus / PCA9685 so another process (e.g. MyRobotLab) can
-        drive the servos. Relaxes every servo (cuts pulses) while we still own the
-        bus, then drops our handle. set_angle()/relax() become no-ops until
-        resume(). Idempotent; safe in mock mode."""
-        if self._suspended:
-            return
-        if not self.mock and self._kit is not None:
-            self.relax()                     # cut all pulses before we let go
-            with self._io_lock:
-                try:
-                    self._kit._pca.deinit()  # close the underlying I2C handle
-                except Exception:            # noqa: BLE001 - best-effort; drop it regardless
-                    pass
-                self._kit = None
-        self._suspended = True
-        print("[ServoController] suspended — I2C/PCA9685 released.")
-
-    def resume(self) -> None:
-        """Re-open the I2C bus, re-apply servo ranges, and take the servos back to
-        rest. Idempotent; safe in mock mode."""
-        if not self._suspended:
-            return
-        self._suspended = False
-        if not self.mock:
-            with self._io_lock:
-                self._build_kit()
-        self.rest()
-        print("[ServoController] resumed — I2C/PCA9685 reacquired.")
+                "audit": self._audit, "locked": [], "error": None}
 
     # context-manager sugar: relax everything on exit
     def __enter__(self):

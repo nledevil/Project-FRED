@@ -769,7 +769,7 @@ const CAM_URL = {head: '/camera/stream', wide: '/camera/wide/stream'};
 
 function wideOk() {
   // Only "running" will do: available() is true whenever OpenCV loaded, and the
-  // spotter can be stopped (hardware handoff) or unable to open the device. The
+  // spotter can be stopped or unable to open the device. The
   // stream route refuses in both cases, so offering the button would be a lie.
   const sp = STATE && STATE.spotter;
   return !!(sp && sp.running);
@@ -856,7 +856,7 @@ function initCam() {
              : 'Wide camera unavailable: '
                + (((STATE && STATE.spotter) || {}).error || 'not running');
   showWideTrouble();
-  // The wide camera going away underneath us — hardware handoff, or the USB
+  // The wide camera going away underneath us — the USB
   // lead pulled — must not strand the panel on a feed that will never arrive.
   // Before anything below reads CAM_SRC, because this can change it.
   if (CAM_SRC === 'wide' && !wideOk()) setCamSource('head');

@@ -456,7 +456,7 @@ class WideSpotter:
         ``Camera.frames()`` so the panel's MJPEG route treats both the same.
 
         Does NOT start the spotter. The camera being off is a decision made
-        elsewhere — the hardware handoff releases it to MyRobotLab — and quietly
+        elsewhere and quietly
         retaking a device another process now owns is how you get a fight over
         it. If it is not running, say so.
         """

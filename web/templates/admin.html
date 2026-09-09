@@ -188,7 +188,6 @@
   <div class="shell">
     <nav class="secnav" aria-label="Settings sections">
       <a href="#sec-pin" data-sec="sec-pin">Panel PIN</a>
-      <a href="#sec-handoff" data-sec="sec-handoff">MyRobotLab</a>
       <a href="#sec-brain" data-sec="sec-brain">Brain</a>
       <a href="#sec-event" data-sec="sec-event">Event mode</a>
       <a href="#sec-audit" data-sec="sec-audit">Audit mode</a>
@@ -236,22 +235,6 @@
        are rate-limited to make that slow, but this is a barrier against a curious stranger on the
        access point, not a secret. The AP password and physical access are still the real perimeter.
        Changing or removing the PIN signs out every browser, including this one.</p>
-  </section>
-
-  <section class="panel" id="sec-handoff">
-    <p class="phead">MyRobotLab handoff</p>
-    <div class="row" style="margin-bottom:12px">
-      <div class="label"><b>Release hardware to MyRobotLab</b>
-        <span>hand off servos, audio &amp; camera</span></div>
-      <div class="grow"></div>
-      <label class="switch"><span id="handoffLabel" style="color:var(--mut)">Owned by FRED</span>
-        <input type="checkbox" id="handoff" onchange="onHandoff(this.checked)"></label>
-    </div>
-    <p class="hint">When ON, this app drops the I2C servo bus (PCA9685), the USB audio card, and
-       the Pi camera so <a href="#" onclick="openMrl(event)" style="color:var(--accent)">MyRobotLab</a>
-       (port 8888) can drive them instead — only one stack may own the hardware at a time. FRED's
-       own servo, voice, and camera controls are disabled until you turn this back off. This is a
-       live switch (applies immediately, no Save needed) and the choice persists across reboots.</p>
   </section>
 
   <section class="panel" id="sec-brain">
@@ -325,7 +308,7 @@
        sliders and face tracking all work, and the transcript and on-screen face behave exactly as
        normal, lip-sync included. But no audio reaches the speaker, no pulse reaches a servo, and
        the cart will not drive. The servo readouts keep tracking the commanded angles, so you can
-       watch what he <i>would</i> have done. Unlike the handoff above, nothing is disabled and the
+       watch what he <i>would</i> have done. Nothing is disabled and the
        hardware is not given away — the servos simply hold their pose rather than being relaxed,
        so nothing sags. <b>Switching back off returns the servos to rest</b>, since the readouts
        and the hardware will have drifted apart during the audit. Live switch (no Save needed);
@@ -1156,22 +1139,6 @@ async function onAnim(v) {
   refreshDisplay();
 }
 
-// ---- MyRobotLab handoff ------------------------------------------------
-function reflectHandoff(released) {
-  document.getElementById('handoff').checked = released;
-  const lbl = document.getElementById('handoffLabel');
-  lbl.textContent = released ? 'Released to MRL' : 'Owned by FRED';
-  lbl.style.color = released ? '#f0a020' : 'var(--mut)';
-}
-async function loadHandoff() { reflectHandoff(!!(await api('/api/handoff')).released); }
-async function onHandoff(checked) {
-  const s = await api('/api/handoff', { release: checked });
-  reflectHandoff(!!s.released);
-  toast(s.released ? 'Hardware released to MyRobotLab' : 'Hardware taken back by FRED');
-}
-function openMrl(e) { e.preventDefault();
-  window.open(`http://${location.hostname}:8888`, '_blank', 'noopener'); }
-
 // ---- brain backend (cloud / local LLM) ---------------------------------
 function reflectBrain(s) {
   s = s || {};
@@ -1362,7 +1329,6 @@ function initDropzone() {
 initDropzone();
 loadClips();
 loadTerminals();
-loadHandoff();
 loadAudit();
 loadBrain();
 loadEvent();

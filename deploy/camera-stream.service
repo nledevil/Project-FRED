@@ -3,9 +3,8 @@ Description=InMoov camera MJPEG streamer (libcamera imx708 -> :8081)
 After=network-online.target
 Wants=network-online.target
 # Owns ONLY the Pi camera (via picamera2/libcamera) and serves it as MJPEG so
-# MyRobotLab's OpenCV service (or anything) can consume it over HTTP. Touches no
-# I2C/audio, so it coexists with MRL driving the servos on the I2C bus. See
-# deploy/camera_stream.py and SERVICE.md ("Camera into MyRobotLab").
+# the brain (or anything) can consume it over HTTP. Touches no I2C/audio, so a
+# servo_server restart never drops the stream. See deploy/camera_stream.py.
 
 [Service]
 Type=simple

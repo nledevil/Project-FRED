@@ -188,8 +188,6 @@ class StatusPage:
 
         if not sound:
             return "NO OUTPUT", BAD_INK, ["BRAIN HAS NO SOUND DEVICE"]
-        if sound.get("suspended"):
-            return "HANDED OFF", DIM_INK, ["AUDIO RELEASED TO MYROBOTLAB"]
         if sound.get("audit"):
             return "AUDIT", WARN_INK, ["SPEECH RENDERED - NOT PLAYED"]
         if not sound.get("can_speak"):

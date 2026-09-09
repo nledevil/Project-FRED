@@ -43,7 +43,7 @@ def check(label: str, ok: bool, detail: str = ""):
 # a path under GATED asserts the *write* is behind the PIN, which is the half
 # that can be got wrong silently.
 GATED = [
-    "/api/settings", "/api/handoff", "/api/brain", "/api/audit",
+    "/api/settings", "/api/brain", "/api/audit",
     # Event mode relaxes as well as tightens: switching it off puts the cart's
     # speed ceiling back up, which is not a thing a passer-by should be able to
     # do to a 350 lb machine in a room full of children.

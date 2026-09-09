@@ -470,10 +470,6 @@ class Camera:
         self._broker = _FrameBroker()       # persistent across restarts
         self._viewers = 0                   # MJPEG stream clients
         self._holds = 0                     # non-streaming consumers (e.g. face tracker)
-        # Suspended = the sensor has been handed off to another owner (e.g.
-        # MyRobotLab). While suspended available() is False, the sensor is
-        # force-stopped, and nothing restarts it until resume().
-        self._suspended = False
         self._lock = threading.Lock()       # guards backend/_viewers/_holds/settings
 
         self._backend, reason = _build_backend(backend, source, size, lores_size)
@@ -491,7 +487,7 @@ class Camera:
                   + (f" source={source!r}" if source not in (None, "") else ""))
 
     def available(self) -> bool:
-        return self.detected and not self._suspended
+        return self.detected
 
     def is_streaming(self) -> bool:
         """True while the source is running (a viewer or a hold)."""
@@ -515,30 +511,6 @@ class Camera:
                 self._holds -= 1
             if self._viewers == 0 and self._holds == 0 and self._running_locked():
                 self._stop_locked()
-
-    # ---- hardware handoff -------------------------------------------------
-    def is_suspended(self) -> bool:
-        return self._suspended
-
-    def suspend(self) -> None:
-        """Release the camera so another process (e.g. MyRobotLab) can use it.
-        Force-stops it even if viewers/holds remain, and reports unavailable()
-        until resume(); active MJPEG streams simply stop receiving frames.
-        Idempotent."""
-        with self._lock:
-            if self._suspended:
-                return
-            self._suspended = True
-            if self._running_locked():
-                self._stop_locked()
-            if self._indicator is not None:
-                self._indicator.notify_camera(False)
-
-    def resume(self) -> None:
-        """Take the camera back. Doesn't restart it — the next viewer/hold does,
-        lazily. Idempotent."""
-        with self._lock:
-            self._suspended = False
 
     def capture_gray(self):
         """Grab the current frame as a grayscale ndarray, or None if not running
@@ -571,8 +543,7 @@ class Camera:
         return self._backend is not None and self._backend.running()
 
     def _can_start_locked(self) -> bool:
-        return (self._backend is not None and not self._backend.running()
-                and not self._suspended)
+        return self._backend is not None and not self._backend.running()
 
     def _start_locked(self) -> None:
         self._lens_position = self._backend.start(
