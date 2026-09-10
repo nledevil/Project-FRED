@@ -187,18 +187,50 @@ def main() -> int:
     check("one address's failures do not lock another",
           auth.locked_for("192.168.50.100") == 0.0)
 
-    print("sessions")
-    token = auth.open_session()
-    check("a new session is valid", auth.valid_session(token))
-    check("a made-up token is not", not auth.valid_session("nonsense"))
-    check("an empty token is not", not auth.valid_session(""))
-    auth.close_session(token)
-    check("a closed session is not", not auth.valid_session(token))
-    a, b = auth.open_session(), auth.open_session()
-    check("sessions are distinct", a != b)
-    auth.close_all_sessions()
-    check("changing the PIN signs everyone out",
-          not auth.valid_session(a) and not auth.valid_session(b))
+    print("sessions: stateless, signed, restart-surviving")
+    st = {}
+    key = auth.session_secret(st)
+    check("a secret is minted and persisted into settings",
+          key and st.get("auth", {}).get("session_secret") == key)
+    check("asking again returns the same secret", auth.session_secret(st) == key)
+    token = auth.mint_token(key)
+    check("a fresh token verifies", auth.token_valid(token, key))
+    check("a made-up token does not", not auth.token_valid("nonsense", key))
+    check("an empty token does not", not auth.token_valid("", key))
+    _e, _n, _sig = token.split(".")
+    check("a tampered expiry does not verify (signature is over it)",
+          not auth.token_valid("99999999999." + _n + "." + _sig, key))
+    # The whole point: the same token still verifies under a secret re-read from
+    # settings, i.e. across a process restart — the in-memory dict couldn't.
+    key2 = auth.session_secret(dict(st))    # a "restarted" process reloads settings
+    check("a token survives a restart (same persisted secret)", auth.token_valid(token, key2))
+    # ...but not under a different secret (a foreign panel can't verify it).
+    check("a token from another secret is refused",
+          not auth.token_valid(token, auth.session_secret({})))
+    a, b = auth.mint_token(key), auth.mint_token(key)
+    check("tokens are distinct", a != b)
+    auth.revoke_token(a)
+    check("a logged-out token is refused", not auth.token_valid(a, key))
+    check("...but its neighbour still stands", auth.token_valid(b, key))
+    auth.rotate_secret(st)
+    check("rotating the secret signs everyone out (PIN change)",
+          not auth.token_valid(b, auth.session_secret(st)))
+    expired = auth.mint_token(key, ttl=-1)
+    check("an expired token is refused", not auth.token_valid(expired, key))
+
+    print("Host allowlist: the DNS-rebinding guard")
+    hs = {"auth": {"allowed_hosts": ["fred.local"]}}
+    check("a bare IP Host is allowed", auth.host_allowed("10.0.0.1:8080", hs))
+    check("an IPv6 literal Host is allowed", auth.host_allowed("[::1]:8080", hs))
+    check("localhost is allowed", auth.host_allowed("localhost:8080", hs))
+    check("a tailnet name is allowed", auth.host_allowed("fred.tail58016f.ts.net", hs))
+    check("a configured extra name is allowed", auth.host_allowed("fred.local", hs))
+    check("the default 'fred' is allowed", auth.host_allowed("fred", hs))
+    check("no Host at all is allowed (not a browser)", auth.host_allowed("", hs))
+    check("an unknown DNS name is REJECTED (the rebind)",
+          not auth.host_allowed("evil.example.com", hs))
+    check("a lookalike with a port is still rejected",
+          not auth.host_allowed("attacker.com:8080", hs))
 
     print("what the PIN actually gates")
     routes = route_map()

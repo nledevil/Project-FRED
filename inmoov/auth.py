@@ -35,6 +35,7 @@ until someone sets one.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import ipaddress
 import secrets
 import threading
@@ -184,41 +185,140 @@ def note_success(addr: str) -> None:
         _fails.pop(addr, None)
 
 
-# ---- sessions ------------------------------------------------------------
-def open_session() -> str:
-    token = secrets.token_urlsafe(32)
-    with _lock:
-        _sessions[token] = time.monotonic() + SESSION_S
-        _sweep()
-    return token
+# ---- sessions: stateless, signed, restart-surviving ----------------------
+# The panel used to keep sessions in a process dict, which meant every brain
+# restart re-keypadded every phone mid-event — the exact thing you cannot afford
+# when thirty people share one AP and the operator just power-cycled to clear a
+# wedged servo. A session is now a signed statement the server can re-verify
+# without remembering it: "this cookie is good until <t>", HMAC'd with a secret
+# that lives in settings.json and therefore survives the restart the dict did
+# not. No server-side table, so nothing to lose on reboot and nothing to grow.
+#
+# Revocation is the honest cost of statelessness, handled two ways: changing the
+# PIN rotates the secret, which invalidates every outstanding token at once (the
+# close_all the old code did explicitly); a single logout clears the browser's
+# cookie and adds the token to a small in-memory denylist, best-effort defence
+# that a restart empties — acceptable, because a logged-out browser no longer
+# holds the token to replay anyway.
+_TOKEN_SEP = "."
+_revoked: set[str] = set()          # best-effort single-token logout, per process
 
 
-def valid_session(token: str) -> bool:
-    if not token:
+def session_secret(settings: dict, save=None) -> str:
+    """The HMAC key for session tokens, minted once and persisted.
+
+    Pass ``save=save_settings`` so a freshly-minted secret is written back the
+    first time; without it a volatile key is used and tokens die on restart —
+    the old behaviour, kept only for callers that have nowhere to persist.
+    """
+    a = settings.setdefault("auth", {})
+    key = str(a.get("session_secret") or "")
+    if not key:
+        key = secrets.token_hex(32)
+        a["session_secret"] = key
+        if save is not None:
+            try:
+                save(settings)
+            except Exception:       # noqa: BLE001 - a read-only disk must not stop logins
+                pass
+    return key
+
+
+def _sign(payload: str, key: str) -> str:
+    return hmac.new(key.encode(), payload.encode(), hashlib.sha256).hexdigest()
+
+
+def mint_token(key: str, ttl: int = SESSION_S) -> str:
+    """A signed token good for ``ttl`` seconds: ``<exp>.<nonce>.<sig>``. Wall-clock
+    expiry, not monotonic, so it still means something after the clock the process
+    was timing against is gone; the nonce makes two tokens minted in the same
+    second distinct, so a single logout revokes one without touching the other."""
+    exp = str(int(time.time()) + int(ttl))
+    payload = exp + _TOKEN_SEP + secrets.token_urlsafe(9)
+    return payload + _TOKEN_SEP + _sign(payload, key)
+
+
+def token_valid(token: str, key: str) -> bool:
+    """True if ``token`` is well-formed, correctly signed with ``key``, unexpired,
+    and not locally revoked. Constant-time on the signature compare."""
+    if not token or not key or token in _revoked:
         return False
-    with _lock:
-        expires = _sessions.get(token)
-        if expires is None:
-            return False
-        if expires < time.monotonic():
-            _sessions.pop(token, None)
-            return False
+    parts = token.split(_TOKEN_SEP)
+    if len(parts) != 3 or not parts[0].isdigit():
+        return False
+    exp, nonce, sig = parts
+    if not secrets.compare_digest(sig, _sign(exp + _TOKEN_SEP + nonce, key)):
+        return False
+    return int(exp) > int(time.time())
+
+
+def revoke_token(token: str) -> None:
+    """Best-effort single-token logout (see the block comment)."""
+    if token:
+        _revoked.add(token)
+
+
+def rotate_secret(settings: dict, save=None) -> None:
+    """Mint a new secret, invalidating every outstanding token. Used when the PIN
+    changes or is cleared — whoever was in on the old PIN is now out."""
+    settings.setdefault("auth", {})["session_secret"] = secrets.token_hex(32)
+    _revoked.clear()                # the old tokens can't verify anyway now
+    if save is not None:
+        try:
+            save(settings)
+        except Exception:           # noqa: BLE001
+            pass
+
+
+# ---- which hostnames answer here: a Host allowlist against DNS rebinding ----
+# The LAN-trust exemption plus plain HTTP is DNS-rebindable: a browser on a
+# trusted machine visits evil.com, whose DNS is flipped to 10.0.0.1 mid-session,
+# and every fetch it makes now lands on the panel carrying the trusted source
+# address — walking straight through is_trusted(). The one thing the attacker
+# cannot forge is the Host header: the browser sets it from the URL bar, so it
+# reads "evil.com", never a name this robot answers to. Rejecting an unknown
+# Host closes the hole for the cost of a list that already exists in spirit.
+#
+# IP literals are always allowed: a browser only sends an IP Host when the user
+# typed an IP, which is direct access already covered by the LAN/PIN perimeter,
+# not a rebind. Tailnet (*.ts.net) names are allowed because their DNS is not
+# attacker-controllable. Everything else must be on the list.
+DEFAULT_ALLOWED_HOSTS = ("fred", "localhost")
+
+
+def _hostname_only(host: str) -> str:
+    """``host`` down to its bare name: no port, no brackets, lowercased."""
+    h = (host or "").strip()
+    if h.startswith("["):                       # [::1]:8080
+        return h[1:h.index("]")].lower() if "]" in h else h[1:].lower()
+    return (h.rsplit(":", 1)[0] if ":" in h else h).lower()
+
+
+def allowed_hostnames(settings: dict) -> tuple:
+    extra = (settings.get("auth") or {}).get("allowed_hosts") or ()
+    names = set(DEFAULT_ALLOWED_HOSTS)
+    for n in extra:
+        n = str(n).strip().lower()
+        if n:
+            names.add(n)
+    try:
+        import socket
+        names.add(socket.gethostname().lower())
+    except Exception:               # noqa: BLE001 - a nameless host still has its defaults
+        pass
+    return tuple(names)
+
+
+def host_allowed(host_header: str, settings: dict) -> bool:
+    """Is this request's Host one this robot answers to? See the block comment."""
+    name = _hostname_only(host_header)
+    if not name:
+        return True                 # no Host at all: not a browser, not a rebind
+    try:
+        ipaddress.ip_address(name)  # a bare IP can't be rebound
         return True
-
-
-def close_session(token: str) -> None:
-    with _lock:
-        _sessions.pop(token, None)
-
-
-def close_all_sessions() -> None:
-    """Used when the PIN changes: whoever was in on the old one is out."""
-    with _lock:
-        _sessions.clear()
-
-
-def _sweep() -> None:
-    """Drop expired tokens. Called under the lock, on the rare write path."""
-    now = time.monotonic()
-    for token in [t for t, exp in _sessions.items() if exp < now]:
-        _sessions.pop(token, None)
+    except ValueError:
+        pass
+    if name == "localhost" or name.endswith(".localhost") or name.endswith(".ts.net"):
+        return True
+    return name in allowed_hostnames(settings)

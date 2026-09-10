@@ -341,6 +341,27 @@ def _audit_state() -> dict:
 SESSION_COOKIE = "fred_pin"
 
 
+def _session_key() -> str:
+    """The HMAC key session cookies are signed with, minted once into settings
+    and persisted so a brain restart no longer re-keypads every phone."""
+    return auth.session_secret(_settings, save_settings)
+
+
+# Mint-and-persist the secret at boot, before the first request, so the write
+# happens once at a quiet moment rather than racing the first two logins.
+_session_key()
+
+
+@app.before_request
+def _guard_host():
+    """Reject a request whose Host is not one this robot answers to — the DNS-
+    rebinding guard for the LAN-trust exemption (see auth.host_allowed). Runs
+    before everything, but IP-literal and tailnet Hosts pass, so the Pis, the
+    admin, and every legitimate name are untouched."""
+    if not auth.host_allowed(request.host or "", _settings):
+        return "unrecognised Host", 421
+
+
 def _authed() -> bool:
     """May this request touch the settings, or anything that moves him?
 
@@ -352,7 +373,7 @@ def _authed() -> bool:
         return True
     if auth.is_trusted(request.remote_addr or "", _settings):
         return True
-    return auth.valid_session(request.cookies.get(SESSION_COOKIE, ""))
+    return auth.token_valid(request.cookies.get(SESSION_COOKIE, ""), _session_key())
 
 
 def _needs_pin():
@@ -463,14 +484,14 @@ def api_auth_login():
         return jsonify({"error": "wrong PIN", "locked_for": round(wait, 1)}), 403
     auth.note_success(addr)
     resp = jsonify({"unlocked": True})
-    resp.set_cookie(SESSION_COOKIE, auth.open_session(), httponly=True,
+    resp.set_cookie(SESSION_COOKIE, auth.mint_token(_session_key()), httponly=True,
                     samesite="Lax", max_age=auth.SESSION_S)
     return resp
 
 
 @app.post("/api/auth/logout")
 def api_auth_logout():
-    auth.close_session(request.cookies.get(SESSION_COOKIE, ""))
+    auth.revoke_token(request.cookies.get(SESSION_COOKIE, ""))
     resp = jsonify({"unlocked": False})
     resp.delete_cookie(SESSION_COOKIE)
     return resp
@@ -496,7 +517,7 @@ def api_auth_set_pin():
         return jsonify({"error": "the current PIN is wrong"}), 403
     _settings.setdefault("auth", {})["pin"] = auth.make_material(new)
     save_settings(_settings)
-    auth.close_all_sessions()
+    auth.rotate_secret(_settings, save_settings)
     pushed, why = _push_pin_to_chest()
     resp = jsonify({"pin_set": True, "chest_synced": pushed, "chest_error": why})
     resp.delete_cookie(SESSION_COOKIE)
@@ -512,7 +533,7 @@ def api_auth_clear_pin():
         return jsonify({"error": "the current PIN is wrong"}), 403
     _settings.setdefault("auth", {}).pop("pin", None)
     save_settings(_settings)
-    auth.close_all_sessions()
+    auth.rotate_secret(_settings, save_settings)
     _push_pin_to_chest()
     resp = jsonify({"pin_set": False})
     resp.delete_cookie(SESSION_COOKIE)
