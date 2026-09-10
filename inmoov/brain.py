@@ -871,8 +871,24 @@ class Brain:
             for _ in range(8):                       # bounded tool loop
                 kwargs = dict(model=model, max_tokens=400, system=system,
                               messages=messages, tools=tools)
-                if which == "claude" and model.startswith(_EFFORT_MODELS):
-                    kwargs["output_config"] = {"effort": "low"}  # snappy — it's spoken
+                if which == "claude":
+                    # Cache the tools+system prefix. Render order is
+                    # tools -> system -> messages, so a breakpoint on the system
+                    # block covers both, and everything volatile — the per-turn
+                    # facts and the question — sits after it in messages, uncached.
+                    # The prefix is deterministic per (backend, web switch, shell
+                    # armed), which is exactly what _system_for/_tools_for already
+                    # guarantee, so repeat turns read it at ~0.1x instead of
+                    # paying full input price for ~1200 tokens of prompt and tool
+                    # schemas every single turn and every tool-loop iteration.
+                    #
+                    # Claude only: the local shim's _to_ollama wants `system` as a
+                    # plain string and has no notion of cache_control, so the
+                    # block form and the breakpoint go on this path alone.
+                    kwargs["system"] = [{"type": "text", "text": system,
+                                         "cache_control": {"type": "ephemeral"}}]
+                    if model.startswith(_EFFORT_MODELS):
+                        kwargs["output_config"] = {"effort": "low"}  # snappy — spoken
                 splitter = _SentenceSplitter(ship)
                 # Stream so the first sentence reaches the speaker while the rest
                 # is still being written. Text blocks arrive before tool_use ones,

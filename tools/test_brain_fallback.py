@@ -152,6 +152,30 @@ def main() -> int:
     check("fallback is guarded on 'not spoke'", "not result.get(\"spoke\")" in src,
           "the guard that protects a reply already in progress")
 
+    print("the Claude path caches its tools+system prefix; the local path does not")
+    # Verified live to actually cache (turn 2 read the prefix at ~0.1x); this
+    # asserts the request SHAPE that makes it possible, so a refactor that drops
+    # the block form silently reverts to full-price prompts every turn.
+    b = make_brain(); b.backend = "claude"
+    seen = {}
+    b._client = FakeClient()
+    b._client.messages.stream = (lambda **kw: (seen.update(kw),
+        _Stream("hi.", "end_turn", False))[1])
+    b.respond("hello")
+    sysv = seen.get("system")
+    check("Claude system is the cache_control block form",
+          isinstance(sysv, list) and sysv[0].get("cache_control", {}).get("type") == "ephemeral",
+          repr(type(sysv)))
+    # the local path must stay a plain string — the Ollama shim needs it
+    b2 = make_brain(); b2.backend = "local"
+    b2._local = fake_local(True)
+    seen2 = {}
+    b2._local.messages = types.SimpleNamespace(
+        stream=lambda **kw: (seen2.update(kw), _Stream("hi.", "end_turn", False))[1])
+    b2.respond("hello")
+    check("local system stays a plain string (no cache_control)",
+          isinstance(seen2.get("system"), str), repr(type(seen2.get("system"))))
+
     print("_SentenceSplitter streams sentences as they land")
     out = []
     sp = B._SentenceSplitter(out.append)
