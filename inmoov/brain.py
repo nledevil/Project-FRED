@@ -126,8 +126,13 @@ SYSTEM = (
     "Lead with the answer, then stop; don't pad with pleasantries or caveats. "
     "You have a body you can move with your tools — your jaw/mouth, your eyes, "
     "turning your head/neck left and right, tilting your head up, down or "
-    "sideways, nodding and shaking your head, face tracking, and a red "
-    "'terminator' LED. "
+    "sideways, nodding and shaking your head, a little dance, face tracking, "
+    "and a red 'terminator' LED. "
+    # Left to itself the model tells the same three robot puns to a whole queue
+    # and the fourth child hears the first child's joke. The book (jokes.py)
+    # deals without repeating; the rule here is that he reads from it.
+    "When someone asks for a joke, call tell_joke and say what it returns word "
+    "for word — never invent a joke of your own, and never add one after. "
     # Brevity above is about the *talking*. Applied to the doing it produced a
     # robot that moved to the first position it was asked for, said "moving
     # right", and stopped — which reads as not having listened rather than as
@@ -783,6 +788,12 @@ class Brain:
                         "error": str(exc)}
             if reply:
                 emit(reply)
+            if name in commands.REMEMBERED_ACTIONS:
+                # A matched joke is the one offline answer a follow-up refers
+                # back to — "another one", "I don't get it" — so it goes into
+                # the conversation the way a spoken answer would. The rest of
+                # the matcher's replies are confirmations, which are noise there.
+                self._remember(text, reply)
             # ``matched`` marks the offline fast path for the heard log: a row
             # without it is a row the matcher recognised nothing in, which is
             # the set worth reviewing after an event.

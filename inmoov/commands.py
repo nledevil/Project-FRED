@@ -20,7 +20,7 @@ import io
 import random
 import re
 
-from . import diagnostic, sysinfo, whoami
+from . import diagnostic, jokes, sysinfo, whoami
 
 # The one tool whose result is a picture rather than a sentence. brain.py
 # special-cases it (see Brain._look) because only there is it known which
@@ -185,6 +185,85 @@ def _shake_head(ctx, times: int = 2) -> str:
         c.move_smooth("neck", right, duration=0.3)
     c.move_smooth("neck", rest, duration=0.3)
     return "Shaking my head."
+
+
+def _tell_joke(ctx) -> str:
+    """One joke from the book — see jokes.py for why it is a book and not the model."""
+    book = getattr(ctx, "jokes", None) or jokes.DEFAULT_BOOK
+    return book.next()
+
+
+# Named routines over the head servos, each ending at rest. "Can you dance?" is
+# the second thing a child asks after "tell me a joke", and before this the
+# honest answer was a sentence. Every step is a blocking move_smooth, so a
+# routine is a script, not a state; the turn waits for it (three or four
+# seconds) and the spoken line comes after — which reads as a flourish and
+# then a bow, not as a robot that stopped listening.
+#
+# Fractions of the calibrated travel, never the end stops, for the reason _nod
+# gives: a gesture that slams to the limit looks like a fault. Face tracking is
+# not paused, matching nod and shake_head — the tracker nudges, the routine
+# sweeps, and the routine wins for as long as it runs.
+GESTURES = ("dance", "look_around")
+
+# Matched actions whose reply is worth keeping in the conversation memory (the
+# brain drops the rest: "Nodding." is not context). A joke is: "another one"
+# and "I don't get it" only make sense if the model can see it was told.
+REMEMBERED_ACTIONS = ("tell_joke",)
+
+
+def _towards(s: dict, frac: float) -> float:
+    """``frac`` of the way from rest towards max (positive) or min (negative)."""
+    rest = s["rest_angle"]
+    if frac >= 0:
+        return rest + (s["max_angle"] - rest) * frac
+    return rest - (rest - s["min_angle"]) * -frac
+
+
+def _gesture(ctx, routine: str) -> str:
+    c = ctx.controller
+    want = (routine or "").strip().lower().replace(" ", "_")
+    have = {n: c.servos.get(n) for n in ("neck", "head_tilt_lr", "head_tilt_fb",
+                                          "eye_x", "eye_y")}
+
+    def move(servo: str, frac: float, duration: float) -> None:
+        s = have.get(servo)
+        if s:
+            c.move_smooth(servo, _towards(s, frac), duration=duration)
+
+    def settle() -> None:
+        # Always last, whatever the routine did, so he ends where he started.
+        for servo, s in have.items():
+            if s:
+                c.move_smooth(servo, s["rest_angle"], duration=0.3)
+
+    if want == "dance":
+        if not (have["neck"] or have["head_tilt_lr"]):
+            return "I can't dance — my neck isn't wired up."
+        # A head-bob: tip and turn to one side, then the other, twice, on a
+        # beat of about 0.3 s a move; a nod for the finish.
+        for _ in range(2):
+            move("head_tilt_lr", -0.5, 0.3)
+            move("neck", -0.4, 0.3)
+            move("head_tilt_lr", 0.5, 0.3)
+            move("neck", 0.4, 0.3)
+        move("head_tilt_fb", 0.5, 0.3)
+        move("head_tilt_fb", -0.3, 0.3)
+        settle()
+        return "Ta-da! That's my best dance."
+    if want == "look_around":
+        if not (have["neck"] or have["eye_x"]):
+            return "I can't look around — my neck isn't wired up."
+        # Eyes lead, head follows, each way, then a glance up. A curious
+        # scan, not a search: he is not looking *for* anything.
+        move("eye_x", -1.0, 0.15)
+        move("neck", -0.6, 0.5)
+        move("eye_x", 1.0, 0.2)
+        move("neck", 0.6, 0.7)
+        move("eye_y", -0.6, 0.2)
+        settle()
+        return "Nothing much going on out there."
+    return "I can dance, or look around. Those are my moves."
 
 
 def _speak_distance(cm: float) -> str:
@@ -648,6 +727,10 @@ def execute_action(ctx, name: str, **args) -> str:
         return _nod(ctx, args.get("times", 2))
     if name == "shake_head":
         return _shake_head(ctx, args.get("times", 2))
+    if name == "tell_joke":
+        return _tell_joke(ctx)
+    if name == "gesture":
+        return _gesture(ctx, str(args.get("routine", "")))
     if name == "diagnostic":
         return _diagnostic(ctx, str(args.get("check", "")),
                            str(args.get("unit", "")),
@@ -768,6 +851,23 @@ _PATTERNS = [
     # Gestures first: "nod" is a thing to do, not a direction to hold.
     (re.compile(r"\bnod\b", re.I), "nod", {}),
     (re.compile(r"\b(shake (your |the )?head|shake it off)\b", re.I), "shake_head", {}),
+    # The two things children actually ask for. Both want a request shape —
+    # a verb, or a fixed phrase — for the reason the LED rule does: "that's a
+    # joke" and "I like dancing" are sentences said near him, not to him.
+    #
+    # The joke rule also refuses anything in the first person, because "I have a
+    # joke for you" and "wanna hear a joke?" are a child offering one — the
+    # worst possible moment for him to talk over them with his own. Those go
+    # to the model, which can listen.
+    (re.compile(r"^(?!.*\b(i|i'?ll|i'?ve|i'?d|my|mine|we|our)\b)"
+                r"(?:.*\b(tell|say|give)\b.*\b(jokes?|something funny)\b"
+                r"|.*\byou (have|got|know)\b.*\bjokes?\b"
+                r"|.*\b(make me laugh|another joke|joke please|joke time)\b)", re.I),
+     "tell_joke", {}),
+    (re.compile(r"^(?!.*\b(like|love|hate|watch(ed|ing)?|went|saw|party|class|lessons?)\b)"
+                r".*\b(dance|boogie|bust a move)\b", re.I), "gesture", {"routine": "dance"}),
+    (re.compile(r"\b(look|glance|have a look|take a look) around\b", re.I),
+     "gesture", {"routine": "look_around"}),
     # Head tilt, ahead of the eye rules: "tilt your head up" must move the head,
     # not just the eyes, and "look up" alone still means the eyes.
     (re.compile(r"\b(tilt|tip|lean)\b.*\b(head)?\b.*\b(?P<direction>up|down|left|right)\b", re.I), "tilt_head", "group"),
@@ -982,6 +1082,21 @@ CLAUDE_TOOLS = [
      "input_schema": {"type": "object", "properties": {
          "times": {"type": "integer",
                    "description": "How many shakes, 1-5. Defaults to 2."}}}},
+    {"name": "tell_joke", "description":
+        "Tell one joke from FRED's own book of short, child-safe jokes. Use this "
+        "every time someone asks for a joke, something funny, or another one — "
+        "never make a joke up yourself. Then say the joke it returns exactly, "
+        "word for word, with nothing added before or after it.",
+     "input_schema": {"type": "object", "properties": {}}},
+    {"name": "gesture", "description":
+        "Perform a short canned head routine, ending back at rest. 'dance' is a "
+        "few seconds of head-bobbing for 'can you dance?'; 'look_around' is a "
+        "curious scan of the room. Use it when asked to dance, show off, or look "
+        "around; use nod, shake_head, look and turn_head for anything more "
+        "specific.",
+     "input_schema": {"type": "object", "properties": {
+         "routine": {"type": "string", "enum": list(GESTURES)}},
+         "required": ["routine"]}},
     {"name": "turn_head", "description": "Physically rotate FRED's whole head/neck left, right, or back to center. Use this for 'turn your head', 'face left', etc. — distinct from 'look', which only moves the eyes.",
      "input_schema": {"type": "object", "properties": {
          "direction": {"type": "string", "enum": ["left", "right", "center"]}},
@@ -1122,6 +1237,12 @@ def run_tool(ctx, tool_name: str, tool_input: dict) -> str:
         return execute_action(ctx, "nod", times=ti.get("times", 2))
     if tool_name == "shake_head":
         return execute_action(ctx, "shake_head", times=ti.get("times", 2))
+    if tool_name == "tell_joke":
+        return execute_action(ctx, "tell_joke")
+    if tool_name == "gesture":
+        # ``routine``, not ``name`` — see play_sound below for why that key is
+        # taken. The test caught this one before the model did.
+        return execute_action(ctx, "gesture", routine=ti.get("routine", ""))
     if tool_name == "diagnostic":
         return execute_action(ctx, "diagnostic", check=ti.get("check", ""),
                               unit=ti.get("unit", ""))
