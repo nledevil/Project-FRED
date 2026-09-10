@@ -22,6 +22,13 @@ FILES=(
   "deploy/net-head/interfaces:$HEAD_USER@$HEAD_HOST:/etc/network/interfaces"
   "deploy/hotspot-nuc/fred-nat.nft:-:/etc/nftables.conf"
   "deploy/hotspot-nuc/99-fred-nat.conf:-:/etc/sysctl.d/99-fred-nat.conf"
+  # The NUC's own load-bearing network files, tracked since 2026-09-09 —
+  # before that the bridge, the DHCP reservations and the robot-LAN NTP
+  # existed only on the one disk whose loss takes the whole robot with it.
+  # See deploy/net-nuc/README.md for what is deliberately left out.
+  "deploy/net-nuc/00-installer-config.yaml:-:/etc/netplan/00-installer-config.yaml"
+  "deploy/net-nuc/fred-dnsmasq.conf:-:/etc/dnsmasq.d/fred.conf"
+  "deploy/net-nuc/robot-lan-chrony.conf:-:/etc/chrony/conf.d/robot-lan.conf"
 )
 
 bad=0

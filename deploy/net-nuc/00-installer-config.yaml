@@ -1,0 +1,53 @@
+# FRED network config.
+#
+#   wlo1     - AP "fred" (hostapd, 192.168.50.1). NOT a client: the Realtek USB
+#              card cannot host an AP (rtl8xxxu does managed/monitor only) and
+#              the Intel can, so the two cards swapped jobs on 2026-08-12.
+#              Left unconfigured here on purpose -- fred-hotspot.service owns it.
+#   wlx3...  - house WiFi, DHCP. Default route / internet.
+#   br0      - robot LAN, 10.0.0.1/24. The NUC owns this address, taking over
+#              the one the head Pi held under the old Bluetooth PAN, so the
+#              chest's SENSOR_URL default (http://10.0.0.1:8080) still resolves
+#              to the panel. dnsmasq serves DHCP on this segment.
+#   enp86s0  - robot LAN port, bridged into br0. Chest Pi plugs in here.
+#   enp87s0  - robot LAN port, bridged into br0. Head Pi plugs in here.
+#
+# 2026-08-09: the switch both Pis hung off died. Rather than replace it, the
+# NUC's two NICs are bridged into br0 and each Pi plugs directly into one port
+# -- the NUC now *is* the switch. The subnet, the 10.0.0.1 address and the
+# MAC-based DHCP reservations are all unchanged, so nothing downstream had to
+# move. If a replacement switch is ever fitted, either port alone still works;
+# the bridge does not need undoing.
+#   The client radio's networks now live in 60-fred-uplink.yaml, which
+#   /usr/local/sbin/fred-uplink rewrites when somebody joins a network from
+#   the panel or the web app. Kept out of this file so a machine writing
+#   YAML never has to reproduce the comments above.
+network:
+  version: 2
+  ethernets:
+    enp86s0:
+      match:
+        macaddress: 48:21:0b:7f:ad:73
+      set-name: enp86s0
+      dhcp4: false
+      dhcp6: false
+      optional: true
+    enp87s0:
+      dhcp4: false
+      dhcp6: false
+      optional: true
+  bridges:
+    br0:
+      interfaces: [enp86s0, enp87s0]
+      addresses: [10.0.0.1/24]
+      accept-ra: false
+      dhcp4: false
+      dhcp6: false
+      optional: true
+      parameters:
+        # Two ports, no possible loop. STP off with zero forward-delay so a
+        # port carries traffic the instant a Pi is plugged in -- with STP on,
+        # the ~30s listening/learning delay makes the Pis' first DHCP DISCOVER
+        # time out and they boot without an address.
+        stp: false
+        forward-delay: 0

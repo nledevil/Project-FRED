@@ -58,7 +58,38 @@ There is no separate build step. If you edit the unit file itself, run
   sudo systemctl daemon-reload && sudo systemctl restart inmoov
   ```
 
-## Local LLM brain (Ollama, Intel Arc iGPU)
+## Rebuilding the brain (2026-09-09)
+
+The NUC is the machine whose loss kills everything — bridge, DHCP/DNS/NTP for
+the robot LAN, the AP, the brain, the terminals. This is the order that gets a
+fresh Ubuntu install back to being FRED, assuming a `tools/backup.sh` archive
+(which holds every secret and every hand-derived tuning) and this repo.
+
+1. **Clone the repo** to `~/fred/Project-FRED`; make the venv and restore its
+   packages from `deploy/requirements-nuc.txt` (`pip install -r`).
+2. **Network first** — nothing else is reachable without it. Copy from
+   `deploy/net-nuc/` (or the backup's live copies): the netplan bridge to
+   `/etc/netplan/00-installer-config.yaml`, the robot-LAN dnsmasq to
+   `/etc/dnsmasq.d/fred.conf`, chrony to `/etc/chrony/conf.d/robot-lan.conf`;
+   `netplan apply`, restart dnsmasq + chrony. The Pis should reappear at
+   10.0.0.10/.11 (their leases are MAC-reserved). NAT/sysctl files are in
+   `deploy/hotspot-nuc/`; the AP is `deploy/hotspot-nuc/`'s install notes.
+3. **Secrets** — from the backup archive: `config/settings.json` (PIN digest,
+   device tokens, every device-name tuning), `config/phrases.json`,
+   `/etc/fred/anthropic.env` (root-only, the API key).
+4. **Units** — the backup's `nuc/systemd/` holds what was actually installed
+   (repo copies can lag the machine); `sudo cp`, `daemon-reload`, enable
+   `fred-panel` and the terminal units you use.
+5. **udev** — `deploy/99-respeaker-xvf3800.rules` to `/etc/udev/rules.d/`,
+   reload + trigger, or the mic's direction readout runs root-only.
+6. **Prove it** — `tools/preflight.py`. Every hidden-degradation case this
+   rebuild can produce (Ollama on CPU, deaf mic, frozen camera, missing key)
+   is a line in its output; do not trust a rebuild that has not run it.
+
+The Pis need no rebuild step beyond `deploy/push-role.sh <role>` plus their
+unit files and token drop-ins from the backup's `head/` and `chest/` trees.
+
+# Local LLM brain (Ollama, Intel Arc iGPU)
 
 FRED goes places without reliable WiFi, so the cloud can't be the only brain. A
 local model runs on the NUC and answers the open questions the command matcher
