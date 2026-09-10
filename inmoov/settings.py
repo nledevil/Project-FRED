@@ -234,6 +234,12 @@ DEFAULT_SETTINGS = {
             "seconds": 12,           # rolling window kept per utterance
             "max_files": 300,        # oldest dropped past this
         },
+        # On-array gain/AGC re-applied at every boot (the XVF3800 forgets across
+        # a power cycle). Empty = leave the device at its own defaults, which is
+        # the shipped behaviour; tune with tools/xvf_tune.py and paste the values
+        # here to make them stick. Names: AEC_ASROUTGAIN, PP_AGCDESIREDLEVEL,
+        # PP_AGCMAXGAIN, PP_AGCONOFF, AEC_ASROUTONOFF. See inmoov/xvf_params.py.
+        "xvf_params": {},
         "model": "claude-haiku-4-5-20251001",   # Claude model behind FRED's replies.
         # Listen through his own replies, so saying his name over him cuts the
         # answer short. The speakerphone cancels his voice out of its own capture,

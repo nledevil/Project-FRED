@@ -60,6 +60,7 @@ from inmoov.settings import load_settings, save_settings  # noqa: E402
 from inmoov import auth  # noqa: E402
 from inmoov import whoami as whoami_mod  # noqa: E402
 from inmoov.mic_doa import MicDoa, TUNABLE as DOA_TUNABLE  # noqa: E402
+from inmoov import xvf_params              # noqa: E402
 from inmoov.diagnostic import DiagnosticMode, Refused as DiagRefused  # noqa: E402
 
 app = Flask(__name__)
@@ -153,6 +154,10 @@ _doa_cfg = {k: v for k, v in (_settings.get("mic_doa") or {}).items()
             if k in DOA_TUNABLE}         # same filter as "track": a hand-edited
                                          # settings.json must not break startup
 _mic_doa = MicDoa(log=lambda m: print(m, flush=True), **_doa_cfg)
+# Re-apply any configured XVF3800 gain/AGC tuning — the array forgets it across a
+# power cycle. A no-op unless settings.voice.xvf_params is set, so a rig without
+# the array or without a reason to tune it is untouched. See inmoov/xvf_params.py.
+xvf_params.apply_from_settings(_settings, log=lambda m: print(m, flush=True))
 # Deliberately not read from settings: diagnostic mode never survives a restart.
 # See inmoov/diagnostic.py — the failure it guards is flipping this on in the
 # workshop and unpacking the robot at a school two days later.
