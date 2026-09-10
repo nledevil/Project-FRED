@@ -233,7 +233,13 @@ uttercap.configure(enabled=bool(_cap_cfg.get("enabled", False)),
 _greet_cfg = _settings.get("greet", {})
 _greeter = Greeter(_assistant, log=_log,
                    enabled=bool(_greet_cfg.get("enabled", True)),
-                   cooldown=float(_greet_cfg.get("cooldown", 90.0)))
+                   cooldown=float(_greet_cfg.get("cooldown", 90.0)),
+                   sightings_to_greet=int(_greet_cfg.get("sightings_to_greet", 3)))
+# V5: let the wide camera trigger greetings too. It sees 180°, where the
+# ultrasonic cone doesn't, so someone entering from the side was tracked-toward
+# but never greeted. The spotter reports each detect cycle; the greeter's N-gate
+# and cooldown turn a run of sightings into one greeting.
+_spotter.set_cycle_observer(_greeter.on_sighting)
 def _on_sensor_event(node, event):
     """Fan the sensor node's events out to everything that cares.
 

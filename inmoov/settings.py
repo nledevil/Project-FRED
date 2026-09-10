@@ -259,6 +259,10 @@ DEFAULT_SETTINGS = {
         "cooldown": 90.0,             # seconds before the same arrival can greet again;
                                       # stops a person lingering at the edge of the cone
                                       # from being greeted over and over
+        # V5: consecutive wide-camera detections that count as an approach, so he
+        # greets people the 180° camera sees, not just the ultrasonic cone. Higher
+        # = surer it's a real person before he speaks up. Fires once per presence.
+        "sightings_to_greet": 3,
     },
     "track": {
         # Face-tracking tunables (gains, invert flags, deadzone...). Deliberately

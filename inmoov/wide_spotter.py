@@ -263,6 +263,7 @@ class WideSpotter:
         self._frame_wh: tuple[int, int] | None = None
         self._detects = 0
         self._detect_ms = 0.0
+        self._on_cycle = None       # optional callback(seen: bool) per detect cycle (V5)
 
         # The browser feed, on its own condition rather than _lock: a viewer
         # blocks here for up to seconds waiting for the next frame, and holding
@@ -495,13 +496,23 @@ class WideSpotter:
             if len(faces) == 0:
                 # Do NOT write a bearing of 0.0 here — that would read as
                 # "straight ahead" instead of "no opinion". Let it go stale.
-                return
-            # Largest face wins: nearest person, and the least likely to be a
-            # false positive on a patterned wall.
-            x, y, fw, fh = max(faces, key=lambda f: f[2] * f[3])
-            cx = x + fw / 2.0
-            self._bearing = (cx / float(frame.shape[1])) * 2.0 - 1.0
-            self._bearing_at = time.monotonic()
+                seen = False
+            else:
+                # Largest face wins: nearest person, and the least likely to be a
+                # false positive on a patterned wall.
+                x, y, fw, fh = max(faces, key=lambda f: f[2] * f[3])
+                cx = x + fw / 2.0
+                self._bearing = (cx / float(frame.shape[1])) * 2.0 - 1.0
+                self._bearing_at = time.monotonic()
+                seen = True
+        # Outside the lock: tell a per-cycle observer whether a face was seen, so
+        # it never calls back into another subsystem (the greeter) while this one
+        # holds its lock. Used by V5 to greet people the wide camera sees.
+        if self._on_cycle is not None:
+            try:
+                self._on_cycle(seen)
+            except Exception:      # noqa: BLE001 - an observer must never break detection
+                pass
 
     # ---- what the panel consumes -----------------------------------------
     def _publish(self, frame) -> None:
@@ -570,6 +581,13 @@ class WideSpotter:
                 self._viewers = max(0, self._viewers - 1)
 
     # ---- what the tracker consumes ---------------------------------------
+    def set_cycle_observer(self, cb) -> None:
+        """Register a ``callback(seen: bool)`` fired once per detect cycle — the
+        wide camera's per-frame "is a face in view" signal. The greeter uses it
+        to greet people this camera sees across 180°, where the ultrasonic cone
+        doesn't reach (V5). Pass None to clear."""
+        self._on_cycle = cb
+
     def bearing(self) -> float | None:
         """-1..+1 (negative = image left), or None for "no opinion".
 

@@ -40,7 +40,7 @@ class Greeter:
     """Turns ``approach`` events into a spoken greeting. Never raises."""
 
     def __init__(self, assistant, log=None, enabled: bool = True,
-                 cooldown: float = 90.0, phrases=None):
+                 cooldown: float = 90.0, phrases=None, sightings_to_greet: int = 3):
         self._assistant = assistant
         self._log = log
         self._enabled = bool(enabled)
@@ -48,6 +48,13 @@ class Greeter:
         self._phrases = tuple(phrases) if phrases else GREETINGS
         self._last = 0.0
         self._lock = threading.Lock()
+        # V5: the wide camera sees 180°, the ultrasonic cone doesn't. N consecutive
+        # spotter sightings count as an approach, fired once per continuous
+        # presence (reset when the person leaves the frame), through the same
+        # cooldown/never-interrupt gate as a sensor approach.
+        self._sightings_needed = max(1, int(sightings_to_greet))
+        self._sightings = 0
+        self._greeted_presence = False
 
     # -- configuration -----------------------------------------------------
     @property
@@ -88,6 +95,31 @@ class Greeter:
                              name="greeter", daemon=True).start()
         except Exception:
             pass                      # a greeting is never worth breaking ingest for
+
+    def on_sighting(self, seen: bool, node: str = "wide camera") -> None:
+        """Wide-spotter per-cycle hook (V5): a face was seen this detect cycle,
+        or not. N consecutive sightings synthesize an approach — so someone
+        entering from the side, whom the ultrasonic cone never sees, still gets
+        greeted. Fires once per continuous presence: a miss (they left the frame)
+        re-arms it. The actual greeting still passes through on_event's cooldown
+        and never-interrupt gate, so this can't talk over him or double-greet.
+        Cheap and non-blocking; swallows everything."""
+        try:
+            if not self._enabled:
+                return
+            if not seen:
+                self._sightings = 0
+                self._greeted_presence = False
+                return
+            if self._greeted_presence:
+                return                       # already greeted this arrival; wait for them to leave
+            self._sightings += 1
+            if self._sightings >= self._sightings_needed:
+                self._sightings = 0
+                self._greeted_presence = True
+                self.on_event(node, {"event": "approach"})
+        except Exception:
+            pass                             # a greeting is never worth breaking the detect loop
 
     def _greet(self, node: str) -> None:
         line = random.choice(self._phrases)
