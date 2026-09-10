@@ -470,6 +470,7 @@ class Camera:
         self._broker = _FrameBroker()       # persistent across restarts
         self._viewers = 0                   # MJPEG stream clients
         self._holds = 0                     # non-streaming consumers (e.g. face tracker)
+        self._lit = False                   # last state pushed to the indicator LED
         self._lock = threading.Lock()       # guards backend/_viewers/_holds/settings
 
         self._backend, reason = _build_backend(backend, source, size, lores_size)
@@ -498,19 +499,37 @@ class Camera:
     def acquire(self) -> None:
         """Keep the source running for a consumer that reads frames directly via
         ``capture_gray()`` (rather than the MJPEG stream). Pair with release().
-        Does not light the status LED — that tracks MJPEG viewers only."""
+
+        Lights the status LED like a viewer does: the privacy light means "the
+        camera is on", and a hold — face tracking, face-recall sampling, a
+        vision-tool snapshot — turns the camera on exactly as a stream does. See
+        _update_indicator_locked."""
         with self._lock:
             self._holds += 1
             if self._can_start_locked():
                 self._start_locked()
+            self._update_indicator_locked()
 
     def release(self) -> None:
         """Drop a hold taken by acquire(); stops the source if nobody's left."""
         with self._lock:
             if self._holds > 0:
                 self._holds -= 1
+            self._update_indicator_locked()
             if self._viewers == 0 and self._holds == 0 and self._running_locked():
                 self._stop_locked()
+
+    def _update_indicator_locked(self) -> None:
+        """Drive the privacy LED to match whether the camera is actually on —
+        any viewer OR any hold. Called under _lock on every viewer/hold change;
+        only pushes to the LED on a real transition, so redundant grabs are free.
+        The invariant is the whole point: the light is on whenever the camera is."""
+        if self._indicator is None:
+            return
+        want = (self._viewers + self._holds) > 0
+        if want != self._lit:
+            self._lit = want
+            self._indicator.notify_camera(want)
 
     def capture_gray(self):
         """Grab the current frame as a grayscale ndarray, or None if not running
@@ -603,8 +622,7 @@ class Camera:
             self._viewers += 1
             if self._can_start_locked():              # tracker may already hold it open
                 self._start_locked()
-            if self._viewers == 1 and self._indicator is not None:
-                self._indicator.notify_camera(True)   # first viewer -> LED on (if enabled)
+            self._update_indicator_locked()           # a viewer lights the LED like a hold does
         broker = self._broker
         last = 0
         try:
@@ -619,9 +637,8 @@ class Camera:
         finally:
             with self._lock:
                 self._viewers -= 1
+                self._update_indicator_locked()       # LED stays on if a hold remains
                 if self._viewers == 0:
-                    if self._indicator is not None:
-                        self._indicator.notify_camera(False)  # last viewer gone -> LED off (if enabled)
                     if self._holds == 0 and self._running_locked():
                         self._stop_locked()               # nobody left (no viewers, no holds)
 
