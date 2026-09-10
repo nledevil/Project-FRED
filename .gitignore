@@ -4,7 +4,10 @@ __pycache__/
 *.log
 captures/
 config/secrets.env
-models/
+models/*
+# ...but YuNet's weights are a small, version-pinned code dependency of
+# inmoov/face_detect.py, not a bulky out-of-band model, so they ship.
+!models/yunet/
 # Terminator movie clips are copyrighted — keep them local, out of the repo.
 sounds/terminator/*.wav
 

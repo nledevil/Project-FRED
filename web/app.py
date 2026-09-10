@@ -157,6 +157,7 @@ _mic_doa = MicDoa(log=lambda m: print(m, flush=True), **_doa_cfg)
 _diagnostic = DiagnosticMode(log=lambda m: print(m, flush=True))
 _spotter = WideSpotter(log=lambda m: print(m, flush=True),
                        device=_spot_cfg.get("device", "PanaCast"),
+                       detector=str(_spot_cfg.get("detector", "yunet")),
                        detect_hz=float(_spot_cfg.get("detect_hz", 4.0)),
                        detect_width=int(_spot_cfg.get("detect_width", 1920)),
                        view_hz=float(_spot_cfg.get("view_hz", 10.0)),

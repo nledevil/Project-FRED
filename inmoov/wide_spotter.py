@@ -59,6 +59,7 @@ except Exception as exc:                # noqa: BLE001 - no OpenCV just means no
     _CV2_ERR = exc
 
 from inmoov.face_tracker import CASCADE_PATH
+from inmoov import face_detect
 
 # The panorama is the only mode that actually spans ~180 degrees; every other
 # resolution this device offers is a 16:9 crop. If we silently got a crop, the
@@ -228,6 +229,7 @@ class WideSpotter:
 
     def __init__(self, device: int = 0, *, detect_hz: float = 4.0,
                  detect_width: int = 1920, cascade_path: str = CASCADE_PATH,
+                 detector: str = "yunet",
                  min_face_px: int = 24, stale_after: float = 2.0,
                  size: tuple[int, int] = PANORAMA,
                  view_hz: float = VIEW_HZ, view_width: int = VIEW_WIDTH,
@@ -252,7 +254,6 @@ class WideSpotter:
         self._log = log
 
         self._cap = None
-        self._cascade = None
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._lock = threading.Lock()
@@ -272,15 +273,19 @@ class WideSpotter:
         self._frame: bytes | None = None
         self._seq = 0
 
-        if cv2 is not None:
-            casc = cv2.CascadeClassifier(cascade_path)
-            self._cascade = None if casc.empty() else casc
-            if self._cascade is None:
-                self.last_error = f"cascade not loaded: {cascade_path}"
+        # YuNet by default: the spotter's job is people not yet facing him
+        # (profiles, three-quarter views), which Haar misses, and its output is
+        # a coarse open-loop bearing, so YuNet's tighter boxes cost nothing here
+        # — the box *centre* is all this uses. face_detect falls back to Haar if
+        # the model is missing, so this cannot leave the spotter blind.
+        self._detector = face_detect.make(detector) if cv2 is not None else None
+        if self._detector is None or not self._detector.available():
+            self.last_error = (self._detector.error if self._detector
+                               else "no OpenCV")
 
     # ---- lifecycle --------------------------------------------------------
     def available(self) -> bool:
-        return cv2 is not None and self._cascade is not None
+        return self._detector is not None and self._detector.available()
 
     def is_running(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
@@ -479,12 +484,8 @@ class WideSpotter:
         scale = self.detect_width / float(w)
         if scale < 1.0:
             frame = cv2.resize(frame, (self.detect_width, max(int(h * scale), 1)))
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        gray = cv2.equalizeHist(gray)   # the panorama's edges are dimmer than its centre
         t0 = time.monotonic()
-        faces = self._cascade.detectMultiScale(
-            gray, scaleFactor=1.2, minNeighbors=5,
-            minSize=(self.min_face_px, self.min_face_px))
+        faces = self._detector.detect(frame, min_px=self.min_face_px)
         took = (time.monotonic() - t0) * 1000.0
 
         with self._lock:
@@ -499,7 +500,7 @@ class WideSpotter:
             # false positive on a patterned wall.
             x, y, fw, fh = max(faces, key=lambda f: f[2] * f[3])
             cx = x + fw / 2.0
-            self._bearing = (cx / float(gray.shape[1])) * 2.0 - 1.0
+            self._bearing = (cx / float(frame.shape[1])) * 2.0 - 1.0
             self._bearing_at = time.monotonic()
 
     # ---- what the panel consumes -----------------------------------------
@@ -594,6 +595,7 @@ class WideSpotter:
                     "size": list(self._frame_wh) if self._frame_wh else None,
                     "detect_hz": self.detect_hz,
                     "detect_ms": round(self._detect_ms, 1),
+                    "detector": self._detector.name if self._detector else None,
                     "viewers": viewers,
                     "error": self.last_error,
                     "hint": self.last_hint}

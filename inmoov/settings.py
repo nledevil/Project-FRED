@@ -65,6 +65,11 @@ DEFAULT_SETTINGS = {
         "device": "PanaCast",
         "detect_hz": 4.0,             # decode+detect rate — acquisition is a human-scale event
         "detect_width": 1920,         # downscale before detection (~10 ms/frame)
+        # Face detector: "yunet" (a small CNN in OpenCV 5, finds profiles and
+        # rejects patterned-wall false positives) or "haar" (the old cascade).
+        # YuNet is the right default here — the spotter watches for people not
+        # yet facing him, and its bearing is coarse. Missing model -> auto Haar.
+        "detector": "yunet",
     },
     "mic_doa": {
         # Direction of arrival off the mic array (reSpeaker Flex / XVF3800): a
