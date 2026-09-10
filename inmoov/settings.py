@@ -222,6 +222,18 @@ DEFAULT_SETTINGS = {
         # noisy hall — at a real CPU cost on a machine already giving ~4 cores
         # to the wide camera. Measure with tools/bench_asr.py before switching.
         "asr_model": "vosk-model-en-us-0.22-lgraph",
+        # Opt-in capture of the utterances he was actually spoken to, to feed the
+        # ASR-model decision that bench_asr.py is waiting on — the child-in-a-hall
+        # case cannot be synthesised. OFF by default; only what passes the wake
+        # gate is ever written (the room is never kept), each WAV named by the
+        # heard.jsonl timestamp so it pairs with its row, the directory bounded by
+        # file count. See inmoov/uttercap.py.
+        "capture": {
+            "enabled": False,
+            "dir": "logs/utterances",
+            "seconds": 12,           # rolling window kept per utterance
+            "max_files": 300,        # oldest dropped past this
+        },
         "model": "claude-haiku-4-5-20251001",   # Claude model behind FRED's replies.
         # Listen through his own replies, so saying his name over him cuts the
         # answer short. The speakerphone cancels his voice out of its own capture,

@@ -34,6 +34,7 @@ from pathlib import Path
 import numpy as np
 
 from inmoov import wakestats
+from inmoov import uttercap
 
 try:
     from vosk import Model, KaldiRecognizer, SetLogLevel
@@ -193,6 +194,8 @@ class Listener:
         self._on_barge = on_barge or (lambda: None)
         # Text-free wake tally: the denominator heard.jsonl can't keep. See wakestats.py.
         self._wakestats = wakestats.stats()
+        # Opt-in capture of wake-gated utterances (off by default). See uttercap.py.
+        self._cap = uttercap.cap()
         # Whether to listen at all while he speaks. Off = the old behaviour, where
         # audio during a reply is read and dropped.
         self.barge_in = bool(barge_in)
@@ -497,6 +500,7 @@ class Listener:
                     # both is what failed: given the whole lexicon, "Fred, stop
                     # talking" decodes as "fresh start talking" and nothing fires.
                     self._replay.append(data)
+                    self._cap.feed(data)   # opt-in; a cheap return when off
                     if not barged and self._detect_name(brec, data):
                         barged = True
                         self._barge()
@@ -570,6 +574,7 @@ class Listener:
                 # on its own schedule, so the name can be found and gone again
                 # before rec has finished the sentence it belongs to.
                 self._replay.append(data)
+                self._cap.feed(data)       # opt-in; a cheap return when off
                 if not name_seen:
                     name_seen = self._detect_name(brec, data)
                 # The full recogniser costs about ten times the detector (88% of a
@@ -713,6 +718,7 @@ class Listener:
             # *before* the handler runs, so a reply ending on another question
             # can re-arm.
             self._armed_until = 0.0
+            self._cap.commit()                 # speech inside an open window is for him
             self._on_command(text)
             return
         # A fresh transcript being weighed against his name: this is the "how
@@ -723,6 +729,7 @@ class Listener:
         if cmd is None:
             return                             # not addressed to him -> ignore
         self._wakestats.passed()
+        self._cap.commit()                     # it passed the gate: keep the audio (if enabled)
         if cmd:
             self._on_command(cmd)
         else:                                  # bare "Fred" -> prompt & arm

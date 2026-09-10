@@ -42,6 +42,7 @@ from inmoov import hotspot as hotspot_mod  # noqa: E402
 from inmoov import uplink as uplink_mod    # noqa: E402
 from inmoov import heardlog                # noqa: E402
 from inmoov import wakestats               # noqa: E402
+from inmoov import uttercap                # noqa: E402
 from inmoov import phrases as phrases_mod  # noqa: E402
 from inmoov import sysinfo  # noqa: E402
 from inmoov.convlog import ConversationLog  # noqa: E402
@@ -213,6 +214,14 @@ _assistant = Assistant(_ctrl, _status_led, _tracker, _sound,  # voice: wake word
                        barge_in=bool(_voice_cfg.get("barge_in", True)),
                        # Stop mid-reply when the visitor walks off.
                        stop_when_alone=bool(_voice_cfg.get("stop_when_alone", True)))
+# Opt-in utterance capture (off by default): the listener feeds it, this points
+# it at the configured directory and turns it on only if settings say so. Only
+# what passes the wake gate is ever written — see inmoov/uttercap.py.
+_cap_cfg = _voice_cfg.get("capture", {})
+uttercap.configure(enabled=bool(_cap_cfg.get("enabled", False)),
+                   directory=str(ROOT / str(_cap_cfg.get("dir", "logs/utterances"))),
+                   seconds=float(_cap_cfg.get("seconds", 12)),
+                   max_files=int(_cap_cfg.get("max_files", 300)))
 # Auto-greet: the first thing FRED does unprompted. Wired after the assistant
 # because it needs one, and attached to the hub afterwards because the hub was
 # needed to build the assistant — the dependency is genuinely circular.
