@@ -1,6 +1,6 @@
 [Unit]
 Description=InMoov chest display animation (framebuffer + control API + sensor relay)
-After=network-online.target pan-client.service
+After=network-online.target
 Wants=network-online.target
 
 [Service]

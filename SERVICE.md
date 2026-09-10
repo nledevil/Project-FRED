@@ -469,12 +469,26 @@ curl localhost:8080/api/voice   # status: listening / speaking / ai_available / 
 
 ## Notes / gotchas
 
+> **Superseded (2026-09-09): audio is on the reSpeaker Flex (XVF3800) now, not
+> the P10S.** Both capture and playback are the array (`plughw:C16K6Ch,0`, 6
+> beamformed channels at 16 kHz; `sound.device` and `voice.mic_channels` in
+> settings). The XVF3800 does **on-device echo cancellation**, so FRED's own
+> voice is removed from the capture and he can be interrupted *through* a reply
+> (barge-in) rather than going deaf while he talks — verified for this device in
+> commit 4304641. On-array gain/AGC is now settable and re-applied at boot
+> (`inmoov/xvf_params.py`, `tools/xvf_tune.py`). The P10S notes below are kept
+> for reference but describe the **departed** USB speakerphone.
+
 - The mic and speaker on the P10S are **not** acoustically coupled, so the
   listener never hears FRED's own voice (no echo); the listener is also muted
   while he speaks. A real microphone element must be on the P10S mic input —
   confirm with `arecord -D plughw:0,0 -d 3 t.wav` then check the level while
   speaking.
-- Wake words accepted: fred / friend / fread / frayed (Vosk mishears the name).
+- Wake words accepted: **fred / alfred / frayed / fraud** (Vosk mishears the
+  name these ways). This is `WAKE_WORDS` in `inmoov/listener.py` — the authority,
+  measured against the model's own lexicon by `tools/wake_audit.py`. "friend" and
+  "bread" were dropped 2026-08-19 (a room says them by accident); "fread" is not
+  in the model's vocabulary, so nothing can ever emit it.
 - Requirements installed in the venv: `vosk`, `anthropic` (+ espeak-ng, already
   present). The Vosk model lives in `models/` (git-ignored — re-download from
   alphacephei.com/vosk/models if setting up fresh).
@@ -583,9 +597,10 @@ admin page picks the look at runtime.
     to a new animation is three lines: import, construct, draw.
   - The relay feeds it via an `on_payload` hook, *before* the payload is queued
     for the head — so the panel keeps updating even when the head is unreachable.
-- **Deploy an update:** `scp deploy/display/display_control.py
-  dietpi@192.168.68.81:/home/dietpi/display/ && ssh dietpi@192.168.68.81
-  'sudo systemctl restart inmoov-display'`.
+- **Deploy an update:** `deploy/push-role.sh chest dietpi@10.0.0.11` — syncs the
+  chest's whole file set from its manifest, stamps `DEPLOYED`, and restarts the
+  service. (The old hand-scp to a WiFi address is gone; the chest is static at
+  `10.0.0.11` on the wired LAN, and `tools/check_deploy.sh` reports drift.)
 - **Security:** plain HTTP on the LAN. **Don't port-forward :8081.** The head
   treats this Pi as a decoration: a 2s timeout, and an unreachable panel shows
   as offline rather than hanging or failing the admin page.
@@ -751,3 +766,44 @@ live figure is higher because Haar cost tracks scene detail.)
   the head camera through `/api/camera`, and the PanaCast has none of them.
   Tracking also forces the view back to the head camera, since that is the one
   that moves.
+
+# POWER
+
+The rescue manual was missing the one section you need when the robot is on a
+cart at a venue and something browns out. This is the pack-up sequence (which is
+code, so it is correct) and the electrical layout (which needs filling in from
+the actual supplies — see the marked stub; do not guess it during an incident).
+
+## Pack-up / shut-down order
+
+The chest panel's **POWER** menu (`deploy/display/power_menu.py`) encodes the
+order, and draws it in the order it happens, so "SHUT DOWN ALL" is safe to trust:
+
+1. **HEAD PI** (`10.0.0.10`) — servos and camera.
+2. **BRAIN / NUC** (`10.0.0.1`) — speech, vision, the panel.
+3. **CHEST PI** (`10.0.0.11`) — this screen, **last**.
+
+The chest fires `POST /api/poweroff` at the head and the NUC in turn (each gets a
+few seconds to actually go down before the next one loses its network), then
+powers **itself** off last — nothing runs after that line, because the screen it
+is drawn on is about to go. If the head or NUC **refuses or is unreachable**, the
+chest stops before powering itself off and shows `WOULD NOT SHUT DOWN: <machine>`
+— so a head left running in a crate is a line you read, not a surprise later.
+Doing it by hand instead: `ssh` each machine and `sudo systemctl poweroff` in the
+same order (head, then NUC, then chest).
+
+## Electrical layout — TO FILL IN
+
+> This part is not in the repo and must not be guessed. Fill it from the actual
+> supplies on the cart; an accurate line here is what turns a brownout from a
+> mystery into a five-minute fix.
+
+- **Rails and supplies:** _(voltage / current of each — e.g. the servo rail, the
+  logic/5 V rail, the NUC's brick — and which physical supply feeds which.)_
+- **What browns out first:** _(the servos are the large, spiky draw; note which
+  rail sags under a full-body move and what that starves — the most useful line
+  in this whole file when it happens.)_
+- **Draw notes already known from elsewhere in this doc:** the wide PanaCast
+  camera costs ~4 cores on the NUC when streaming; the Intel Arc iGPU under the
+  local LLM is a real power draw; a full-body servo move is the peak mechanical
+  load. These are CPU/heat notes, not measured amps — replace with real numbers.

@@ -242,6 +242,15 @@ class Listener:
     def pause(self) -> None:
         """Stop feeding the recogniser while FRED speaks. The mic stays open.
 
+        Still true on the current hardware: audio moved to the reSpeaker Flex
+        (XVF3800) and the same conclusion was re-verified for it in commit
+        4304641 — its on-device echo canceller removes FRED's own voice from the
+        capture (the nine-nonsense-words test, three runs, none returned), so the
+        mic can stay open through a reply and barge-in keeps working. The
+        measurement below is the original one on the Anker PowerConf; the property
+        holds because both devices are sealed speaker+array units, not because of
+        the specific board.
+
         This used to reap arecord and hand the card back, on the grounds that the
         USB codec wedged if capture and playback overlapped even briefly. Measured
         on the Anker PowerConf (2026-08-19) that is not true of this device:

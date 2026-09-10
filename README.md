@@ -455,13 +455,17 @@ MicroPython's raw REPL, standing in for `mpremote` (the chest Pi has no pip).
   | chest Pi | `10.0.0.11` | `display_control` `:8081` |
 
   The brain runs `dnsmasq` bound to the robot-LAN interface only, with
-  reservations keyed on each Pi's `eth0` MAC so addresses never move. It hands
-  out **no default route** on purpose — the Pis keep their own WiFi for internet
-  and management, and a second default route would race the one on `wlan0`.
+  reservations keyed on each Pi's `eth0` MAC — but as of R7a (2026-09-09) both
+  Pis pin those addresses **statically** in `/etc/network/interfaces`
+  (tracked in `deploy/net-head/`, `deploy/net-chest/`), so neither has to wait
+  on the NUC's DHCP at boot. The address never changed; only how it's obtained.
 
-  DietPi ships `eth0` administratively down and static, so each Pi needs
-  `allow-hotplug eth0` / `iface eth0 inet dhcp` in `/etc/network/interfaces`
-  before it will so much as send a DHCPDISCOVER. A lit cable is not enough.
+  The default route is **per-Pi**, matching how each is actually used: the chest
+  carries `gateway 10.0.0.1` (its uplink is the NUC, which masquerades the LAN
+  out to the internet), while the head omits it (its uplink is its own `wlan0`,
+  and the `/24` link route reaches the NUC regardless — a second default route
+  would race the one on `wlan0`). Each Pi keeps `interfaces.dhcp.bak` beside the
+  live file as a one-line revert to the old DHCP behaviour.
 
 - **Hotspot fallback** — when no known WiFi is in range the head becomes its own
   access point so you can still reach it at a venue. See
