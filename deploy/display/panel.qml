@@ -11,9 +11,17 @@ Item {
 
     // Interpolated by Qt rather than pushed from Python: driving this from a
     // timer cost about a quarter of a core and held the panel to 40fps.
+    //
+    // Paused while the menu is up. The ShaderEffect below is hidden then, but
+    // a running animation still dirties the scene graph at the refresh rate,
+    // so the render thread drew the same menu sixty times a second and the
+    // main thread ticked the clock for it: measured at 20-25% of a core with
+    // nothing on screen changing. Paused rather than stopped so the clock
+    // resumes where it left off instead of snapping the shader back to zero.
     property real animT: 0
     NumberAnimation on animT {
         from: 0; to: 1000000; duration: 1000000000; loops: Animation.Infinite
+        paused: P.scene === "menu"
     }
 
     Rectangle { anchors.fill: parent; color: "black" }

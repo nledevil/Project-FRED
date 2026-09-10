@@ -183,7 +183,19 @@ class Overlay(QQuickImageProvider):
 class Panel(QObject):
     """What the scene needs from the rest of FRED, and which scene to show."""
 
+    # Two clocks, on purpose. ``changed`` is the animation's: the shader's
+    # uniforms (glow, gaze, blink, voice level) move every frame, so it fires
+    # at 30 Hz — and only while the animation is what's on screen.
+    # ``viewsChanged`` is the menu's, and fires when a page's facts actually
+    # differ from the last time they were built. They used to be one signal at
+    # 30 Hz, which made every binding on the visible page re-read its map
+    # through PySide and re-lay itself out thirty times a second to arrive at
+    # the same picture: measured on the chest Pi, 53% of a core idling on the
+    # PIN pad, 84% on the STATUS tab. The page builders themselves cost
+    # 0.26 ms a tick for all seven — under 1% — so the waste was never the
+    # Python; it was telling QML something had changed when nothing had.
     changed = Signal()
+    viewsChanged = Signal()
     sceneChanged = Signal()
     themeChanged = Signal()
 
@@ -202,7 +214,6 @@ class Panel(QObject):
         self._no_gate = False              # --no-gate: stay open, for grabs
         self._page = 0
         self._snap = {}
-        self._rows = []
         # The numpy page, used for its logic and not its drawing: it is what
         # decides whether the head is up, and that answer must not exist twice.
         self._status = StatusPage()
@@ -218,17 +229,11 @@ class Panel(QObject):
         self._gate = pin_gate.PinPad(pin_gate.material(NUC))
         if not self._gate.unlocked:
             print("panel: locked - PIN required", flush=True)
-        self._info_rows = []
-        self._info_page = {"page": 0, "pages": 1}
-        self._voice_view = {}
-        self._display_view = {}
-        self._servos_view = {}
-        self._cart_view = {}
-        self._wifi_view = {}
-        self._uplink_view = {}
+        # What the visible scene can see, keyed by page — see _build_views.
+        # Compared whole against the next build; a difference is the only
+        # thing that emits viewsChanged.
+        self._views: dict = {}
         self._uplink_page = 0
-        self._gate_view = {}
-        self._power_view = {}
         self._net = Net()
         self._net.start()
         self._anim = forced or "reactor"
@@ -295,28 +300,7 @@ class Panel(QObject):
         if (self._scene == "menu" and not self._no_gate
                 and time.monotonic() - self._last_touch > MENU_IDLE_S):
             self.closeMenu()
-        # One snapshot per tick, off the poller's own thread. The network is
-        # never on the drawing path — that rule predates this app and is why a
-        # brain that has gone away makes the page say so rather than freezing
-        # the panel for the length of a TCP timeout.
-        self._snap = self._net.snapshot()
-        iv = self._info.view(self._snap)
-        self._info_rows = [{"label": lab, "value": val,
-                            "ink": "#%02x%02x%02x" % tuple(int(c) for c in ink)}
-                           for lab, val, ink in iv["rows"]]
-        self._info_page = {"page": iv["page"], "pages": iv["pages"]}
-        self._voice_view = self._voice_page.view(self._snap)
-        self._display_view = self._display_page.view(self._snap)
-        self._servos_view = self._servos_page.view(self._snap)
-        self._cart_view = self._cart_page.view(self._snap)
-        self._wifi_view = self._wifi_page.view(self._snap)
-        self._uplink_view = self._uplink()
-        self._gate_view = self._gate.view()
-        self._power_view = self._power.view()
-        self._rows = [{"name": n, "where": w, "state": st,
-                       "ink": "#%02x%02x%02x" % tuple(int(c) for c in ink),
-                       "detail": " ".join(d for d in det if d)}
-                      for n, w, st, ink, det in self._status.rows(self._snap)]
+        self._refresh_views()
         self._feed.poll()
         name = self._feed.state()
         self._voice = {"idle": 0.0, "listening": 1.0,
@@ -338,7 +322,79 @@ class Panel(QObject):
                 self._openness = abs(math.cos(bt / 0.18 * math.pi))
             else:
                 self._next_blink = t + 3.5 + (math.sin(t) + 1.0)
-        self.changed.emit()
+        # The uniforms only matter while the animation is what's on screen.
+        # In the menu the ShaderEffect is hidden, and telling its bindings to
+        # re-read seven floats thirty times a second would be the small
+        # cousin of the waste the two-signal split above removed.
+        if self._scene != "menu":
+            self.changed.emit()
+
+    # ---- the menu's facts -------------------------------------------------
+    def _refresh_views(self) -> None:
+        """Rebuild what the visible scene shows, and say so only if it moved.
+
+        One snapshot per tick, off the poller's own thread. The network is
+        never on the drawing path — that rule predates this app and is why a
+        brain that has gone away makes the page say so rather than freezing
+        the panel for the length of a TCP timeout.
+
+        Called every tick, and from the scene and page setters, because the
+        Loader builds a page the moment the setter emits and the page's
+        bindings must find its facts already there — not 33 ms later.
+        """
+        self._snap = self._net.snapshot()
+        views = self._build_views()
+        if views != self._views:
+            self._views = views
+            self.viewsChanged.emit()
+
+    def _build_views(self) -> dict:
+        """The view-models for what is on screen right now, and nothing else.
+
+        Only the visible tab is built: the Loader in MenuScene.qml instantiates
+        one page at a time, so a hidden tab's facts have no reader. The two
+        overlays — the PIN pad and the power menu — sit above every tab and are
+        always built while the menu is up; behind a locked gate they are all
+        there is. Everything here is plain data (str, int, bool, lists and
+        dicts of the same), so the whole-dict compare in _refresh_views is both
+        cheap and exact.
+        """
+        if self._scene != "menu":
+            return {}
+        snap = self._snap
+        out = {"gate": self._gate.view(), "power": self._power.view(),
+               "brain": bool(snap.get("whoami"))}
+        if not self._gate.unlocked:
+            return out
+        page = self._page
+        if page == 0:
+            out["status"] = [{"name": n, "where": w, "state": st,
+                              "ink": "#%02x%02x%02x" % tuple(int(c) for c in ink),
+                              "detail": " ".join(d for d in det if d)}
+                             for n, w, st, ink, det in self._status.rows(snap)]
+            # Whole seconds, because that is what the page prints: the raw
+            # age moves every tick and would make this the one field that
+            # never compared equal.
+            age = snap.get("age")
+            out["age"] = -1 if age is None else int(round(age))
+        elif page == 1:
+            out["voice"] = self._voice_page.view(snap)
+        elif page == 2:
+            out["servos"] = self._servos_page.view(snap)
+        elif page == 3:
+            out["cart"] = self._cart_page.view(snap)
+        elif page == 4:
+            out["display"] = self._display_page.view(snap)
+        elif page == 5:
+            out["wifi"] = self._wifi_page.view(snap)
+            out["uplink"] = self._uplink()
+        else:
+            iv = self._info.view(snap)
+            out["info"] = [{"label": lab, "value": val,
+                            "ink": "#%02x%02x%02x" % tuple(int(c) for c in ink)}
+                           for lab, val, ink in iv["rows"]]
+            out["infoPaging"] = {"page": iv["page"], "pages": iv["pages"]}
+        return out
 
     # ---- the menu -------------------------------------------------------
     @Property(str, notify=sceneChanged)
@@ -349,6 +405,7 @@ class Panel(QObject):
     def scene(self, value):
         if value != self._scene:
             self._scene = value
+            self._refresh_views()          # before the Loader builds the scene
             self.sceneChanged.emit()
 
     @Property(int, notify=sceneChanged)
@@ -359,43 +416,51 @@ class Panel(QObject):
     def page(self, value):
         if value != self._page:
             self._page = int(value)
+            self._refresh_views()          # before the Loader builds the page
             self.sceneChanged.emit()
 
-    @Property("QVariantMap", notify=changed)
-    def snap(self):
-        return self._snap
+    # Every map and list below notifies on viewsChanged, never on changed —
+    # test_panel_views.py checks that through the meta-object, because putting
+    # one of these back on the 30 Hz signal would quietly restore the half-core
+    # the split removed. A tab that is not showing reads as empty here; nothing
+    # is bound to it while it is hidden, and the page setter rebuilds before
+    # the Loader can look.
+    @Property(int, notify=viewsChanged)
+    def snapAge(self):
+        """Seconds since the poller last heard from the brain; -1 for never."""
+        return self._views.get("age", -1)
 
-    @Property("QVariantList", notify=changed)
+    @Property("QVariantList", notify=viewsChanged)
     def statusRows(self):
-        return self._rows
+        return self._views.get("status", [])
 
-    @Property("QVariantList", notify=changed)
+    @Property("QVariantList", notify=viewsChanged)
     def infoRows(self):
-        return self._info_rows
+        return self._views.get("info", [])
 
-    @Property("QVariantMap", notify=changed)
+    @Property("QVariantMap", notify=viewsChanged)
     def infoPaging(self):
-        return self._info_page
+        return self._views.get("infoPaging", {"page": 0, "pages": 1})
 
-    @Property("QVariantMap", notify=changed)
+    @Property("QVariantMap", notify=viewsChanged)
     def voiceView(self):
-        return self._voice_view
+        return self._views.get("voice", {})
 
-    @Property("QVariantMap", notify=changed)
+    @Property("QVariantMap", notify=viewsChanged)
     def displayView(self):
-        return self._display_view
+        return self._views.get("display", {})
 
-    @Property("QVariantMap", notify=changed)
+    @Property("QVariantMap", notify=viewsChanged)
     def servosView(self):
-        return self._servos_view
+        return self._views.get("servos", {})
 
-    @Property("QVariantMap", notify=changed)
+    @Property("QVariantMap", notify=viewsChanged)
     def cartView(self):
-        return self._cart_view
+        return self._views.get("cart", {})
 
-    @Property("QVariantMap", notify=changed)
+    @Property("QVariantMap", notify=viewsChanged)
     def wifiView(self):
-        return self._wifi_view
+        return self._views.get("wifi", {})
 
     # The other radio. Assembled here rather than in a page class because it
     # is the brain's state plus a scan the panel asked for, and neither belongs
@@ -427,21 +492,21 @@ class Panel(QObject):
             "page": page, "pages": pages,
         }
 
-    @Property("QVariantMap", notify=changed)
+    @Property("QVariantMap", notify=viewsChanged)
     def uplinkView(self):
-        return self._uplink_view
+        return self._views.get("uplink", {})
 
-    @Property("QVariantMap", notify=changed)
+    @Property("QVariantMap", notify=viewsChanged)
     def gateView(self):
-        return self._gate_view
+        return self._views.get("gate", {})
 
-    @Property("QVariantMap", notify=changed)
+    @Property("QVariantMap", notify=viewsChanged)
     def powerView(self):
-        return self._power_view
+        return self._views.get("power", {})
 
-    @Property(bool, notify=changed)
+    @Property(bool, notify=viewsChanged)
     def brainReachable(self):
-        return bool(self._snap.get("whoami"))
+        return bool(self._views.get("brain", False))
 
     # ---- what a tap does. The page classes still decide; QML only reports
     # that a control was pressed, so a button means the same thing in both

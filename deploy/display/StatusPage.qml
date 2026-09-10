@@ -60,8 +60,7 @@ Item {
         }
         Item { Layout.fillHeight: true }
         Text {
-            text: "UPDATED " + (P.snap.age === undefined || P.snap.age === null
-                                ? "NEVER" : Math.round(P.snap.age) + "S AGO")
+            text: "UPDATED " + (P.snapAge < 0 ? "NEVER" : P.snapAge + "S AGO")
             color: Th.dimInk
             font.pixelSize: Th.px["1"]; font.family: Th.font
         }

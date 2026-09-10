@@ -85,6 +85,7 @@ deploy/display/voice_hud.c
 deploy/display/Makefile
 deploy/display/tools/verify_voice_hud.py
 deploy/display/tools/test_menu_logic.py
+deploy/display/tools/test_panel_views.py
 deploy/display/tools/render_anims.py
 deploy/display/tools/test_fb_pack.py
 deploy/display/tools/test_touch_map.py
