@@ -207,6 +207,9 @@
   .voice .vbtn:hover:not(:disabled) { background:rgba(255,255,255,.05); }
   .voice .vbtn:disabled { opacity:.4; cursor:not-allowed; }
   #listenBtn.on { background:#7f1d1d; border-color:#b91c1c; color:#fff; }
+  .voice .vbtn.stop { margin-left:auto; color:#f4b4b4; border-color:#7f1d1d; }
+  .voice .vbtn.stop:hover:not(:disabled) { background:#7f1d1d; color:#fff; }
+  .voice .vbtn.stop + .vbtn { margin-left:8px; }
   .voice .vrow { display:flex; gap:8px; margin:10px 0 0; }
   .voice .vrow input { flex:1; background:var(--panel2); }
   .voice .vrow .vbtn { margin-left:0; }
@@ -451,6 +454,8 @@
     <section class="panel talk voice" id="voice">
         <div class="phead">Talk to FRED
           <span id="voiceState" class="badge">…</span>
+          <button id="stopBtn" class="vbtn stop" onclick="stopFred()"
+                  title="Stop FRED talking now">✋ Stop</button>
           <button id="clearLogBtn" class="vbtn" onclick="clearLog()" title="Clear transcript">🗑</button>
           <button id="listenBtn" class="vbtn" onclick="toggleListen()" disabled>🎤 Listen</button>
         </div>
@@ -730,6 +735,14 @@ function initVoice() {
     }, 1200);
     _voicePoll.start();
   }
+}
+async function stopFred() {
+  // Cut FRED off mid-answer without shouting his name over him. Fires the two
+  // endpoints that already existed with no UI caller: kill any audio playback
+  // (open route, so it lands instantly), then interrupt the reply in progress.
+  try { await api('/api/sound/stop', {}); } catch (e) {}
+  try { await api('/api/voice', {interrupt: true}); } catch (e) {}
+  toast('Stopped');
 }
 async function toggleListen() {
   const on = !document.getElementById('listenBtn').classList.contains('on');
