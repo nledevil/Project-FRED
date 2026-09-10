@@ -50,8 +50,11 @@ backwards:
   wakes him today; it lands in this log as "told me", with no trace of the word
   that let it in. So this tool can count the false wakes whose *text* still
   looks unaddressed, and it can count nothing at all about the ones whose
-  remainder happens to read like a command. It has no denominator either: the
-  chatter the gate correctly ignored is never written down, by design.
+  remainder happens to read like a command. It now has a *denominator*, though:
+  inmoov/wakestats.py keeps a text-free tally of how many transcripts were
+  weighed against his name versus how many passed, so the chatter the gate
+  correctly ignored is finally a number to divide by — reported up top, from
+  logs/wakestats.jsonl, before any of the text evidence below.
 
 The short version: this file is evidence for **adding** words (it shows what
 the recogniser really emits when someone says his name) and much weaker
@@ -83,9 +86,11 @@ sys.path.insert(0, str(ROOT))
 # _strip_wake is the actual gate, so asking it "would this have woken him?" is
 # the only answer worth printing.
 from inmoov.listener import WAKE_WORDS, _strip_wake      # noqa: E402
+from inmoov import wakestats                             # noqa: E402
 
 NAME = "fred"
 DEFAULT_LOG = ROOT / "logs" / "heard.jsonl"
+DEFAULT_STATS = wakestats.PATH
 # The model the robot actually runs (voice.asr_model in inmoov/settings.py), not
 # listener.py's fallback default — barge-in needs the dynamic graph, so this is
 # the lexicon a candidate has to exist in to be worth anything.
@@ -461,11 +466,39 @@ def check_one(word: str, vocab: Vocab) -> int:
     return 0
 
 
+
+def read_wakestats(path: Path) -> dict:
+    """Sum the text-free wake tally (inmoov/wakestats.py): the denominator this
+    tool used to lack. Returns considered/passed overall and split by event."""
+    tot = {"considered": 0, "passed": 0}
+    ev = {"considered": 0, "passed": 0}
+    rows = 0
+    try:
+        lines = path.read_text().splitlines()
+    except OSError:
+        return {"present": False, "all": tot, "event": ev, "rows": 0}
+    for line in lines:
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        rows += 1
+        c, p_ = int(row.get("considered", 0)), int(row.get("passed", 0))
+        tot["considered"] += c
+        tot["passed"] += p_
+        if row.get("event"):
+            ev["considered"] += c
+            ev["passed"] += p_
+    return {"present": rows > 0, "all": tot, "event": ev, "rows": rows}
+
+
 # ---------------------------------------------------------------------------
 def main() -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--log", default=str(DEFAULT_LOG))
+    ap.add_argument("--stats", default=str(DEFAULT_STATS),
+                    help="the text-free wake tally (wakestats.jsonl), for the denominator")
     ap.add_argument("--model", default=str(DEFAULT_MODEL),
                     help="model directory, for the vocabulary check")
     ap.add_argument("--check", metavar="WORD",
@@ -519,6 +552,31 @@ def main() -> int:
               f"enough to\n  notice a pattern and nowhere near enough to trust a "
               f"rate. Read the\n  quoted evidence below; do not read the counts as "
               f"statistics.")
+
+    # -- the denominator: how often the gate was asked at all ----------------
+    st = read_wakestats(Path(args.stats))
+    rule("The denominator: how often the gate was asked")
+    if not st["present"]:
+        print(f"  No wake tally yet at {args.stats}.")
+        print("  inmoov/wakestats.py records how many transcripts were weighed")
+        print("  against his name (considered) and how many passed (passed) —")
+        print("  text-free, so it can keep what heard.jsonl must not. Until it has")
+        print("  run, a false-wake *rate* has no below and only the evidence")
+        print("  tables further down are meaningful.")
+    else:
+        a = st["all"]
+        rate = (100.0 * a["passed"] / a["considered"]) if a["considered"] else 0.0
+        print(f"  file        {args.stats}  ({st['rows']} rows)")
+        print(f"  considered  {a['considered']:>7}   transcripts weighed against his name")
+        print(f"  passed      {a['passed']:>7}   of those woke him ({rate:.2f}%)")
+        ev = st["event"]
+        if ev["considered"]:
+            er = 100.0 * ev["passed"] / ev["considered"]
+            print(f"  in event mode: {ev['passed']}/{ev['considered']} woke him ({er:.2f}%) "
+                  f"— the fair, where a false wake actually costs something")
+        print("  A false wake is a *passed* whose command read as unaddressed; the")
+        print("  evidence tables below find those. This line is what to divide them")
+        print("  by — the room the gate turned away, which heard.jsonl cannot show.")
 
     # -- 0. the asymmetry, restated with this file's own numbers --------------
     residual, stripped_or_windowed = [], 0

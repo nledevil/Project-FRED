@@ -41,6 +41,7 @@ from inmoov.brain import BACKENDS  # noqa: E402
 from inmoov import hotspot as hotspot_mod  # noqa: E402
 from inmoov import uplink as uplink_mod    # noqa: E402
 from inmoov import heardlog                # noqa: E402
+from inmoov import wakestats               # noqa: E402
 from inmoov import phrases as phrases_mod  # noqa: E402
 from inmoov import sysinfo  # noqa: E402
 from inmoov.convlog import ConversationLog  # noqa: E402
@@ -261,6 +262,7 @@ _event_cfg = _settings.get("event", {})
 _event = EventMode(enabled=bool(_event_cfg.get("enabled")),
                    max_words=int(_event_cfg.get("max_words", 25)),
                    cart_speed=int(_event_cfg.get("cart_speed", 120)))
+wakestats.set_event(_event.enabled)          # tag the wake tally from the first boot state
 _cart = CartClient(host=str(_display_cfg.get("host", "") or ""),
                    port=int(_display_cfg.get("port", 8081)),
                    token=str(_display_cfg.get("token", "") or ""))
@@ -762,6 +764,7 @@ def api_event():
     data = request.get_json(force=True) or {}
     if "enabled" in data:
         _event.set(bool(data["enabled"]))
+        wakestats.set_event(_event.enabled)   # so the wake tally knows it was a fair
         _settings.setdefault("event", {})["enabled"] = _event.enabled
         save_settings(_settings)
         _log.event(f"event mode {'on' if _event.enabled else 'off'}")

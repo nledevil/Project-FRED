@@ -33,6 +33,8 @@ from pathlib import Path
 
 import numpy as np
 
+from inmoov import wakestats
+
 try:
     from vosk import Model, KaldiRecognizer, SetLogLevel
     SetLogLevel(-1)
@@ -189,6 +191,8 @@ class Listener:
         # cut short. Separate from on_command because it fires on a *partial* —
         # the point is to stop within a word, not to wait out their sentence.
         self._on_barge = on_barge or (lambda: None)
+        # Text-free wake tally: the denominator heard.jsonl can't keep. See wakestats.py.
+        self._wakestats = wakestats.stats()
         # Whether to listen at all while he speaks. Off = the old behaviour, where
         # audio during a reply is read and dropped.
         self.barge_in = bool(barge_in)
@@ -711,9 +715,14 @@ class Listener:
             self._armed_until = 0.0
             self._on_command(text)
             return
+        # A fresh transcript being weighed against his name: this is the "how
+        # often was the gate asked" that heard.jsonl can't record. Continuations
+        # above returned already, so every count here is a real wake decision.
+        self._wakestats.considered()
         cmd = _strip_wake(text)
         if cmd is None:
             return                             # not addressed to him -> ignore
+        self._wakestats.passed()
         if cmd:
             self._on_command(cmd)
         else:                                  # bare "Fred" -> prompt & arm
