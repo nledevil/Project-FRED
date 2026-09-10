@@ -274,7 +274,6 @@ while one is alive. That single fact decides the whole design:
 | piece | where | why there |
 |---|---|---|
 | `cog_hud.py` | called by every animation | the daemon cannot draw over a child, so each animation paints the cog itself — one line, next to the sensor HUD's |
-| the cog in `voice_hud.c` | the native renderer | it is the default look; without it the cog is missing where you look most |
 | `touch.py` | daemon **and** menu | two readers of one evdev node each get their own queue, so neither steals events |
 | `CogWatcher` | `display_control.py` | the one process that is always running, already root, and root is what `/dev/input/event0` needs |
 | `settings_menu.py` | a supervised child | it takes the screen the way an animation does, and hands it back on close |
@@ -283,11 +282,11 @@ The menu is a preset like any other, marked `"hidden": True` so it never appears
 in the head panel's dropdown, is never written to `state.json`, and is never the
 pick at boot. `POST /api/animation/restore` is how it leaves.
 
-The cog is a **bitmap, not geometry** — `tools/verify_voice_hud.py` proves the C
-renderer matches the Python one pixel for pixel, and matching floating-point trig
-across numpy and C is a promise neither wants to keep. Same 24 rows of data on
-both sides. Change one and you must change the other; `make verify` is what
-catches forgetting.
+The cog is a **bitmap, not geometry**, drawn by `cog_hud.py` into the overlay
+texture the panel composites over every look. (A native C voice HUD used to
+carry its own copy, held pixel-identical by a verifier; both retired on
+2026-09-10 when the HUD became a shader hosted by the panel like every other
+look — see `deploy/display/shaders/voice_hud.frag` and `tools/verify_shaders.py`.)
 
 ```bash
 curl -sX POST -H 'Content-Type: application/json' \

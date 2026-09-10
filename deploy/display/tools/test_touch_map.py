@@ -102,10 +102,15 @@ def main() -> int:
     check("blank: a finger *lifting* does not",
           not dc.opens_menu("off", "up", mid_x, mid_y))
 
-    check("an animation: the middle is ignored",
-          not dc.opens_menu("voice-hud-c", "down", mid_x, mid_y))
-    check("an animation: the cog is not",
-          dc.opens_menu("voice-hud-c", "down", cog_x, cog_y))
+    # Every look is the panel now, so the hit-test branch is only reached by
+    # an id the table does not know — which must read as "something is
+    # drawing", never as blank.
+    check("an unknown id: the middle is ignored",
+          not dc.opens_menu("some-future-look", "down", mid_x, mid_y))
+    check("an unknown id: the cog is not",
+          dc.opens_menu("some-future-look", "down", cog_x, cog_y))
+    check("the voice HUD is the panel's own cog",
+          not dc.opens_menu("voice-hud", "down", cog_x, cog_y))
 
     check("the panel app is left alone even on its cog",
           not dc.opens_menu("reactor", "down", cog_x, cog_y))

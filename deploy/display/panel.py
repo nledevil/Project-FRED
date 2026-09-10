@@ -40,6 +40,7 @@ import cog_hud                                          # noqa: E402
 import metrics_hud                                      # noqa: E402
 import theme                                            # noqa: E402
 import touch                                            # noqa: E402
+import voice_hud                                        # noqa: E402
 from voice_state import VoiceFeed                       # noqa: E402
 # The menu's facts come from the poller the numpy menu already uses. Imported
 # rather than copied; it moves into its own module when that menu is retired at
@@ -66,7 +67,8 @@ def _pages():
 
 from PySide6.QtCore import (QEvent, QObject, QTimer, QUrl, Signal, Slot,  # noqa: E501
                             Property, Qt)   # noqa: E402
-from PySide6.QtGui import QColor, QFontDatabase, QGuiApplication, QImage  # noqa: E402
+from PySide6.QtGui import (QColor, QFontDatabase, QGuiApplication, QImage,  # noqa: E402
+                           QVector4D)
 from PySide6.QtQuick import QQuickImageProvider, QQuickView               # noqa: E402
 
 W, H = 800, 480
@@ -93,7 +95,8 @@ def _find(*names):
 # not shaders — the voice HUD, "off" — are not this app's job and the daemon
 # still runs them itself.
 SHADERS = {"reactor": "reactor", "reactor-copper": "reactor",
-           "flux": "flux", "face": "face", "face-talk": "face"}
+           "flux": "flux", "face": "face", "face-talk": "face",
+           "voice-hud": "voice_hud"}
 
 
 def qsb_for(name: str) -> str:
@@ -180,6 +183,47 @@ class Overlay(QQuickImageProvider):
         return self._img
 
 
+class EnvelopeLayer(QQuickImageProvider):
+    """The clip's envelope as a one-row texture — see voice_hud.encode_levels."""
+
+    def __init__(self):
+        super().__init__(QQuickImageProvider.Image)
+        self.set([0.0])
+
+    def set(self, levels) -> None:
+        rgba = voice_hud.encode_levels(levels)
+        self._rgba = rgba                          # keep the buffer alive for Qt
+        n = rgba.shape[1]
+        self._img = QImage(rgba.data, n, 1, 4 * n, QImage.Format_RGBA8888)
+
+    def requestImage(self, _id, _size, _requested):
+        return self._img
+
+
+class WordLayer(QQuickImageProvider):
+    """The state word and its dot, drawn by voice_hud.Hud.word_layer.
+
+    Four words, drawn once each and kept: the URL names the state, so Qt asks
+    again only when the state changes, and the font work happens four times
+    in the life of the process rather than thirty times a second.
+    """
+
+    def __init__(self, hud: "voice_hud.Hud"):
+        super().__init__(QQuickImageProvider.Image)
+        self._hud = hud
+        self._cache: dict = {}
+
+    def requestImage(self, ident, _size, _requested):
+        state = (ident or "idle").split("/")[0].lower()
+        if state not in self._cache:
+            layer = self._hud.word_layer(state)
+            u8 = (layer * 255.0 + 0.5).astype(np.uint8)
+            rgba = np.dstack([u8, u8, u8, np.full_like(u8, 255)]).copy()
+            self._cache[state] = (rgba, QImage(rgba.data, rgba.shape[1], rgba.shape[0],
+                                               4 * rgba.shape[1], QImage.Format_RGBA8888))
+        return self._cache[state][1]
+
+
 class Panel(QObject):
     """What the scene needs from the rest of FRED, and which scene to show."""
 
@@ -198,6 +242,10 @@ class Panel(QObject):
     viewsChanged = Signal()
     sceneChanged = Signal()
     themeChanged = Signal()
+    # The voice HUD's two textures change URL on this: a new clip, or a new
+    # state word. Rare, and its own signal so the two Image sources are not
+    # re-evaluated thirty times a second for the same string.
+    voiceChanged = Signal()
 
     def __init__(self, forced: str | None, scene: str = "anim"):
         super().__init__()
@@ -242,6 +290,21 @@ class Panel(QObject):
         self._talk = 0.0
         self._state_mtime = -1.0
         self._feed = VoiceFeed()
+        # The voice HUD's geometry and its two texture layers. The picture is
+        # defined by voice_hud.py; the shader takes what it cannot draw for
+        # itself from here. See _voice_inputs.
+        self._hud = voice_hud.Hud(W, H)
+        self.envelope = EnvelopeLayer()
+        self.word = WordLayer(self._hud)
+        self._voice_word = "idle"
+        self._env_levels = None
+        self._env_gen = 0
+        self._env_len = 1.0
+        self._head = -1.0
+        self._have_clip = 0.0
+        # --at: a frozen clock, for grabs the verifier can reproduce. Both the
+        # animation's t and the playhead's now stand still at this value.
+        self._frozen = -1.0
         self._start = time.monotonic()
         self._level = 0.0
         self._voice = 0.0
@@ -293,19 +356,29 @@ class Panel(QObject):
             self._last_touch = time.monotonic()
         return False                       # observe, never consume
 
+    def freeze(self, at: float) -> None:
+        """Stop the clocks at ``at`` seconds — see --at."""
+        self._frozen = float(at)
+
+    def set_feed(self, feed: VoiceFeed) -> None:
+        """Read the voice state from somewhere else — see --voice-json."""
+        self._feed = feed
+
     def tick(self) -> None:
-        t = time.monotonic() - self._start
+        now = self._frozen if self._frozen >= 0 else time.monotonic()
+        t = self._frozen if self._frozen >= 0 else now - self._start
         # The menu times itself out. --no-gate is exempt: that flag exists so
         # the page-grab harnesses can sit on a tab as long as a render takes.
         if (self._scene == "menu" and not self._no_gate
                 and time.monotonic() - self._last_touch > MENU_IDLE_S):
             self.closeMenu()
         self._refresh_views()
-        self._feed.poll()
+        doc = self._feed.poll()
         name = self._feed.state()
         self._voice = {"idle": 0.0, "listening": 1.0,
                        "thinking": 2.0, "speaking": 3.0}.get(name, 0.0)
-        self._level = float(self._feed.level() or 0.0)
+        self._level = float(self._feed.level(now) or 0.0)
+        self._voice_inputs(doc, now, name)
         rate = {"idle": 1.6, "listening": 2.6,
                 "thinking": 7.0, "speaking": 1.6}.get(name, 1.6)
         self._glow = (0.7 + 0.5 * self._level if name == "speaking"
@@ -328,6 +401,31 @@ class Panel(QObject):
         # cousin of the waste the two-signal split above removed.
         if self._scene != "menu":
             self.changed.emit()
+
+    # ---- the voice HUD's inputs ----------------------------------------------
+    def _voice_inputs(self, doc: dict, now: float, state: str) -> None:
+        """What voice_hud.frag needs per frame, from the feed's document.
+
+        The playhead and the have-a-clip flag follow voice_hud.Hud exactly, so
+        the shader and the reference agree about *when* a clip is on screen,
+        not just what it looks like. The envelope texture is re-encoded only
+        when the document's list is a new object — the feed re-parses only on
+        a new file, so that is once per utterance.
+        """
+        hud = self._hud
+        levels = doc.get("levels")
+        showing = hud.clip_showing(doc, now)
+        self._have_clip = 1.0 if showing else 0.0
+        self._head = hud.clip_fraction(doc, now) * hud.cols if showing else -1.0
+        if showing and levels is not self._env_levels:
+            self._env_levels = levels
+            self.envelope.set(levels)
+            self._env_len = float(len(levels))
+            self._env_gen += 1
+            self.voiceChanged.emit()
+        if state != self._voice_word:
+            self._voice_word = state
+            self.voiceChanged.emit()
 
     # ---- the menu's facts -------------------------------------------------
     def _refresh_views(self) -> None:
@@ -706,6 +804,37 @@ class Panel(QObject):
     def openness(self):
         return self._openness
 
+    # ---- the voice HUD shader's own inputs ----
+    @Property(float, notify=changed)
+    def head(self):
+        return self._head
+
+    @Property(float, notify=changed)
+    def haveClip(self):
+        return self._have_clip
+
+    @Property(float, notify=changed)
+    def envLen(self):
+        return self._env_len
+
+    @Property(int, notify=voiceChanged)
+    def envGen(self):
+        return self._env_gen
+
+    @Property(str, notify=voiceChanged)
+    def voiceWord(self):
+        return self._voice_word
+
+    @Property(QVector4D, constant=True)
+    def win(self):
+        h = self._hud
+        return QVector4D(h.wx0, h.wy0, h.wx1, h.wy1)
+
+    @Property(QVector4D, constant=True)
+    def meter(self):
+        h = self._hud
+        return QVector4D(h.mx0, h.my0, h.mw, h.mh)
+
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
@@ -719,6 +848,17 @@ def main() -> int:
     ap.add_argument("--grab", metavar="PNG", default="")
     ap.add_argument("--grab-after", type=float, default=1.2,
                     help="seconds to let the scene settle before grabbing")
+    # The three the shader verifier needs, the same as gpu_anim.py takes: a
+    # frozen clock, a theme that is not the one in state.json, and no cog or
+    # sensor panel over the picture. --voice-json is the fourth: the voice
+    # HUD is a function of the feed's document, so the verifier hands it one.
+    ap.add_argument("--at", type=float, default=-1.0,
+                    help="freeze the animation clock here, for a reproducible grab")
+    ap.add_argument("--theme", default=None, help="wear this theme instead of state.json's")
+    ap.add_argument("--no-overlay", action="store_true",
+                    help="leave the cog and sensor panel off, for comparing the picture")
+    ap.add_argument("--voice-json", default="",
+                    help="read the voice state from this file instead of the live one")
     ap.add_argument("--page", type=int, default=0,
                     help="open the menu on this tab (0-6), for grabbing one page")
     ap.add_argument("--no-gate", action="store_true",
@@ -766,7 +906,7 @@ def main() -> int:
 
     app = QGuiApplication(sys.argv[:1])
     families = load_fonts()
-    name = theme.load_name()
+    name = args.theme or theme.load_name()
     ramp = theme.ramp(name)
 
     overlay = Overlay()
@@ -778,9 +918,16 @@ def main() -> int:
         panel.unlock_for_testing()
     if args.power:
         panel.showPower()
+    if args.voice_json:
+        from pathlib import Path
+        panel.set_feed(VoiceFeed(Path(args.voice_json)))
+    if args.at >= 0:
+        panel.freeze(args.at)
 
     view = QQuickView()
     view.engine().addImageProvider("overlay", overlay)
+    view.engine().addImageProvider("env", panel.envelope)
+    view.engine().addImageProvider("word", panel.word)
     ctx = view.rootContext()
     ctx.setContextProperty("P", panel)
     ctx.setContextProperty("Deep", QColor(*ramp.deep))
@@ -789,6 +936,8 @@ def main() -> int:
     ctx.setContextProperty("WarnCol", QColor(*ramp.warn))
     ctx.setContextProperty("FontFamily", families.get(name, ""))
     ctx.setContextProperty("StartWifiHalf", int(args.wifi_half))
+    ctx.setContextProperty("FrozenT", float(args.at) if args.at >= 0 else -1.0)
+    ctx.setContextProperty("HideOverlay", bool(args.no_overlay))
     # The whole palette as one map, straight off theme.py. QML gets the same
     # numbers the numpy pages read as ui.INK — theme.py stays the one place a
     # theme is defined, as it already is for the C renderer's generated header.

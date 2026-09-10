@@ -103,34 +103,35 @@ def write_state(**changes) -> None:
 # The dropdown the head shows is exactly this list, flattened so each entry is
 # one concrete look: variants (--copper, --talk) are presets, not extra widgets.
 PRESETS = [
-    # These four run on the GPU. reactor.py, flux.py and face.py are still in
-    # the tree and still the definition of what they look like — they are what
+    # Every look runs on the GPU, in one child — panel.py, which stays running
+    # and reads the chosen preset out of state.json. Switching between them is
+    # a property change and a frame, where spawning a fresh Qt process cost
+    # ~1.2s of start-up every time somebody tried a different look.
+    # reactor.py, flux.py, face.py and voice_hud.py are still in the tree and
+    # still the definition of what each looks like — they are what
     # tools/verify_shaders.py checks the shaders against — but they are not
-    # launched: they cost 77%, 100% and 100% of a core, and the last two were
-    # saturated, which is why they never reached 30fps. See gpu_anim.py.
-    # All four are the same child — panel.py, which stays running and reads the
-    # chosen preset out of state.json. Switching between them is a property
-    # change and a frame, where spawning a fresh Qt process cost ~1.2s of
-    # start-up every time somebody tried a different look.
+    # launched: they cost 77%, 100%, 100% and 70% of a core, and two of them
+    # were saturated, which is why they never reached 30fps.
     {"id": "reactor",        "label": "Arc Reactor",          "argv": ["panel.py"]},
     {"id": "reactor-copper", "label": "Arc Reactor (Copper)", "argv": ["panel.py"]},
     {"id": "flux",           "label": "Flux Capacitor",       "argv": ["panel.py"]},
     {"id": "face",           "label": "Face (live voice)",    "argv": ["panel.py"]},
-    {"id": "voice-hud",      "label": "Voice HUD",            "argv": ["voice_hud.py"]},
-    {"id": "voice-hud-c",    "label": "Voice HUD (native)",   "argv": ["voice_hud"]},
+    {"id": "voice-hud",      "label": "Voice HUD",            "argv": ["panel.py"]},
     {"id": "face-talk",      "label": "Face (demo talk)",     "argv": ["panel.py"]},
     {"id": "off",            "label": "Off (blank screen)",   "argv": None},
-    # The settings menu is a child like any other — it owns the framebuffer and
-    # dies on SIGTERM — but it is not a *look*, so it is hidden from the head's
-    # dropdown. You reach it by tapping the cog, and it is entered and left by
-    # the two paths below (the touch watcher, and /api/animation/restore).
-    # The menu is a scene of the panel app now; --menu opens straight into it.
-    # This preset only fires from the native voice HUD, where the panel is not
-    # already running — the panel handles its own cog without the daemon.
+    # The settings menu is a scene of the panel app, and the panel handles its
+    # own cog without the daemon. This preset is how the menu is reached when
+    # the panel is *not* running — a blank screen, or a latched crash — and it
+    # is not a *look*, so it is hidden from the head's dropdown and left by
+    # /api/animation/restore.
     {"id": "settings",       "label": "Settings menu",        "argv": ["panel.py", "--menu"],
      "hidden": True},
 ]
 PRESET_BY_ID = {p["id"]: p for p in PRESETS}
+# Ids that used to exist. The native C voice HUD retired on 2026-09-10 when the
+# shader replaced it; a state.json or a brain that still names it gets the
+# shader, not an error and not the boot default.
+LEGACY_PRESETS = {"voice-hud-c": "voice-hud"}
 DEFAULT_PRESET = "reactor"
 
 # The presets that run no child and so paint nothing. Derived from the table
@@ -391,6 +392,7 @@ class Supervisor:
 
     def select(self, preset_id: str, persist: bool = True) -> dict:
         """Switch to ``preset_id`` now. Raises KeyError if it isn't a preset."""
+        preset_id = LEGACY_PRESETS.get(preset_id, preset_id)
         preset = PRESET_BY_ID[preset_id]
         with self._lock:
             # Presets that share a child do not restart it. panel.py hosts every
@@ -439,8 +441,8 @@ class Supervisor:
         """Respawn a child that dies on its own; give up only if it keeps failing.
 
         Also the backstop for a settings *process* nobody is using: when the
-        daemon itself put the panel into the menu (the voice-HUD cog path), the
-        menu is a whole preset rather than a scene, and panel.py's own idle
+        daemon itself put the panel into the menu (from a blank or latched
+        screen), the menu is a whole preset rather than a scene, and panel.py's own idle
         timeout ends with a restore request back to this daemon — but if that
         process wedges, or the request is lost, the screen stays a menu
         forever. It once did, for twenty-two hours. The watchdog already wakes
@@ -481,6 +483,7 @@ class Supervisor:
     # -- persistence -------------------------------------------------------
     def _load_choice(self) -> str:
         pid = read_state().get("animation")
+        pid = LEGACY_PRESETS.get(pid, pid)
         if pid not in PRESET_BY_ID or PRESET_BY_ID[pid].get("hidden"):
             return DEFAULT_PRESET           # never boot into the settings menu
         return pid

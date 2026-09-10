@@ -804,7 +804,7 @@ def api_event():
             try:
                 if _display.configured() and \
                         _display.state().get("animation") not in cmd_mod.VOICE_STATE_DISPLAYS:
-                    _display.select("voice-hud-c")
+                    _display.select("voice-hud")
                     _log.event("chest switched to the voice indicator for the event")
             except Exception as exc:  # noqa: BLE001 - never fail the toggle over this
                 _log.event(f"could not switch the chest display: {exc}")

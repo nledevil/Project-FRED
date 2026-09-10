@@ -28,9 +28,9 @@ deploy/display/voice_state.py
 deploy/display/metrics_hud.py
 
 # --- the settings menu, a scene of the panel app ----------------------------
-# cog_hud is drawn by every animation (and by voice_hud.c, which is compiled);
-# the panel handles its own cog, and the daemon's watcher covers the native
-# voice HUD, which cannot. The page_*.py files carry no drawing since the
+# cog_hud is drawn into the panel's overlay texture over every look; the panel
+# handles its own cog, and the daemon's watcher covers only a blank or latched
+# screen. The page_*.py files carry no drawing since the
 # numpy menu retired — they are the menu's judgements, served to the QML as
 # data, and net_snapshot is the poller those judgements read from.
 deploy/display/cog_hud.py
@@ -48,9 +48,8 @@ deploy/display/page_info.py
 deploy/display/page_wireless.py
 
 # --- GPU animations ---------------------------------------------------------
-# The reactor, flux and face run as fragment shaders now; the numpy modules
-# above are kept as the reference tools/verify_shaders.py checks them against,
-# the same arrangement voice_hud.py has with voice_hud.c. The .qsb files are
+# Every look runs as a fragment shader now; the numpy modules are kept as the
+# reference tools/verify_shaders.py checks them against. The .qsb files are
 # baked from the .frag on this Pi at first run and are git-ignored.
 deploy/display/panel.py
 deploy/display/panel.qml
@@ -75,23 +74,19 @@ deploy/display/fonts/ttf/Exo2[wght].ttf
 deploy/display/shaders/reactor.frag
 deploy/display/shaders/flux.frag
 deploy/display/shaders/face.frag
+deploy/display/shaders/voice_hud.frag
 deploy/display/tools/verify_shaders.py
 
-# --- voice HUD, both renderers ----------------------------------------------
-# The native one is what actually runs. The binary is built ON this Pi (`make`)
-# and is git-ignored, so it is a keep: below, not a deploy.
+# --- voice HUD reference ------------------------------------------------------
+# The readable definition of the picture; the shader above is what runs, and
+# panel.py imports this for the word and envelope textures it hands the GPU.
 deploy/display/voice_hud.py
-deploy/display/voice_hud.c
-deploy/display/Makefile
-deploy/display/tools/verify_voice_hud.py
 deploy/display/tools/test_menu_logic.py
 deploy/display/tools/test_panel_views.py
+deploy/display/tools/test_voice_hud_shader.py
 deploy/display/tools/render_anims.py
 deploy/display/tools/test_fb_pack.py
 deploy/display/tools/test_touch_map.py
-# Generates the C renderer's palettes from theme.py. Shipped because the
-# Makefile here calls it, even though this Pi cannot run the compiler.
-deploy/display/tools/gen_theme_colors.py
 
 # --- cart bring-up: the real Pico, not the simulated one -----------------
 deploy/display/tools/ps2_probe.py
@@ -122,10 +117,7 @@ firmware/pico_sensor_node/push.py
 deploy/vcgencmd_power_report.sh
 
 # --- never touch ------------------------------------------------------------
-# voice_hud: compiled here, from voice_hud.c, by the Makefile above.
 # state.json: the animation pick, persisted across reboots.
-keep: voice_hud
-keep: theme_colors.h
 keep: state.json
 # The cached panel PIN (salt + digest), pushed by the brain when it
 # changes. Never deployed: it is per-robot state, not source.
@@ -134,8 +126,9 @@ keep: child-stderr.log
 keep: __pycache__
 # The push-role stamp: git rev + date of the last sync, reported by /api/state.
 keep: DEPLOYED
-# Compiled shaders, built on the Pi from the .frag sources next to them — the
-# same arrangement voice_hud has with voice_hud.c. Artifacts, not source.
+# Compiled shaders, built on the Pi from the .frag sources next to them.
+# Artifacts, not source.
 keep: face.frag.qsb
 keep: flux.frag.qsb
 keep: reactor.frag.qsb
+keep: voice_hud.frag.qsb

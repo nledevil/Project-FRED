@@ -286,7 +286,7 @@ def _speak_ago(sec: float) -> str:
 # opposed to the ones that are only decorative. At an event this is the panel a
 # child reads to know whether he heard them, so event mode will not let him
 # swap it for a flourish. See _set_chest_display.
-VOICE_STATE_DISPLAYS = ("voice-hud", "voice-hud-c", "face", "face-talk")
+VOICE_STATE_DISPLAYS = ("voice-hud", "face", "face-talk")
 
 
 def _set_chest_display(ctx, animation: str) -> str:

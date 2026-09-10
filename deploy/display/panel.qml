@@ -49,7 +49,9 @@ Item {
         property color ok: OkCol
         property color warn: WarnCol
         property vector2d res: Qt.vector2d(root.width, root.height)
-        property real t: root.animT
+        // FrozenT >= 0 stops the clock so --grab produces the same frame every
+        // time, which is what makes the comparison against numpy reproducible.
+        property real t: FrozenT >= 0 ? FrozenT : root.animT
         property real level: P.level
         property real voiceState: P.voiceState
         property real copper: P.copper
@@ -58,6 +60,36 @@ Item {
         property real gazeY: P.gazeY
         property real openness: P.openness
         property real glow: P.glow
+        // The voice HUD's own inputs — see shaders/voice_hud.frag. The other
+        // shaders ignore what they don't declare.
+        property vector4d win: P.win
+        property vector4d meter: P.meter
+        property real head: P.head
+        property real haveClip: P.haveClip
+        property real envLen: P.envLen
+        property var envelope: envelopeImage
+        property var word: wordImage
+    }
+
+    // The two textures the voice HUD reads: the clip's envelope, one texel a
+    // sample, and the state word as an intensity map. Both come from
+    // voice_hud.py through image providers, so the shader draws the same
+    // glyphs and the same samples the reference renderer does. Never shown
+    // directly — they exist to be sampled. Nearest filtering, because a texel
+    // is a pixel (the word) or a sample (the envelope), never a blend.
+    Image {
+        id: envelopeImage
+        visible: false
+        cache: false
+        smooth: false
+        source: "image://env/e" + P.envGen
+    }
+    Image {
+        id: wordImage
+        visible: false
+        cache: false
+        smooth: false
+        source: "image://word/" + P.voiceWord
     }
 
     // The cog is a control here, not just a picture: this app owns the screen
@@ -78,7 +110,7 @@ Item {
     // by URL, so the URL has to change or Qt serves the first one forever.
     Image {
         anchors.fill: parent
-        visible: P.scene !== "menu"
+        visible: P.scene !== "menu" && !HideOverlay
         source: "image://overlay/o" + root.overlayGeneration
         cache: false
         smooth: false

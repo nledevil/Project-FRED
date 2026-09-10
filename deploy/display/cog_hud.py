@@ -6,16 +6,15 @@ animation therefore paints the cog itself — one call, next to the one it alrea
 makes for the sensor HUD.
 
 The icon is a **bitmap, not geometry**. It could have been circles and trig, but
-voice_hud.c is a pixel-for-pixel port of voice_hud.py and tools/verify_voice_hud.py
-proves it stays that way; matching floating-point trig across numpy and C is a
-promise neither wants to keep. A bitmap is the same 24 rows of data on both
-sides, so the two renderers cannot drift and the test cannot start failing for
-reasons nobody can see. It was generated once, by eye, and is now just data.
+for a year it was drawn by two renderers — this file and a native C port of the
+voice HUD, held pixel-identical by a verifier — and matching floating-point
+trig across numpy and C is a promise neither wanted to keep. A bitmap is 24
+rows of data. The C port retired on 2026-09-10; the bitmap stays, because it
+was generated once, by eye, and is now just data.
 
-The draw sequence — clip, dim, add, clip — mirrors metrics_draw() in voice_hud.c
-exactly, including clipping *before* the dim: the frame reaching an overlay may
-have accumulated past 255, and dimming an unclipped value shrinks the wrong
-number. Keeping the order identical in both files is what keeps them in step.
+The draw sequence — clip, dim, add, clip — clips *before* the dim: the frame
+reaching an overlay may have accumulated past 255, and dimming an unclipped
+value shrinks the wrong number.
 
 ``HOTSPOT`` is the touch target, and lives here so the daemon's hit-test and the
 drawing can never disagree about where the cog is.

@@ -2,10 +2,9 @@
 
 A theme is a palette, a typeface with a type scale, a shape style, and one
 accent colour the animations are built from. Pure data on purpose: the Qt
-panel reads it at startup (and re-execs to change), the shaders get it through
-the Ramp below, and the C voice HUD gets it through the header that
-tools/gen_theme_colors.py generates — so every renderer answers to this file
-and none of them can drift on their own.
+panel reads it at startup (and re-execs to change) and the shaders get it
+through the Ramp below — so every renderer answers to this file and none of
+them can drift on their own.
 
 The type scale (sizes) is indexed 1/2/3/4/8 for history: those were the bitmap
 font's integer scales, and every page still thinks in them. The pixel values
@@ -143,9 +142,10 @@ ORDER = ["soft", "hud", "neon"]
 
 
 # The seven colours the voice HUD draws with, as levels on the theme's ramp.
-# Here rather than in either renderer because there are two of them — a Python
-# one and a compiled one — and tools/gen_theme_colors.py turns these into the C
-# header so the numbers cannot drift apart. See tools/verify_voice_hud.py.
+# Here rather than in the renderer because there are two readers — voice_hud.py,
+# the reference, and shaders/voice_hud.frag, which reconstructs the ramp from
+# deep and accent and takes these levels as literals. tools/verify_shaders.py
+# is what catches the two disagreeing.
 HUD_LEVELS = {
     "base":  0.45,      # idle and speaking: the HUD's own colour
     "white": 0.82,      # highlights struck off it

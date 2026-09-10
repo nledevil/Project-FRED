@@ -18,9 +18,7 @@ config/phrases.json
 config/settings.json
 
 # Compiled chest-panel animations: built per-machine from deploy/display/*.c
-deploy/display/voice_hud
 # Generated from theme.py by the Makefile, beside the binary above.
-deploy/display/theme_colors.h
 verify-*.raw
 deploy/display/shaders/*.qsb
 # heard.jsonl and friends: data, not source. The comment is on its own line

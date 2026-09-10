@@ -14,9 +14,8 @@ a core on this Pi — two of them saturated, which is why they were not reaching
 
 **The numpy versions are still the source of truth for what these look like.**
 They are not launched any more, but they are not dead code either: the shaders
-are checked against them by tools/verify_shaders.py, which is the same
-arrangement voice_hud.py has with voice_hud.c — a readable reference and a fast
-renderer, held together by a harness.
+are checked against them by tools/verify_shaders.py — a readable reference and
+a fast renderer, held together by a harness.
 
 The cog and the sensor overlay are still drawn by cog_hud and metrics_hud, into
 a numpy image that is composited over the shader as a texture. They are text
@@ -200,7 +199,8 @@ def qsb_path(name: str) -> str:
 
     Baked here rather than by a build step because this Pi has qsb and the
     alternative is shipping a binary artifact that has to be rebuilt on another
-    machine — which is exactly the arrangement that makes voice_hud awkward.
+    machine — which is exactly the arrangement the native voice HUD had, and
+    the reason it went.
     """
     src = next((os.path.join(d, f"{name}.frag") for d in SHADER_DIRS
                 if os.path.isfile(os.path.join(d, f"{name}.frag"))), "")

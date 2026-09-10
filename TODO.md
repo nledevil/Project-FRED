@@ -216,11 +216,12 @@ actually available when asked for something that is not, because the animation
 list lives on the chest Pi and a copy here would go stale.
 
 Worth knowing for the kid-height item below: **the chest screen is already the
-turn-taking signal.** `voice-hud-c` is what it normally shows and it draws
+turn-taking signal.** `voice-hud` is what it normally shows and it draws
 LISTENING / THINKING / SPEAKING from `voice_state.py` — so that item is not
-"build it" but "make it big enough to read across a hall", and the renderer
-that actually runs is the C one. Event mode now raises that display and stops
-Claude swapping it for a flourish.
+"build it" but "make it big enough to read across a hall". The renderer that
+runs is a shader in the panel app (since 2026-09-10; the native C one it
+replaced is gone). Event mode now raises that display and stops Claude
+swapping it for a flourish.
 
 Also worth knowing: **there is almost nothing Claude can play.** *(Corrected
 2026-08-16: the terminator clips are not missing — eight are in
