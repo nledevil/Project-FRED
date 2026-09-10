@@ -36,7 +36,7 @@ from inmoov.remote_servo import RemoteServoController  # noqa: E402
 from inmoov.camera import Camera  # noqa: E402
 from inmoov.face_tracker import FaceTracker, TUNABLE  # noqa: E402
 from inmoov.wide_spotter import WideSpotter  # noqa: E402
-from inmoov.assistant import Assistant  # noqa: E402
+from inmoov.assistant import Assistant, EARCON_AFTER  # noqa: E402
 from inmoov.brain import BACKENDS  # noqa: E402
 from inmoov import hotspot as hotspot_mod  # noqa: E402
 from inmoov import uplink as uplink_mod    # noqa: E402
@@ -218,7 +218,12 @@ _assistant = Assistant(_ctrl, _status_led, _tracker, _sound,  # voice: wake word
                        # Listen through his own replies so he can be interrupted.
                        barge_in=bool(_voice_cfg.get("barge_in", True)),
                        # Stop mid-reply when the visitor walks off.
-                       stop_when_alone=bool(_voice_cfg.get("stop_when_alone", True)))
+                       stop_when_alone=bool(_voice_cfg.get("stop_when_alone", True)),
+                       # Say "Hmm..." when a model keeps him silent this long (V1).
+                       earcon_after=float(_voice_cfg.get("earcon_after", EARCON_AFTER)))
+# The earcon into the TTS cache now, for the same reason the voice is warmed
+# above: the first slow answer of the day should not also pay a render.
+threading.Thread(target=_assistant.warm_earcon, name="earcon-warm", daemon=True).start()
 # Opt-in utterance capture (off by default): the listener feeds it, this points
 # it at the configured directory and turns it on only if settings say so. Only
 # what passes the wake gate is ever written — see inmoov/uttercap.py.

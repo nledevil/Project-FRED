@@ -32,6 +32,19 @@ from .listener import ARM_WINDOW, Listener
 
 MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
 
+# The thinking earcon (V1). What he says to fill the silence while a language
+# model is working, and how long that silence gets to run before he says it.
+# Short, and cached by Sound.render_tts after its first render (warm_earcon
+# does that at boot), so playing it costs nothing but its own length.
+#
+# The default delay is the line between the two backends as measured on this
+# rig: a plain Claude turn is audible at ~1.1 s (first sentence ~0.7 s plus
+# its render), the local model at ~1.5 s or more, and any turn with a tool
+# call or a look at ~3 s. Below the delay the answer itself is the signal and
+# a "Hmm" would only push it later; above it the child has started to wonder.
+EARCON_TEXT = "Hmm..."
+EARCON_AFTER = 1.5
+
 
 class Assistant:
     def __init__(self, controller, led, tracker, sound, *, api_key: str | None = None,
@@ -40,7 +53,7 @@ class Assistant:
                  asr_model: str | None = None, barge_in: bool = True,
                  stop_when_alone: bool = True,
                  mic_channels: int = 1, mic_channel: int = 0,
-                 diagnostic=None):
+                 diagnostic=None, earcon_after: float = EARCON_AFTER):
         # sensors is the SensorHub, or None on a build with no sensor node — the
         # read_sensors action degrades to saying so rather than failing. The same
         # goes for diagnostic: absent, the tools say he hasn't got it rather
@@ -79,6 +92,13 @@ class Assistant:
         # True from "FRED heard you" until the first audio of his reply — the
         # Claude round-trip made visible. The chest display shows it as a state.
         self._thinking = False
+        # The thinking earcon: seconds of silence a language-model turn gets
+        # before he says "Hmm..." (0 turns it off). ``_earcon_due`` is the
+        # monotonic moment the current turn's earcon falls due, or 0 when no
+        # turn has been handed to a model — the brain sets it through
+        # _on_thinking, the speaker thread consumes it, converse clears it.
+        self.earcon_after = max(0.0, float(earcon_after))
+        self._earcon_due = 0.0
         self._speak_lock = threading.Lock()
         # Barge-in: set to cut the current reply short because someone started
         # talking over him. Speech checks it between clips and inside the wait
@@ -156,6 +176,7 @@ class Assistant:
             "listening": self.listener.is_running(),
             "speaking": self._speaking,
             "thinking": self._thinking,
+            "earcon_after": self.earcon_after,      # 0 = the thinking "Hmm" is off
             "ai_available": self.brain.ai_available(),
             "can_speak": self._sound.can_speak(),
             "last_heard": self._last_heard,
@@ -213,11 +234,13 @@ class Assistant:
         try:
             # respond() emits every sentence it will return, so speaking is
             # entirely the speaker thread's job — don't also speak result["reply"].
-            result = self.brain.respond(text, on_sentence=sentences.put)
+            result = self.brain.respond(text, on_sentence=sentences.put,
+                                        on_thinking=self._on_thinking)
         finally:
             sentences.put(None)                     # end of stream, even on error
             speaker.join()
             self._thinking = False                  # covers the never-spoke path
+            self._earcon_due = 0.0                  # never carried into the next turn
 
         self._last_reply = result.get("reply", "")
         self._last_source = result.get("source", "")
@@ -376,6 +399,63 @@ class Assistant:
         self.listener.arm(ARM_WINDOW)
 
     # ---- lip-synced speech ------------------------------------------------
+    # ---- the thinking earcon (V1) ----------------------------------------
+    def _on_thinking(self) -> None:
+        """The brain has handed this turn to a language model: start the clock
+        on the earcon. Called on the brain's thread; the speaker thread, already
+        waiting for the first sentence, is the one that acts on it."""
+        if self.earcon_after > 0:
+            self._earcon_due = time.monotonic() + self.earcon_after
+
+    def warm_earcon(self) -> None:
+        """Render the earcon into the TTS cache, so the first slow answer of the
+        day does not pay a synthesis on top of the wait it exists to cover.
+        Safe with no TTS backend, and never raises — it runs on a boot thread."""
+        try:
+            self._sound.render_tts(EARCON_TEXT, speed=150)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[Assistant] earcon warm-up failed: {exc}")
+
+    def _await_first(self, rendered: queue.Queue):
+        """Wait for the first rendered clip of a reply, saying "Hmm..." if the
+        wait outlasts ``earcon_after`` — silence past that point reads as being
+        ignored, and a child repeats the question into a second turn.
+
+        Returns ``(path, pondered)``: the clip (None when the renderer finished
+        with nothing), and whether the earcon was played first. Once only per
+        turn, never when a barge-in has already cut the turn short, and never
+        for a turn no model is answering (``_earcon_due`` stays 0 for those:
+        matched commands, greetings, the wake "Yes?").
+        """
+        pondered = False
+        while True:
+            try:
+                return rendered.get(timeout=0.05), pondered
+            except queue.Empty:
+                pass
+            if self._interrupt.is_set():
+                return None, pondered
+            due = self._earcon_due
+            if pondered or not due or time.monotonic() < due:
+                continue
+            self._earcon_due = 0.0
+            pondered = self._ponder()
+
+    def _ponder(self) -> bool:
+        """Play the earcon, jaw and all, leaving him *thinking*: the chest HUD
+        shows THINKING again the moment it ends, not SPEAKING, because the
+        answer is still on its way. True if it played."""
+        try:
+            path = self._sound.render_tts(EARCON_TEXT, speed=150)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[Assistant] earcon render failed: {exc}")
+            return False
+        if path is None or self._interrupt.is_set():
+            return False
+        played = self._play_chunk(path, pad=True, pondering=True)
+        self._speaking = False          # it was a filler, and it is over
+        return played
+
     def speak(self, text: str) -> bool:
         """Speak ``text`` as a single utterance, jaw in time with the audio."""
         text = (text or "").strip()
@@ -423,7 +503,17 @@ class Assistant:
                 while True:
                     if self._interrupt.is_set():
                         break                      # barged in: stop mid-reply
-                    path = rendered.get()
+                    if first:
+                        # The wait that can grow to seconds: the model is still
+                        # writing the first sentence. The earcon lives in it.
+                        path, pondered = self._await_first(rendered)
+                        if pondered:
+                            # The "Hmm" just opened the device, so the answer
+                            # is a continuation clip now: the shorter gap pad,
+                            # not the cold-start lead-in.
+                            first = False
+                    else:
+                        path = rendered.get()
                     if path is None:               # renderer finished
                         break
                     if self._interrupt.is_set():
@@ -462,8 +552,11 @@ class Assistant:
         finally:
             _put(out, None, abort)                 # sentinel: end of stream
 
-    def _play_chunk(self, path: str, pad: bool) -> bool:
-        """Play one rendered sentence and drive the jaw through it. True if it played."""
+    def _play_chunk(self, path: str, pad: bool, pondering: bool = False) -> bool:
+        """Play one rendered sentence and drive the jaw through it. True if it played.
+
+        ``pondering`` marks the earcon: sound comes out and the jaw moves, but
+        he has not started answering, so the thinking state stays up."""
         levels, frame_dt = self._envelope(path)
         if not self._sound.play_file(path, wait=False, pad=pad):     # async aplay
             return False
@@ -479,7 +572,8 @@ class Assistant:
             if not self._speaking:
                 self._speaking_since = time.monotonic()
             self._speaking = True
-            self._thinking = False      # sound is out: he's answering, not pondering
+            if not pondering:
+                self._thinking = False  # sound is out: he's answering, not pondering
             self._animate_jaw(levels, frame_dt, epoch)
             while self._sound.is_playing():                          # let audio finish
                 if self._interrupt.is_set():

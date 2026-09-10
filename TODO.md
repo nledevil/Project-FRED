@@ -366,16 +366,34 @@ What is left of the original item:
 - Greeting lines are not pre-rendered; the 64-entry TTS cache makes repeats
   cheap, but the *first* one of the day still waits for piper.
 
-### Priority 3 — thinking earcon
+### ~~Priority 3 — thinking earcon~~ BUILT 2026-09-10 (review item V1)
 At 2–4 s to first word, kids in a loud hall assume he didn't hear and repeat
-themselves. The moment a Claude-path question is accepted (local matcher missed,
-before the API call), play a cached "Hmm…" / soft robot chirp — cache hit is
-~0 s. Bonus: pulse the eyes/LED while thinking. Hook point: `Brain.respond`
-just before `_ask_llm` (renamed since this was written), or in
-`Assistant.converse` keyed off the source. Still entirely absent as of
-2026-08-16 — `brain.py` imports no sound module at all. Note the *visual* half
-already exists: `Assistant._thinking` drives the chest HUD's THINKING state, so
-this is the audible half of a signal the robot is already giving.
+themselves. Built as designed, with one change of hook point: the brain still
+imports no sound module. `Brain.respond` takes an `on_thinking` callback, fired
+once when the matcher misses and a model gets the turn (never for a matched
+command, the conversation reset, or the no-brain apology). The assistant hangs
+a clock off it, and the *speaker thread* — already blocked waiting for the
+first sentence — says a cached "Hmm..." (0.44 s from piper, pre-rendered at
+boot by `warm_earcon`) if that wait outlasts `voice.earcon_after` (default
+1.5 s; 0 turns it off). The threshold is the measured line between backends: a
+plain Claude turn is audible at ~1.1 s and gets no earcon, the local model, a
+tool call or a look at the camera run over it and do. Once per turn, never
+after a barge-in, and he stays in THINKING (not SPEAKING) on the HUD through
+it. The answer that follows is padded as a continuation clip, since the earcon
+already opened the device.
+
+The second half of the same finding is also in: the first Claude failure of an
+outage now says "My internet brain is out of reach, so bear with me." before
+the local answer, once — a cloud success clears `_cloud_failed_at`, so the
+retry that fails after the 60 s sulk is the same outage and stays quiet, and
+the next outage after a success is announced again. The line rides the reply
+for the transcript but is kept out of conversation memory.
+
+`tools/test_thinking_earcon.py` and the V1 checks in
+`tools/test_brain_fallback.py` pin all of the above. Still by-ear: how "Hmm..."
+sounds in the room with the array's lead-in, and whether 1.5 s is the right
+number against real Claude latency on venue WiFi — `earcon_after` is in
+settings for exactly that. The LED/eye pulse bonus was not done.
 
 ### Priority 4 — "show yourself off" demo routine
 One voice command + web button that runs a scripted showcase: eyes sweep, head

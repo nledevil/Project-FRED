@@ -234,6 +234,65 @@ def main() -> int:
     check("uncapped speaks far more than the capped run",
           len(" ".join(said).split()) > 60, f"{len(' '.join(said).split())} words")
 
+    print("the outage is announced once, before the local answer (V1)")
+    # Nothing tells a visitor that the flatter answers are the WiFi's fault,
+    # so the first fallback says so out loud — and only the first.
+    b = make_brain(); b.backend = "auto"
+    b._client = FakeClient(boom=True)
+    b._local = fake_local(True, text="A local answer.")
+    said = []
+    r = b.respond("what is a servo", on_sentence=said.append)
+    check("the announcement is the first thing spoken",
+          said and said[0] == B.CLOUD_LOST_LINE, str(said))
+    check("...and the local answer follows it", "A local answer." in said, str(said))
+    check("the reply carries the announcement for the transcript",
+          r.get("reply", "").startswith(B.CLOUD_LOST_LINE) and r.get("announced") is True,
+          str(r))
+    check("memory keeps only the answer, not the announcement",
+          b._history and B.CLOUD_LOST_LINE not in b._history[-1]["content"],
+          str(b._history[-1:]))
+    # Same outage: the sulk expires, Claude is tried, fails again — quiet.
+    b._cloud_failed_at = B.time.monotonic() - (B.CLOUD_RETRY_SECS + 1)
+    said = []
+    r = b.respond("and a motor", on_sentence=said.append)
+    check("a second failure in the same outage stays quiet",
+          B.CLOUD_LOST_LINE not in said and not r.get("announced"), str(said))
+    check("...but still answers locally", r.get("source") == "local", str(r))
+
+    print("a cloud success ends the outage, so the next one is announced again")
+    b._client = FakeClient(text="Back online.")
+    b._cloud_failed_at = B.time.monotonic() - (B.CLOUD_RETRY_SECS + 1)   # sulk over
+    said = []
+    r = b.respond("hello again", on_sentence=said.append)
+    check("Claude answered", r.get("source") == "claude", str(r))
+    check("...which cleared the sulk", b._cloud_failed_at == 0.0)
+    b._client = FakeClient(boom=True)
+    said = []
+    b.respond("and now", on_sentence=said.append)
+    check("the new outage is announced", said and said[0] == B.CLOUD_LOST_LINE, str(said))
+
+    print("on_thinking fires for model turns only (the earcon's trigger)")
+    b = make_brain(); b.backend = "claude"
+    b._client = FakeClient(text="Sure.")
+    fired = []
+    said = []
+    b.respond("tell me about the moon", on_sentence=said.append,
+              on_thinking=lambda: fired.append(len(said)))
+    check("a Claude turn fires it once", fired == [0], str(fired))
+    check("...before anything was spoken", fired and fired[0] == 0, str(fired))
+    fired = []
+    b.respond("let's start over", on_thinking=lambda: fired.append(1))
+    check("the conversation reset does not (it answers at once)", fired == [], str(fired))
+    b2 = make_brain(); b2.backend = "claude"; b2._client = None
+    fired = []
+    b2.respond("anything", on_thinking=lambda: fired.append(1))
+    check("nor the no-brain apology", fired == [], str(fired))
+    b3 = make_brain(); b3.backend = "auto"
+    b3._client = FakeClient(boom=True); b3._local = fake_local(True)
+    fired = []
+    b3.respond("anything", on_thinking=lambda: fired.append(1))
+    check("a fallback turn fires it once, not once per backend", fired == [1], str(fired))
+
     print()
     if FAILURES:
         print(f"FAILED: {len(FAILURES)} check(s): " + "; ".join(FAILURES))

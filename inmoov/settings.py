@@ -251,6 +251,10 @@ DEFAULT_SETTINGS = {
         # long answer to an empty spot while the queue waits. Needs the stomach
         # node's distance sensors; with no sensors he simply keeps talking.
         "stop_when_alone": True,
+        # Seconds a language-model turn may stay silent before he says "Hmm..."
+        # to show he heard (V1). A plain Claude answer lands under it; the local
+        # model, a tool call or a look at the camera run over it. 0 turns it off.
+        "earcon_after": 1.5,
                                       # Haiku answers in ~0.7s vs Opus's ~1.7s; for one- or
                                       # two-sentence spoken replies that trade is worth it.
     },

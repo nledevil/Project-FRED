@@ -50,6 +50,13 @@ BACKENDS = ("auto", "claude", "local")
 # network timeout before falling back — which the listener hears as a hang.
 CLOUD_RETRY_SECS = 60.0
 
+# Said once, the first time a Claude failure drops a turn onto the local model,
+# and not again until the cloud has been seen working (V1). Without it a 3B
+# model's flatter answers arrive with no signal at all, and a visitor cannot
+# tell "FRED is dumb" from "the WiFi died". Spoken before the local answer, so
+# it also covers the local model's first prompt read.
+CLOUD_LOST_LINE = "My internet brain is out of reach, so bear with me."
+
 # Haiku answers in ~0.7 s where Opus takes ~1.7 s (measured on this rig). FRED's
 # replies are one or two spoken sentences over a small tool set, which Haiku
 # handles well, and a talking head is judged on how fast it answers.
@@ -709,7 +716,7 @@ class Brain:
         if len(self._history) > keep:
             self._history = self._history[-keep:]
 
-    def respond(self, text: str, on_sentence=None) -> dict:
+    def respond(self, text: str, on_sentence=None, on_thinking=None) -> dict:
         """Return {reply, source, actions}. ``source`` is local|claude|none|error.
 
         ``on_sentence`` (optional) is called with each sentence of the reply the
@@ -717,8 +724,15 @@ class Brain:
         still streaming*, so the caller can start speaking early. Every path calls
         it for everything it will return in ``reply``, so a caller that speaks
         from the callback must not also speak the return value.
+
+        ``on_thinking`` (optional) is called once, the moment a turn is handed to
+        a language model — i.e. the matcher missed and an answer is now seconds
+        away rather than milliseconds. The assistant hangs the thinking earcon
+        off it (V1). Never called for matched commands, the conversation reset,
+        or the no-brain apology, all of which answer at once.
         """
         emit = on_sentence or (lambda _s: None)
+        pondering = on_thinking or (lambda: None)
         text = (text or "").strip()
         if not text:
             return {"reply": "", "source": "none", "actions": []}
@@ -782,6 +796,7 @@ class Brain:
             emit(reply)
             return {"reply": reply, "source": "none", "actions": []}
 
+        pondering()
         if choice == "claude":
             result = self._ask_llm(text, emit, "claude")
             # In auto, a Claude failure is exactly the case this whole module
@@ -791,8 +806,20 @@ class Brain:
             if (result.get("source") == "error" and self.backend == "auto"
                     and not result.get("spoke") and self._local.available()):
                 print("[Brain] Claude failed — falling back to the local model.")
+                # Announce the outage once. ``_cloud_failed_at`` is zero only
+                # while the cloud is believed good (a success clears it, see
+                # _ask_llm), so the retry that fails after the sulk expires is
+                # the same outage and stays quiet; the first failure after a
+                # success is a new one and is announced again.
+                fresh = not self._cloud_failed_at
                 self._cloud_failed_at = time.monotonic()
-                return self._ask_llm(text, emit, "local")
+                if fresh:
+                    emit(CLOUD_LOST_LINE)
+                result = self._ask_llm(text, emit, "local")
+                if fresh:
+                    result["reply"] = f"{CLOUD_LOST_LINE} {result.get('reply', '')}".strip()
+                    result["announced"] = True
+                return result
             return result
         return self._ask_llm(text, emit, "local")
 
@@ -958,6 +985,10 @@ class Brain:
             else:
                 reply = "Done." if actions else "Sorry, I didn't catch that."
                 emit(reply)
+            if which == "claude":
+                # The cloud answered: any outage is over, and the next failure
+                # is a new one worth announcing (respond's fallback branch).
+                self._cloud_failed_at = 0.0
             return {"reply": reply, "source": which, "actions": actions}
         except Exception as exc:  # noqa: BLE001 - network/API hiccup shouldn't crash the loop
             # Don't apologise out loud yet: in auto, respond() may still retry
