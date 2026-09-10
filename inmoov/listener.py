@@ -91,6 +91,13 @@ ARM_WINDOW = 6.0     # seconds to wait for the command after a bare "Fred"
 # issuing a command after "Yes?" — and because it is measured from the moment he
 # stops talking, not from the moment he decided what to say.
 FOLLOWUP_WINDOW = 9.0
+# Event-mode strictness (V4). In a hall the follow-up window is open on a crowd
+# and near-homophones get said; these tighten the wake gate while event mode is
+# on and are undone the moment it is switched off — a little responsiveness for
+# far fewer answers to nobody, scoped to the event and reversible.
+EVENT_NAME_PARTIALS_BONUS = 2       # NAME_MIN_PARTIALS 4 -> 6: more proof before a barge
+EVENT_WAKE_MAX_POS = 2             # his name must land in the first two tokens
+EVENT_FOLLOWUP_WINDOW = 5.0        # shorter than the 9.0 above
 # Interrupting him takes his name. Any-speech-interrupts was tried first and is
 # unusable in a real room: with a television on, four lines of dialogue in seven
 # seconds each cut him off *and* were taken as commands, so he started an answer,
@@ -226,6 +233,11 @@ class Listener:
         self._armed_until = 0.0
         self._warned_grammar = False           # only say "no grammar support" once
         self._name_streak = 0                  # consecutive partials naming him
+        # Wake-gate strictness — relaxed by default, tightened by event mode
+        # (set_event_strict). See the EVENT_* constants and V4.
+        self._name_min_partials = NAME_MIN_PARTIALS
+        self._wake_max_pos = None              # None = his name may appear anywhere
+        self._followup_window = FOLLOWUP_WINDOW
         # The last couple of seconds of audio, so the full recogniser can be
         # started only once his name has been heard and still be handed the
         # sentence that carried it. See _run: transcribing a room nobody is
@@ -297,8 +309,9 @@ class Listener:
         """Start feeding the recogniser again once FRED has stopped talking."""
         self._paused.clear()
 
-    def arm(self, seconds: float = FOLLOWUP_WINDOW) -> None:
-        """Accept the next utterance without a wake word, for ``seconds``.
+    def arm(self, seconds: float | None = None) -> None:
+        """Accept the next utterance without a wake word, for ``seconds``
+        (default: the current follow-up window, which event mode shortens).
 
         Call this *after* FRED has finished speaking, not when the reply was
         decided: nothing said while he talks is listened to, so a window opened
@@ -306,7 +319,38 @@ class Listener:
 
         Cheap to call when already armed — it extends rather than stacks.
         """
+        if seconds is None:
+            seconds = self._followup_window
         self._armed_until = time.monotonic() + max(0.0, float(seconds))
+
+    def set_event_strict(self, on: bool) -> None:
+        """Tighten (or relax) the wake gate for event mode (V4). On: the name
+        detector needs more consecutive partials, his name must land in the first
+        two tokens, and the follow-up window is shorter — three ways a crowd
+        stops him answering nobody, all undone when event mode goes off."""
+        if on:
+            self._name_min_partials = NAME_MIN_PARTIALS + EVENT_NAME_PARTIALS_BONUS
+            self._wake_max_pos = EVENT_WAKE_MAX_POS
+            self._followup_window = EVENT_FOLLOWUP_WINDOW
+        else:
+            self._name_min_partials = NAME_MIN_PARTIALS
+            self._wake_max_pos = None
+            self._followup_window = FOLLOWUP_WINDOW
+
+    def _strip(self, text: str):
+        """Wake-strip honouring event strictness: when ``_wake_max_pos`` is set,
+        his name only counts inside the first that-many tokens, so a homophone
+        buried mid-sentence in a hall ("...my friend fred said") doesn't wake
+        him. Off (None), it is the plain module ``_strip_wake``."""
+        if self._wake_max_pos is None:
+            return _strip_wake(text)
+        toks = text.lower().split()
+        for i, tok in enumerate(toks):
+            if i >= self._wake_max_pos:
+                break
+            if tok in WAKE_WORDS:
+                return " ".join(toks[i + 1:]).strip()
+        return None
 
     def disarm(self) -> None:
         """Close the window early. The wake word is required again."""
@@ -680,7 +724,7 @@ class Listener:
             self._name_streak += 1
         else:
             self._name_streak = 0
-        return self._name_streak >= NAME_MIN_PARTIALS
+        return self._name_streak >= self._name_min_partials
 
     def _wake_full(self):
         """Start the full recogniser and hand it the audio it wasn't running for.
@@ -734,7 +778,7 @@ class Listener:
         # often was the gate asked" that heard.jsonl can't record. Continuations
         # above returned already, so every count here is a real wake decision.
         self._wakestats.considered()
-        cmd = _strip_wake(text)
+        cmd = self._strip(text)   # honours event-mode strictness (V4)
         if cmd is None:
             return                             # not addressed to him -> ignore
         self._wakestats.passed()

@@ -277,6 +277,7 @@ _event = EventMode(enabled=bool(_event_cfg.get("enabled")),
                    max_words=int(_event_cfg.get("max_words", 25)),
                    cart_speed=int(_event_cfg.get("cart_speed", 120)))
 wakestats.set_event(_event.enabled)          # tag the wake tally from the first boot state
+_assistant.listener.set_event_strict(_event.enabled)   # V4: match the wake-gate strictness to boot event state
 _cart = CartClient(host=str(_display_cfg.get("host", "") or ""),
                    port=int(_display_cfg.get("port", 8081)),
                    token=str(_display_cfg.get("token", "") or ""))
@@ -779,6 +780,7 @@ def api_event():
     if "enabled" in data:
         _event.set(bool(data["enabled"]))
         wakestats.set_event(_event.enabled)   # so the wake tally knows it was a fair
+        _assistant.listener.set_event_strict(_event.enabled)   # V4: tighten the wake gate at a fair
         _settings.setdefault("event", {})["enabled"] = _event.enabled
         save_settings(_settings)
         _log.event(f"event mode {'on' if _event.enabled else 'off'}")
