@@ -8,7 +8,8 @@ looked broken"), the wide camera enumerated but delivering no frames, the WiFi
 dongle failing calibration at boot, a panel that came back from a restart
 deaf. Catching them used to mean remembering five journalctl incantations
 spread across SERVICE.md, TODO.md and memory. This runs them all and answers
-in one green/red column, before an audience arrives.
+in one green/red column, before an audience arrives. (This checks the LIVE
+robot; tools/test_all.sh runs the code tests. Different jobs — run both.)
 
     ./venv/bin/python tools/preflight.py            # the lot (plays a clip)
     ./venv/bin/python tools/preflight.py --quiet    # skip the audible speaker test

@@ -1,5 +1,18 @@
 # InMoov TODO
 
+## Testing: narrative scripts, no pytest (recorded 2026-09-09)
+
+Settled, so it stops being re-litigated. The tests are standalone scripts in
+`tools/` and `deploy/display/tools/`, each a real failure made executable, each
+exiting non-zero on failure, each running without hardware. `tools/test_all.sh`
+runs all of them from one command (substring filter, red on any failure) — the
+discovery+runner that was the only thing the style actually lacked. pytest would
+add a dependency and fixture indirection for nothing this project is missing;
+the real coverage gaps are subsystems, not framework. New tests join by being a
+`test_*.py` in either directory that exits non-zero when it fails — nothing to
+register. Run it before every commit; `tools/preflight.py` is the separate
+show-morning check against the live robot.
+
 ## What changed 2026-08-19 — conversation, and the microphone underneath it
 
 A session about turn-taking: what it takes for someone to talk to him the way
