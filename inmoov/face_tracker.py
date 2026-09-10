@@ -152,6 +152,7 @@ class FaceTracker:
         # ``None`` = no valid history yet (just acquired / after a gap), so the
         # first frame contributes no damping kick from a stale reference.
         self._prev_ex = self._prev_ey = None
+        self._prev_track_t = 0.0                      # monotonic of the last tracked frame, for dt
         self._dex = self._dey = 0.0
 
         # Load the cascade once (None if OpenCV/file missing or file invalid).
@@ -168,7 +169,7 @@ class FaceTracker:
         self._lock = threading.Lock()
         self._status = {"face": False, "faces": 0, "error": None,
                         "center": None, "size": None, "loop_fps": 0.0,
-                        "seeking": False}
+                        "source_fps": 0.0, "seeking": False}
 
     # ---- capability / introspection ---------------------------------------
     def available(self) -> bool:
@@ -257,7 +258,10 @@ class FaceTracker:
         misses = 0
         had_face = False                         # for acquired/lost transition events
         ema_cycle = 1.0 / self._fps              # actual loop period (incl. pacing), smoothed
+        ema_src = 1.0 / self._fps                # period between *new* frames, smoothed
         prev = None
+        src_prev = None
+        last_seq = None
         try:
             while not self._stop.is_set():
                 t0 = time.monotonic()
@@ -267,10 +271,28 @@ class FaceTracker:
                         self._status["loop_fps"] = round(1.0 / ema_cycle, 1)
                 prev = t0
 
-                gray = self._cam.capture_gray()
+                gray, seq = self._cam.capture_gray_seq()
                 if gray is None:
                     self._stop.wait(0.1)
                     continue
+                # Skip a frame we already processed: the source (a remote head Pi)
+                # can deliver slower than this loop polls, and re-detecting the same
+                # frame both wastes the detector and feeds the derivative a de/dt of
+                # zero that reads as "the face stopped moving". A repeat carries no
+                # new information, so pace and move on.
+                if seq is not None and seq == last_seq:
+                    dt = time.monotonic() - t0
+                    period = 1.0 / self._fps
+                    if dt < period:
+                        self._stop.wait(period - dt)
+                    continue
+                last_seq = seq
+                if src_prev is not None:         # real source frame rate, distinct from loop_fps
+                    ema_src = 0.8 * ema_src + 0.2 * max(t0 - src_prev, 1e-3)
+                    with self._lock:
+                        self._status["source_fps"] = round(1.0 / ema_src, 1)
+                src_prev = t0
+
                 face = self._detect(gray)
                 if face is not None:
                     misses = 0
@@ -353,11 +375,23 @@ class FaceTracker:
         # Error-rate for the derivative term, smoothed so a jittery Haar box
         # doesn't inject a phantom velocity. No history (just acquired / post-gap)
         # => zero rate this frame, so damping never kicks off a stale reference.
-        if self._prev_ex is None:
+        #
+        # Time-normalized: the raw per-frame delta is scaled by (nominal_dt / dt)
+        # so the D term means the same thing whatever the frame rate. Without this
+        # a source dropping to 8 fps makes each delta arrive over a longer gap,
+        # and the damping — tuned at full rate — quietly changes strength exactly
+        # when lag is worst. Clamped so a stalled or bursty frame can't spike it.
+        now = time.monotonic()
+        if self._prev_ex is None or not self._prev_track_t:
             dex = dey = 0.0
         else:
-            dex, dey = ex - self._prev_ex, ey - self._prev_ey
+            dt = now - self._prev_track_t
+            nominal = 1.0 / self._fps
+            scale = min(4.0, max(0.25, nominal / dt)) if dt > 1e-3 else 1.0
+            dex = (ex - self._prev_ex) * scale
+            dey = (ey - self._prev_ey) * scale
         self._prev_ex, self._prev_ey = ex, ey
+        self._prev_track_t = now
         self._dex = 0.6 * self._dex + 0.4 * dex
         self._dey = 0.6 * self._dey + 0.4 * dey
 
@@ -422,6 +456,7 @@ class FaceTracker:
         """Drop the derivative history so the next tracked frame starts damping
         from a clean slate (no phantom velocity across a detection gap)."""
         self._prev_ex = self._prev_ey = None
+        self._prev_track_t = 0.0
         self._dex = self._dey = 0.0
 
     def _seek_bearing(self) -> None:

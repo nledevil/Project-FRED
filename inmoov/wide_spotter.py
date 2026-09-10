@@ -613,6 +613,10 @@ class WideSpotter:
                     "size": list(self._frame_wh) if self._frame_wh else None,
                     "detect_hz": self.detect_hz,
                     "detect_ms": round(self._detect_ms, 1),
+                    # Real detection cost as a fraction of one core: ms per detect
+                    # x detects per second / 1000. Settles the docstring's ~7% vs
+                    # the vision-tool comment's "~4 cores" — measured, not guessed.
+                    "detect_cpu_pct": round(self._detect_ms * self.detect_hz / 10.0, 1),
                     "detector": self._detector.name if self._detector else None,
                     "viewers": viewers,
                     "error": self.last_error,

@@ -129,6 +129,7 @@ class _Picamera2Backend:
         self._size = size
         self._lores_size = lores_size
         self._picam = None
+        self._gray_seq = 0
         self.lens_min = LENS_MIN
         self.lens_max = LENS_MAX
 
@@ -184,6 +185,13 @@ class _Picamera2Backend:
         w, h = self._lores_size
         return yuv[:h, :w]                          # top h rows = Y (luma) plane
 
+    def capture_gray_seq(self):
+        """(gray, seq). This backend reads the sensor live on each call, so every
+        read is treated as a fresh frame — the local CSI sensor runs at full rate
+        and repeats aren't the problem the remote stream's are."""
+        self._gray_seq += 1
+        return self.capture_gray(), self._gray_seq
+
     def apply_focus(self, af_mode: int, lens_position: float) -> None:
         if self._picam is None:
             return
@@ -214,6 +222,7 @@ class _ThreadedBackend:
         self._broker = None
         self._rotate_180 = False
         self._gray = None            # newest grayscale frame, for the tracker
+        self._gray_seq = 0           # bumped per new frame, so the tracker can tell a repeat
         self._gray_lock = threading.Lock()
         self.last_error = None       # surfaced in settings() so the UI can explain silence
 
@@ -242,9 +251,18 @@ class _ThreadedBackend:
         with self._gray_lock:
             return self._gray
 
+    def capture_gray_seq(self):
+        """(gray, seq). seq advances only on a genuinely new frame, so a consumer
+        polling faster than the source delivers can skip the repeats — see the
+        face tracker, which would otherwise re-detect a stale frame and read its
+        derivative as zero motion."""
+        with self._gray_lock:
+            return self._gray, self._gray_seq
+
     def _publish_gray(self, gray) -> None:
         with self._gray_lock:
             self._gray = gray
+            self._gray_seq += 1
 
     def apply_focus(self, af_mode: int, lens_position: float) -> None:
         return          # no focus control on these sources
@@ -541,6 +559,19 @@ class Camera:
         if backend is None:
             return None
         return backend.capture_gray()
+
+    def capture_gray_seq(self):
+        """(gray, seq) — seq advances only on a new source frame, or None if the
+        backend can't tell. Lets the face tracker skip re-detecting a repeated
+        frame (and measure the real source fps, not just its own loop rate)."""
+        with self._lock:
+            backend = self._backend
+        if backend is None:
+            return None, None
+        fn = getattr(backend, "capture_gray_seq", None)
+        if fn is None:
+            return backend.capture_gray(), None
+        return fn()
 
     def settings(self) -> dict:
         lens_min = getattr(self._backend, "lens_min", LENS_MIN)
