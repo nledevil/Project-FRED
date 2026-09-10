@@ -7,22 +7,20 @@ source interfaces.d/*
 
 # Ethernet
 # Robot LAN: the switch behind the NUC. The NUC (10.0.0.1) serves DHCP
-# with a MAC reservation for this Pi, so the address is stable.
-#
-# It hands out a gateway too, and as of 2026-08-15 that gateway works: the
-# NUC masquerades 10.0.0.0/24 out its uplink (deploy/hotspot-nuc/fred-nat.nft).
-# So the default route belongs here now, not on wlan0 - which is the only
-# uplink this Pi has when its WiFi is down, which is most of the time.
+# with a MAC reservation for this Pi, so the address is stable. No
+# gateway is handed out here on purpose - wlan0 keeps the default route.
 allow-hotplug eth0
 iface eth0 inet static
-    address 10.0.0.10
+    address 10.0.0.11
     netmask 255.255.255.0
-    # No gateway on purpose: head's default route is wlan0 (its internet
-    # uplink). The /24 link route still reaches the NUC at 10.0.0.1.
+    gateway 10.0.0.1
 
 # WiFi
 allow-hotplug wlan0
 iface wlan0 inet dhcp
+address 192.168.0.100
+netmask 255.255.255.0
+gateway 192.168.0.1
 #dns-nameservers 1.1.1.1 8.8.8.8
 pre-up iw dev wlan0 set power_save off
 post-down iw dev wlan0 set power_save on

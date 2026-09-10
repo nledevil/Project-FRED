@@ -18,6 +18,24 @@ ssh dietpi@10.0.0.10 'sudo cp /etc/network/interfaces /etc/network/interfaces.ba
 Take the backup. Getting this file wrong strands a Pi that lives inside the
 robot's head, and the recovery is a screwdriver.
 
+## eth0 is static now (R7a, 2026-09-09)
+
+`eth0` is `inet static` at `10.0.0.10/24` — the same address the NUC's DHCP
+reserved (MAC `e4:5f:01:49:60:b9`), pinned so the Pi no longer waits on the
+NUC's DHCP at boot. **No gateway** on the eth0 stanza on purpose: head's default
+route is its WiFi (`wlan0`), and the `/24` link route reaches the NUC regardless
+— adding a gateway here would install a second default route the machine doesn't
+currently have. The address does not change, so nothing downstream noticed.
+
+It was converted live behind a boot self-heal (a one-shot systemd unit that
+restored DHCP and rebooted if `10.0.0.1` was unreachable), which passed and was
+then removed. `/etc/network/interfaces.dhcp.bak` on the Pi is the pre-change
+DHCP config — restore it and reboot to go back:
+
+```
+ssh dietpi@10.0.0.10 'sudo cp /etc/network/interfaces.dhcp.bak /etc/network/interfaces && sudo reboot'
+```
+
 ## Why it is tracked at all
 
 Until 2026-08-15 the only copy was on the machine, and the machine had a bug in
