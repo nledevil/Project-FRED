@@ -512,6 +512,16 @@ def _hostname() -> str:
         return ""
 
 
+def _deployed() -> str:
+    """The push-role stamp for this Pi, or "" — see deploy/push-role.sh. The
+    chest is a deploy target with no .git, so this file is the only record of
+    which revision it runs. Read fresh: a deploy does not restart this daemon."""
+    try:
+        return (HERE / "DEPLOYED").read_text().strip()
+    except OSError:
+        return ""
+
+
 def _uptime_s() -> float | None:
     """Seconds since this Pi booted. /proc/uptime is two numbers in a file —
     no dependency, and the same on the NUC."""
@@ -572,7 +582,8 @@ class Handler(BaseHTTPRequestHandler):
             # it is two cheap reads and saves the menu a second request.
             self._send(200, {**self.supervisor.state(),
                              "metrics": bool(self.metrics and self.metrics.enabled),
-                             "hostname": _hostname(), "uptime_s": _uptime_s()})
+                             "hostname": _hostname(), "uptime_s": _uptime_s(),
+                             "deployed": _deployed()})
         elif self.path.startswith("/api/cart"):
             self._send(200, self.cart.state() if self.cart
                        else {"enabled": False})

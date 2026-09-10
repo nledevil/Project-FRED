@@ -195,6 +195,20 @@ def _adopt_config(body: dict) -> dict:
 
 
 
+def _deployed() -> str:
+    """The push-role stamp for this machine, or "" — see deploy/push-role.sh.
+
+    A Pi is a deploy target, not a checkout, so this file (written at the deploy
+    root next to the code) is the only record of which revision it is running.
+    Read fresh each call: it is one small file and a deploy does not restart
+    this service, so a cached value would go stale on the next push.
+    """
+    try:
+        return (Path(__file__).resolve().parent.parent / "DEPLOYED").read_text().strip()
+    except OSError:
+        return ""
+
+
 def _hostname() -> str:
     try:
         return socket.gethostname()
@@ -295,7 +309,8 @@ class _Handler(server.BaseHTTPRequestHandler):
             return self._send(200, {"ok": True, "mock": _ctrl.mock,
                                     "locked": sorted(LOCKED),
                                     "hostname": _hostname(),
-                                    "uptime_s": _uptime_s()})
+                                    "uptime_s": _uptime_s(),
+                                    "deployed": _deployed()})
         if not self._authed():
             return None
         if self.path == "/api/servos":

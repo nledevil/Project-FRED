@@ -131,3 +131,10 @@ keep: state.json
 keep: pin.json
 keep: child-stderr.log
 keep: __pycache__
+# The push-role stamp: git rev + date of the last sync, reported by /api/state.
+keep: DEPLOYED
+# Compiled shaders, built on the Pi from the .frag sources next to them — the
+# same arrangement voice_hud has with voice_hud.c. Artifacts, not source.
+keep: face.frag.qsb
+keep: flux.frag.qsb
+keep: reactor.frag.qsb

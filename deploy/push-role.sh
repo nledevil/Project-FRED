@@ -17,6 +17,14 @@
 # --list-extra  list files on the target the manifest does NOT claim. That is
 #               the strip list. It never deletes — read it, then remove what you
 #               agree with.
+#
+# On a real (non-dry) sync it drops a DEPLOYED file at the target root — the git
+# revision and the moment of the push — because a Pi is a deploy target, not a
+# checkout: it has no .git, so "is the chest running the fix?" has no answer
+# without this. Each machine reports its stamp (head /api/health, chest
+# /api/state, and the chest INFO tab), and tools/check_deploy.sh compares them
+# to HEAD. The NUC needs none of this — it runs from the checkout, so whoami
+# reads its revision straight from git.
 set -euo pipefail
 
 ROLE="${1:-}"; TARGET="${2:-}"
@@ -154,5 +162,17 @@ for f in ${SEED[@]+"${SEED[@]}"}; do
     echo "  seeded: $d"
   fi
 done
+
+# ---- stamp -----------------------------------------------------------------
+# Computed here (the NUC has git; the target may not) and written last, so a
+# stamp only ever describes a sync that actually finished. dirty is flagged:
+# deploying with uncommitted changes is a real thing to do and a real thing to
+# be reminded you did when the behaviour on the Pi does not match any commit.
+REV="$(git -C "$REPO" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+BRANCH="$(git -C "$REPO" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?')"
+DIRTY=""; [ -n "$(git -C "$REPO" status --porcelain 2>/dev/null)" ] && DIRTY=" dirty"
+STAMP="commit=$REV branch=$BRANCH${DIRTY:+ dirty=yes} at=$(date -u +%Y-%m-%dT%H:%M:%SZ) by=$(id -un)@$(hostname)"
+ssh "$TARGET" "printf '%s\n' '$STAMP' > '$ROOT/DEPLOYED'"
+echo "  stamped: $ROOT/DEPLOYED ($REV$DIRTY)"
 
 echo "done."

@@ -39,6 +39,17 @@ def _named(machine: dict) -> str:
     return f" - {name.upper()}" if name and name.lower() != "dietpi" else ""
 
 
+def _short_deploy(stamp: str) -> str:
+    """"commit=abc1234 branch=x ... dirty=yes ..." -> "abc1234 DIRTY" / "abc1234".
+
+    The INFO row wants the revision at a glance; check_deploy.sh is where the
+    full stamp and its date matter.
+    """
+    commit = next((t.split("=", 1)[1] for t in stamp.split()
+                   if t.startswith("commit=")), "")
+    return (commit.upper() or "?") + (" DIRTY" if "dirty=yes" in stamp else "")
+
+
 def _uptime(seconds) -> str:
     """Short and glanceable: 3D 04H, 5H 12M, 47M. Never a bare number of seconds."""
     try:
@@ -134,12 +145,16 @@ class InfoPage:
                      f"10.0.0.10 - UP {_uptime(head.get('uptime_s'))}"
                      f"{_named(head)}" if head else "10.0.0.10 - NO LINK",
                      INK if head else BAD_INK))
+        if head.get("deployed"):
+            rows.append(("", _short_deploy(head["deployed"]), DIM_INK))
 
         display = (snap.get("chest") or {}).get("display") or {}
         rows.append(("CHEST PI",
                      f"10.0.0.11 - UP {_uptime(display.get('uptime_s'))}"
                      f"{_named(display)}" if display else "10.0.0.11 - THIS PI",
                      INK))
+        if display.get("deployed"):
+            rows.append(("", _short_deploy(display["deployed"]), DIM_INK))
 
         ap = snap.get("hotspot") or {}
         if ap.get("configured"):
