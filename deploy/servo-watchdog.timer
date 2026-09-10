@@ -1,0 +1,11 @@
+[Unit]
+Description=Probe servo-server every 30s; restart after 3 consecutive failures
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=30s
+AccuracySec=10s
+Unit=servo-watchdog.service
+
+[Install]
+WantedBy=timers.target

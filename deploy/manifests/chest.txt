@@ -13,6 +13,9 @@ flatten: yes
 
 # --- supervisor + control API -----------------------------------------------
 deploy/display/display_control.py
+deploy/service-watchdog.sh
+deploy/display/display-watchdog.service
+deploy/display/display-watchdog.timer
 deploy/display/inmoov-display.service
 
 # --- framebuffer animations -------------------------------------------------

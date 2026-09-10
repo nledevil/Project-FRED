@@ -553,6 +553,12 @@ class Handler(BaseHTTPRequestHandler):
         self._send(204, {})
 
     def do_GET(self):
+        # Liveness only, before the token: the service watchdog on this Pi has
+        # to be able to ask "are you wedged?" without holding a secret, and a
+        # bare 200 with no body leaks nothing. Everything with content stays
+        # behind the token below.
+        if self.path.rstrip("/") == "/api/ping":
+            return self._send(200, {"ok": True})
         if not self._authed():
             return
         if self.path.startswith("/api/animations"):

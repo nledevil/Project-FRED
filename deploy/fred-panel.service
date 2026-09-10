@@ -35,7 +35,10 @@ Environment=PYTHONUNBUFFERED=1
 EnvironmentFile=-/home/nledevil/fred/Project-FRED/config/secrets.env
 WorkingDirectory=/home/nledevil/fred/Project-FRED
 ExecStart=/home/nledevil/fred/Project-FRED/venv/bin/python /home/nledevil/fred/Project-FRED/web/app.py
-Restart=on-failure
+# always, not on-failure: on-failure ignores a clean exit(0), and at a
+# show "the panel exited cleanly" and "the panel crashed" deserve the
+# same remedy — come back. systemctl stop is unaffected.
+Restart=always
 RestartSec=5
 
 [Install]

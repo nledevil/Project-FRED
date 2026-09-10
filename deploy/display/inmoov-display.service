@@ -27,7 +27,10 @@ ExecStart=/usr/bin/python3 /home/dietpi/display/display_control.py --port 8081
 WorkingDirectory=/home/dietpi/display
 # Needs the framebuffer device; root is simplest. (dietpi is also in 'video'.)
 User=root
-Restart=on-failure
+# always, not on-failure: on-failure ignores a clean exit(0), and at a
+# show "the panel exited cleanly" and "the panel crashed" deserve the
+# same remedy — come back. systemctl stop is unaffected.
+Restart=always
 RestartSec=2
 
 [Install]

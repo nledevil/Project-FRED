@@ -1,0 +1,11 @@
+[Unit]
+Description=Restart inmoov-display when it is running but not answering
+# This daemon holds the cart driver, so a hang here freezes the cart's
+# software stop path along with the pixels — the firmware's own 2s failsafe
+# backstops motion, but a restart brings the stop path back too.
+
+[Service]
+Type=oneshot
+Environment=UNIT=inmoov-display
+Environment=URL=http://127.0.0.1:8081/api/ping
+ExecStart=/usr/local/sbin/service-watchdog

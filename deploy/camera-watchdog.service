@@ -1,0 +1,8 @@
+[Unit]
+Description=Restart camera-stream when it is running but not answering
+
+[Service]
+Type=oneshot
+Environment=UNIT=camera-stream
+Environment=URL=http://127.0.0.1:8081/
+ExecStart=/usr/local/sbin/service-watchdog

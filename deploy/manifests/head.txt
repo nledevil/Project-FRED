@@ -17,6 +17,11 @@ flatten: no
 # switch itself off *first* when packing up, because the NUC is the switch for
 # the robot LAN and once it is down nothing can reach here to ask.
 deploy/servo_server.py
+deploy/service-watchdog.sh
+deploy/servo-watchdog.service
+deploy/servo-watchdog.timer
+deploy/camera-watchdog.service
+deploy/camera-watchdog.timer
 deploy/camera_stream.py
 deploy/led_server.py
 

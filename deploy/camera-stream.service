@@ -21,7 +21,10 @@ Environment=CAM_AF_MODE=0
 Environment=CAM_LENS_POSITION=2.0
 WorkingDirectory=/home/dietpi/inmoov
 ExecStart=/home/dietpi/inmoov/venv/bin/python /home/dietpi/inmoov/deploy/camera_stream.py
-Restart=on-failure
+# always, not on-failure: on-failure ignores a clean exit(0), and at a
+# show "the panel exited cleanly" and "the panel crashed" deserve the
+# same remedy — come back. systemctl stop is unaffected.
+Restart=always
 RestartSec=5
 
 [Install]
