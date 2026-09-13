@@ -42,7 +42,10 @@ import time
 from pathlib import Path
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-DISPLAY = os.path.dirname(HERE)
+# Two layouts: tools/ is a subdirectory in the repo and everything is flat on
+# the chest Pi. Find the panel rather than assume which one we are in.
+DISPLAY = next((d for d in (os.path.dirname(HERE), HERE)
+                if os.path.isfile(os.path.join(d, "panel.py"))), os.path.dirname(HERE))
 sys.path.insert(0, DISPLAY)
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -80,6 +83,11 @@ class FakeNet:
 
     def post_animation(self, anim):
         FakeNet.posted.append(anim)
+
+    showing: list = []
+
+    def post_showing(self, anim):
+        FakeNet.showing.append(anim)
 
 
 class FakeMetrics:
@@ -124,9 +132,11 @@ def main() -> int:
     p.tick()
     p._attract = True
     p.visitorTap()
-    check("attract: the tap advances the look locally and stays in the mode",
+    check("attract: the tap advances the look at once and stays in the mode",
           FakeNet.posted == ["flux"] and p._anim == "flux" and p._attract,
           f"posted={FakeNet.posted} anim={p._anim}")
+    check("...and tells the daemon where the ring is now (found in review)",
+          FakeNet.showing == ["flux"], str(FakeNet.showing))
 
     print("the card closes itself")
     p, _ = make()
@@ -195,6 +205,17 @@ def main() -> int:
             state.write_text(json.dumps({"animation": "reactor", "showing": "voice-hud"}))
             p.follow_state()
             check("a plain look leaves the mode", not p._attract and p._anim == "reactor")
+            # Event mode pins the ring to the turn-taking display.
+            state.write_text(json.dumps({"animation": "attract", "showing": "flux"}))
+            FakeNet.snap = {**FakeNet.snap, "nuc": {"event": {"enabled": True}}}
+            p.tick()
+            p.follow_state()
+            check("attract in event mode shows the voice HUD, whatever the ring says",
+                  p._attract and p._anim == "voice-hud", p._anim)
+            FakeNet.snap = {**FakeNet.snap, "nuc": None}
+            p.tick()
+            p.follow_state()
+            check("...and the ring again once event mode is off", p._anim == "flux", p._anim)
         finally:
             theme.STATE_PATH = keep
 
@@ -211,6 +232,27 @@ def main() -> int:
           str(ring))
     check("a non-look starts at the first", dc.next_look("off") == dc.LOOKS[0])
     check("attract's cadence is about a minute", 30 <= dc.ATTRACT_EVERY_S <= 120)
+    with tempfile.TemporaryDirectory() as td:
+        keep = dc.STATE_PATH
+        dc.STATE_PATH = Path(td) / "state.json"
+        try:
+            sup = dc.Supervisor.__new__(dc.Supervisor)
+            sup._lock = __import__("threading").Lock()
+            sup._preset = "attract"
+            sup._proc = None
+            sup._error = ""
+            sup._cycled_at = 0.0
+            sup.set_showing("flux")
+            check("set_showing moves the ring and restarts the minute",
+                  dc.read_state().get("showing") == "flux" and sup._cycled_at > 0)
+            sup.set_showing("off")
+            check("...but never to something that is not a look",
+                  dc.read_state().get("showing") == "flux")
+            sup._preset = "reactor"
+            sup.set_showing("face")
+            check("...and not outside attract", dc.read_state().get("showing") == "flux")
+        finally:
+            dc.STATE_PATH = keep
 
     print()
     if FAILURES:

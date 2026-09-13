@@ -453,6 +453,14 @@ class Supervisor:
                 self._cycled_at = time.monotonic()
             return self._state_locked()
 
+    def set_showing(self, look: str) -> dict:
+        """Move attract mode's ring to ``look`` now, and restart its minute."""
+        with self._lock:
+            if self._preset == "attract" and look in LOOKS:
+                write_state(showing=look)
+                self._cycled_at = time.monotonic()
+            return self._state_locked()
+
     def restore(self) -> dict:
         """Leave a hidden preset for the look that was showing before it."""
         with self._lock:
@@ -476,7 +484,7 @@ class Supervisor:
         """
         while not self._stop.wait(1.0):
             with self._lock:
-                if (self._preset == "attract"
+                if (self._preset == "attract" and self._proc is not None
                         and time.monotonic() - self._cycled_at >= ATTRACT_EVERY_S):
                     self._cycled_at = time.monotonic()
                     write_state(showing=next_look(read_state().get("showing")))
@@ -525,6 +533,8 @@ class Supervisor:
         return {
             "animation": self._preset,
             "label": PRESET_BY_ID[self._preset]["label"],
+            # What attract mode has on screen right now; None for a plain look.
+            "showing": read_state().get("showing") if self._preset == "attract" else None,
             "running": running,
             "pid": self._proc.pid if running else None,
             "uptime": round(time.monotonic() - self._started_at, 1) if running else 0.0,
@@ -677,6 +687,13 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, self.supervisor.restore())
             return
         try:
+            if data.get("animation") == "attract" and data.get("showing"):
+                # The panel advancing the ring from a visitor's tap. The
+                # daemon owns the ring's position, so the tap comes here
+                # rather than being applied on the panel alone — which let
+                # the next minute's turn step the screen backwards.
+                self._send(200, self.supervisor.set_showing(str(data["showing"])))
+                return
             self._send(200, self.supervisor.select(str(data.get("animation", ""))))
         except KeyError:
             self._send(400, {"error": f"unknown animation {data.get('animation')!r}"})

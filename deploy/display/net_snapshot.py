@@ -240,6 +240,12 @@ class Net:
         the animation child is ours, so this works with the brain switched off."""
         self._fire(f"{LOCAL}/api/animation", {"animation": str(animation)})
 
+    def post_showing(self, animation: str) -> None:
+        """Advance attract mode's cycle to this look, through the daemon, so
+        its clock and ours agree about where the ring is."""
+        self._fire(f"{LOCAL}/api/animation", {"animation": "attract",
+                                              "showing": str(animation)})
+
     def post_cart_controller(self, mode: str) -> None:
         """Set who may drive. Sent to our *own* daemon, not the brain: the chest
         owns the arbitration, so this still works with the brain switched off."""

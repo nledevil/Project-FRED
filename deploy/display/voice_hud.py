@@ -99,7 +99,13 @@ def state_scale(label: str, w: int) -> int:
     return scale
 
 
-def encode_levels(levels) -> np.ndarray:
+# The widest texture the chest's GPU takes. At 20 ms a sample that is 82 s of
+# speech; a longer clip is bucketed to fit (max per bucket, so no peak is
+# lost) rather than silently failing to upload and drawing nothing.
+ENVELOPE_MAX = 4096
+
+
+def encode_levels(levels, max_len: int = ENVELOPE_MAX) -> np.ndarray:
     """The envelope as a (1, N, 4) RGBA8 row: 16 bits of amplitude per sample.
 
     High byte in R, low byte in G, so the shader reads
@@ -108,6 +114,10 @@ def encode_levels(levels) -> np.ndarray:
     half-pixel of band edge moved on a few dozen columns per frame.
     """
     lv = np.clip(np.asarray(levels, dtype=np.float64), 0.0, 1.0)
+    if len(lv) > max_len:
+        per = -(-len(lv) // max_len)
+        pad = np.full(per * max_len - len(lv), 0.0)
+        lv = np.concatenate([lv, pad]).reshape(max_len, per).max(axis=1)
     q = np.round(lv * 65535.0).astype(np.uint32)
     out = np.zeros((1, max(len(q), 1), 4), dtype=np.uint8)
     out[0, :len(q), 0] = (q >> 8) & 255
@@ -219,7 +229,11 @@ class Hud:
         if levels and frac is not None and -0.5 <= frac <= 1.25:
             # --- the utterance, whole: waveform + playhead ---
             lv = np.asarray(levels, dtype=np.float32)
-            idx = np.clip((col_i / cols * len(lv)).astype(int), 0, len(lv) - 1)
+            # Integer arithmetic, not col/cols*len: the float form lands a
+            # hair under a whole number on some (col, len) pairs and truncates
+            # to the sample before, which the shader's exact division does
+            # not. The two now compute the same index for every column.
+            idx = np.clip(col_i * len(lv) // cols, 0, len(lv) - 1)
             amp = np.maximum(lv[idx] * (whh * 0.95), 1.5)     # mirrored envelope
             band = (np.abs(dy) <= amp[None, :])
 

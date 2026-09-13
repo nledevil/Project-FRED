@@ -226,9 +226,11 @@ class EnvelopeLayer(QQuickImageProvider):
 
     def set(self, levels) -> None:
         rgba = voice_hud.encode_levels(levels)
-        self._rgba = rgba                          # keep the buffer alive for Qt
         n = rgba.shape[1]
-        self._img = QImage(rgba.data, n, 1, 4 * n, QImage.Format_RGBA8888)
+        # copy(): the QImage owns its pixels, so a clip arriving while Qt's
+        # texture upload still points at the previous row can't read freed
+        # memory. A 1xN image; the copy costs nothing.
+        self._img = QImage(rgba.data, n, 1, 4 * n, QImage.Format_RGBA8888).copy()
 
     def requestImage(self, _id, _size, _requested):
         return self._img
@@ -323,6 +325,7 @@ class Panel(QObject):
         self._net.start()
         self._anim = forced or "reactor"
         self._attract = False              # state.json says "attract": follow "showing"
+        self._showing = None               # the ring's current look, from state.json
         self._about = False                # the visitor card is up
         self._asleep = False               # attract mode, nobody about
         self._motion_at = time.monotonic() # last time a motion sensor said active
@@ -389,10 +392,29 @@ class Panel(QObject):
             return
         want = state.get("animation")
         # Attract is a mode, not a look: the daemon rotates "showing" through
-        # the looks on its own clock and this follows that key instead.
+        # the looks on its own clock and this follows that key instead —
+        # except in event mode, where the chest is the queue's turn-taking
+        # signal and the ring would take it away for minutes at a time. The
+        # daemon does not know about event mode; this does, from the brain's
+        # state in the snapshot, so the pinning happens here.
         self._attract = want == "attract"
         if self._attract:
-            want = state.get("showing") or self._anim
+            self._showing = state.get("showing")
+            self._apply_ring()
+            return
+        if want != self._anim and want in SHADERS:
+            print(f"panel: -> {want}", flush=True)
+            self.apply(want)
+
+    def _apply_ring(self) -> None:
+        """Show what attract mode should be showing right now.
+
+        Called on every tick as well as on a state.json change, because one
+        of its inputs — event mode — arrives through the brain's snapshot,
+        not the file; waiting for the daemon's next minute to notice would
+        leave the ring on a flourish while a queue formed.
+        """
+        want = "voice-hud" if self._event_on() else (self._showing or self._anim)
         if want != self._anim and want in SHADERS:
             print(f"panel: -> {want}", flush=True)
             self.apply(want)
@@ -423,8 +445,10 @@ class Panel(QObject):
             self.closeMenu()
         if self._about and real - self._last_touch > ABOUT_IDLE_S:
             self.closeAbout()
-        self._attract_tick(real)
+        # The snapshot first: the ring's event-mode pin reads it, and should
+        # read this tick's, not the last one's.
         self._refresh_views()
+        self._attract_tick(real)
         doc = self._feed.poll()
         name = self._feed.state()
         self._voice = {"idle": 0.0, "listening": 1.0,
@@ -465,6 +489,7 @@ class Panel(QObject):
         """
         asleep = False
         if self._attract and self._scene != "menu":
+            self._apply_ring()
             doc = self._metrics.poll()
             fresh = real - float(doc.get("t") or 0.0) < SENSOR_FRESH_S
             if fresh and motion_seen(doc):
@@ -475,6 +500,10 @@ class Panel(QObject):
             self._asleep = asleep
             print(f"panel: {'asleep' if asleep else 'awake'}", flush=True)
             self.visitorChanged.emit()
+
+    def _event_on(self) -> bool:
+        nuc = self._snap.get("nuc") or {}
+        return bool((nuc.get("event") or {}).get("enabled"))
 
     @Slot()
     def visitorTap(self):
@@ -487,8 +516,7 @@ class Panel(QObject):
         """
         if self._asleep:
             return
-        nuc = self._snap.get("nuc") or {}
-        if (nuc.get("event") or {}).get("enabled"):
+        if self._event_on():
             self.toast.emit('SAY "FRED" TO TALK TO ME')
             return
         animations = net_animations(self._snap)
@@ -498,8 +526,12 @@ class Panel(QObject):
         label = next((str(a.get("label") or want) for a in animations
                       if a.get("id") == want), want)
         if self._attract:
-            # Advance the cycle without leaving the mode: the daemon's next
-            # turn of its own clock carries on from wherever this lands.
+            # Advance the cycle without leaving the mode. Through the daemon,
+            # which owns the ring's position: applied locally only, its next
+            # minute would carry on from *its* idea of where the ring was and
+            # step the screen backwards (found in review). Applied here as
+            # well so the tap answers this frame, not after the poll.
+            self._net.post_showing(want)
             self.apply(want)
         else:
             self._display_page.pick(want, self._net)
@@ -809,6 +841,7 @@ class Panel(QObject):
         """
         self._no_gate = True
         self._gate.unlocked = True
+        self._refresh_views()              # so a grab's first tick isn't the pad
 
     @Slot()
     def closeMenu(self):
@@ -849,6 +882,7 @@ class Panel(QObject):
     @Slot()
     def showPower(self):
         self._power.show()
+        self._refresh_views()
 
     @Slot(str)
     def powerTap(self, key):

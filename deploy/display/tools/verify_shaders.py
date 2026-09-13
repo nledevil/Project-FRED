@@ -89,6 +89,11 @@ VOICE_CASES = {
     "thinking":  {"state": "thinking"},
     "speaking":  {"state": "speaking", "levels": _clip_levels(),
                   "play_at": 0.0, "frame_dt": 0.02},
+    # The playhead in its last column: the reference paints one column past
+    # the window's edge there, which the first shader missed (found in
+    # review) and the count tolerance alone could not see.
+    "speaking_end": {"state": "speaking", "levels": _clip_levels(),
+                     "play_at": AT - 240 * 0.02 * 0.9995, "frame_dt": 0.02},
 }
 
 

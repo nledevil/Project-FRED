@@ -74,7 +74,7 @@ Item {
                     Repeater {
                         model: [
                             "An InMoov robot head, designed, built and coded by Ryan Schultz.",
-                            "Three computers run him. A NUC in the base is his brain: speech, "
+                            "Three computers run him. A NUC is his brain: speech, "
                             + "vision and conversation. A Raspberry Pi in his head drives the "
                             + "servos and his eye camera. A second Pi in his chest runs the "
                             + "sensors and this screen.",

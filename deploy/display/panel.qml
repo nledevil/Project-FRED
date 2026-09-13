@@ -126,7 +126,9 @@ Item {
     MouseArea {
         id: visitor
         anchors.fill: parent
-        visible: P.scene !== "menu" && !P.about
+        // Not while asleep: the press that wakes him is only a wake. The
+        // application's event filter still sees it and clears the sleep.
+        visible: P.scene !== "menu" && !P.about && !P.asleep
         enabled: visible
         z: 1
         property real px: 0

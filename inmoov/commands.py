@@ -189,7 +189,9 @@ def _shake_head(ctx, times: int = 2) -> str:
 
 def _tell_joke(ctx) -> str:
     """One joke from the book — see jokes.py for why it is a book and not the model."""
-    book = getattr(ctx, "jokes", None) or jokes.DEFAULT_BOOK
+    book = getattr(ctx, "jokes", None)
+    if book is None:                 # not `or`: an empty book is still the book
+        book = jokes.DEFAULT_BOOK
     return book.next()
 
 
@@ -859,14 +861,25 @@ _PATTERNS = [
     # joke for you" and "wanna hear a joke?" are a child offering one — the
     # worst possible moment for him to talk over them with his own. Those go
     # to the model, which can listen.
+    #
+    # And anything negated, past tense or *about* jokes — "don't tell me a
+    # joke", "did you say a joke?", "do you know what a joke is" — all of
+    # which fired in review. Those are conversation, and the model's.
     (re.compile(r"^(?!.*\b(i|i'?ll|i'?ve|i'?d|my|mine|we|our)\b)"
+                r"(?!.*\b(don'?t|do not|not|never|no more|did|about|what|lot of|happened)\b)"
                 r"(?:.*\b(tell|say|give)\b.*\b(jokes?|something funny)\b"
                 r"|.*\byou (have|got|know)\b.*\bjokes?\b"
                 r"|.*\b(make me laugh|another joke|joke please|joke time)\b)", re.I),
      "tell_joke", {}),
-    (re.compile(r"^(?!.*\b(like|love|hate|watch(ed|ing)?|went|saw|party|class|lessons?)\b)"
+    (re.compile(r"^(?!.*\b(like|love|hate|watch(ed|ing)?|went|saw|party|class|lessons?"
+                r"|don'?t|can'?t|couldn'?t|heard|recital|school|at (a|the)|is that|why)\b)"
                 r".*\b(dance|boogie|bust a move)\b", re.I), "gesture", {"routine": "dance"}),
-    (re.compile(r"\b(look|glance|have a look|take a look) around\b", re.I),
+    # "Look around and tell me what you see" is a question for the camera,
+    # not a gesture: a canned "nothing much going on" would be a description
+    # of a room he never looked at — the exact fabrication the vision tool
+    # exists to stop. Any seeing verb sends it to the model.
+    (re.compile(r"^(?!.*\b(see|describe|tell|what|find|look for|watch|show|count|who|anyone|anybody)\b)"
+                r".*\b(look|glance|have a look|take a look) around\b", re.I),
      "gesture", {"routine": "look_around"}),
     # Head tilt, ahead of the eye rules: "tilt your head up" must move the head,
     # not just the eyes, and "look up" alone still means the eyes.

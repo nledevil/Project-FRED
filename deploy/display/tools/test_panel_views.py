@@ -39,7 +39,10 @@ import os
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-DISPLAY = os.path.dirname(HERE)
+# Two layouts: tools/ is a subdirectory in the repo and everything is flat on
+# the chest Pi. Find the panel rather than assume which one we are in.
+DISPLAY = next((d for d in (os.path.dirname(HERE), HERE)
+                if os.path.isfile(os.path.join(d, "panel.py"))), os.path.dirname(HERE))
 sys.path.insert(0, DISPLAY)
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 

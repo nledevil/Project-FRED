@@ -110,10 +110,6 @@ void main()
                 float hcol = clamp(ceil(head), 0.0, float(cols));
                 col += float(c) < hcol ? colour : colour * 0.28;
             }
-            if (head >= 0.0 && head < float(cols)) {
-                int hx = wx0 + int(floor(head));
-                if (px >= max(hx - 1, wx0) && px <= hx + 1) col += white * 0.55;
-            }
         } else {
             // No clip: a living baseline that says which state we're in.
             float amp = thinking ? 2.0
@@ -129,6 +125,14 @@ void main()
                 }
             }
         }
+    }
+
+    // The playhead, outside the window test on purpose: the reference paints
+    // columns hx-1..hx+1 into the whole frame, so at the very end of a clip
+    // it reaches the column past the window's edge, and so must this.
+    if (haveClip > 0.5 && inY && head >= 0.0 && head < float(cols)) {
+        int hx = wx0 + int(floor(head));
+        if (px >= max(hx - 1, wx0) && px <= hx + 1) col += white * 0.55;
     }
 
     // ---- state readout: the word and its dot, pulsing ----

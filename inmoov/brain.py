@@ -133,6 +133,9 @@ SYSTEM = (
     # deals without repeating; the rule here is that he reads from it.
     "When someone asks for a joke, call tell_joke and say what it returns word "
     "for word — never invent a joke of your own, and never add one after. "
+    "The screen on your chest shows whether you are listening, thinking or "
+    "speaking; tapping it changes the picture it shows, and swiping up on it "
+    "shows a card about you. "
     # Brevity above is about the *talking*. Applied to the doing it produced a
     # robot that moved to the first position it was asked for, said "moving
     # right", and stopped — which reads as not having listened rather than as
@@ -421,7 +424,17 @@ class Brain:
         cam = getattr(self.ctx, "camera", None)
         if cam is None:
             return
-        hold = (cam.acquire, cam.release) if self.face_hold_camera else None
+        # A hold whenever the sensor is already on, not only when
+        # face_hold_camera says to turn it on: since the relay's grayscale
+        # decode is gated on holds (camera.gray_wanted), a passenger with no
+        # hold reads None even while a viewer has the stream open. The hold
+        # costs nothing new — the camera is on and the privacy LED lit — and
+        # ends with the attend window. Without it, face_hold_camera off meant
+        # face recall saw nobody at all (found in review, 2026-09-13).
+        if self.face_hold_camera or cam.is_streaming():
+            hold = (cam.acquire, cam.release)
+        else:
+            hold = None
         self.faces.attend(
             lambda: cam.capture_gray() if cam.is_streaming() else None, hold=hold)
 
@@ -487,8 +500,11 @@ class Brain:
     # has: "turn left and tell me what you see" would describe the view from
     # before the turn. The wide camera is on his chest and does not move with
     # his head, so its frame survives everything but the cart.
+    # relax drops torque and the head sags; set_face_tracking hands the neck
+    # to the tracker. Both point the eyes somewhere new without "moving".
     _EYES_MOVED = frozenset(("look", "turn_head", "tilt_head", "nod", "shake_head",
-                             "gesture", "reset_pose", "drive"))
+                             "gesture", "reset_pose", "drive", "relax",
+                             "set_face_tracking"))
     _ALL_MOVED = frozenset(("drive",))
 
     def _after_tool(self, name: str) -> None:
@@ -991,8 +1007,13 @@ class Brain:
                                 # reads. See Brain._look.
                                 out = self._look(which, block.input)
                             else:
-                                out = commands.run_tool(self.ctx, block.name, block.input)
-                                self._after_tool(block.name)
+                                try:
+                                    out = commands.run_tool(self.ctx, block.name, block.input)
+                                finally:
+                                    # Even a tool that raised may have moved
+                                    # him first: a gesture that failed halfway
+                                    # still left the head somewhere new.
+                                    self._after_tool(block.name)
                         except Exception as exc:  # noqa: BLE001 - a wedged servo or I2C
                             # glitch shouldn't kill the turn. Hand the failure back and
                             # let FRED tell the user, mid-conversation, what went wrong.

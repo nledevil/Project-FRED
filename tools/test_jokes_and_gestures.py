@@ -124,7 +124,10 @@ def main() -> int:
         check(f"{text!r:34} -> tell_joke", got is not None and got[0] == "tell_joke", str(got))
     for text in ("I have a joke for you", "wanna hear a joke?", "that's a joke",
                  "what do you think of my joke", "I'll tell you a joke",
-                 "is this a joke", "you're funny"):
+                 "is this a joke", "you're funny",
+                 # found in review: negated, past tense, or about jokes
+                 "don't tell me a joke", "did you say a joke?", "do you know what a joke is",
+                 "you know a lot of jokes", "tell me something funny that happened"):
         got = C.match_local(text)
         check(f"{text!r:34} is not a joke request", got is None or got[0] != "tell_joke", str(got))
 
@@ -135,7 +138,10 @@ def main() -> int:
         check(f"{text!r:34} -> dance",
               got is not None and got == ("gesture", {"routine": "dance"}), str(got))
     for text in ("I like dancing", "we went to a dance", "do you watch dancing with the stars",
-                 "I have dance class later"):
+                 "I have dance class later",
+                 # found in review
+                 "don't dance", "there's a dance at school on friday", "is that a dance?",
+                 "i heard you can dance", "why can't you dance"):
         got = C.match_local(text)
         check(f"{text!r:34} is not a dance request",
               got is None or got[0] != "gesture", str(got))
@@ -144,6 +150,13 @@ def main() -> int:
           got == ("gesture", {"routine": "look_around"}), str(got))
     got = C.match_local("look left")
     check("'look left' still moves the eyes", got is not None and got[0] == "look", str(got))
+    for text in ("look around and tell me what you see", "what do you see when you look around",
+                 "take a look around and describe the room", "look around, is anyone there"):
+        got = C.match_local(text)
+        check(f"{text[:40]!r:42} is a question for the camera, not a gesture",
+              got is None or got[0] != "gesture", str(got))
+    check("'take a look around' is still the gesture",
+          C.match_local("take a look around") == ("gesture", {"routine": "look_around"}))
 
     print("a gesture is a gesture — several servos, and it ends at rest on all of them")
     for name in C.GESTURES:

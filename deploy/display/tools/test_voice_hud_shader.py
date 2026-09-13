@@ -38,7 +38,10 @@ import os
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-DISPLAY = os.path.dirname(HERE)
+# Two layouts: tools/ is a subdirectory in the repo and everything is flat on
+# the chest Pi. Find the panel rather than assume which one we are in.
+DISPLAY = next((d for d in (os.path.dirname(HERE), HERE)
+                if os.path.isfile(os.path.join(d, "panel.py"))), os.path.dirname(HERE))
 sys.path.insert(0, DISPLAY)
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -117,6 +120,13 @@ def main() -> int:
     check("round trip within one part in 65535", err <= 1.0 / 65535 + 1e-9, f"{err:.2e}")
     check("an empty envelope still makes a one-texel texture",
           voice_hud.encode_levels([]).shape == (1, 1, 4))
+    long = [0.1] * 9000
+    long[4444] = 0.9                                     # one peak, mid-clip
+    enc = voice_hud.encode_levels(long)
+    back = voice_hud.decode_levels(enc)
+    check("a clip longer than the GPU's widest texture is bucketed to fit",
+          enc.shape[1] == voice_hud.ENVELOPE_MAX, str(enc.shape))
+    check("...without losing its peak", abs(float(back.max()) - 0.9) < 1e-4, str(back.max()))
 
     print("when a clip is on screen is one decision, shared with the panel")
     doc = {"state": "speaking", "levels": [0.2] * 100, "play_at": 10.0, "frame_dt": 0.02}
