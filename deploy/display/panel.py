@@ -38,6 +38,7 @@ import numpy as np                                      # noqa: E402
 
 import cog_hud                                          # noqa: E402
 import metrics_hud                                      # noqa: E402
+from page_display import net_animations                 # noqa: E402
 import theme                                            # noqa: E402
 import touch                                            # noqa: E402
 import voice_hud                                        # noqa: E402
@@ -79,6 +80,39 @@ W, H = 800, 480
 # PIN keypad for a day. Long enough to walk around the robot and think;
 # short enough that a stray tap costs minutes, not the show.
 MENU_IDLE_S = 180.0
+# The visitor card closes itself; a child walks off mid-read and the next one
+# should meet the animation, not somebody else's page.
+ABOUT_IDLE_S = 45.0
+# Attract mode: blank the screen when nobody has moved or touched for this
+# long — but only while the motion sensor is heard from. A screen that goes
+# dark because the sensor node is unplugged would read as a crash.
+SLEEP_AFTER_S = 300.0
+SENSOR_FRESH_S = 30.0
+# Presets the visitor's tap must not land on: blank, the menu, and attract
+# itself (a mode, not a look).
+NOT_LOOKS = frozenset(("off", "settings", "attract"))
+
+
+def next_look(current: str | None, animations: list) -> str | None:
+    """The look after ``current`` in the daemon's own list, wrapping.
+
+    The daemon's list rather than SHADERS so the order a visitor cycles
+    through is the order the DISPLAY tab shows; anything that is not a look
+    is skipped. None when the list has not arrived.
+    """
+    ids = [str(a.get("id")) for a in animations if a.get("id") not in NOT_LOOKS]
+    if not ids:
+        return None
+    if current not in ids:
+        return ids[0]
+    return ids[(ids.index(current) + 1) % len(ids)]
+
+
+def motion_seen(doc: dict) -> bool:
+    """Is any motion sensor in the metrics doc reporting active?"""
+    readings = doc.get("readings") or {}
+    return any(isinstance(r, dict) and r.get("type") == "motion" and r.get("active")
+               for r in readings.values())
 
 # Two layouts, as everywhere else here: subdirectories beside the source in the
 # repo, and everything flat on the chest Pi, whose manifest flattens the tree.
@@ -246,6 +280,9 @@ class Panel(QObject):
     # state word. Rare, and its own signal so the two Image sources are not
     # re-evaluated thirty times a second for the same string.
     voiceChanged = Signal()
+    # The visitor layer: the card opening and closing, and sleep.
+    visitorChanged = Signal()
+    toast = Signal(str)
 
     def __init__(self, forced: str | None, scene: str = "anim"):
         super().__init__()
@@ -285,6 +322,11 @@ class Panel(QObject):
         self._net = Net()
         self._net.start()
         self._anim = forced or "reactor"
+        self._attract = False              # state.json says "attract": follow "showing"
+        self._about = False                # the visitor card is up
+        self._asleep = False               # attract mode, nobody about
+        self._motion_at = time.monotonic() # last time a motion sensor said active
+        self._metrics = metrics_hud.MetricsFeed()
         self._shader = ""
         self._copper = 0.0
         self._talk = 0.0
@@ -342,9 +384,15 @@ class Panel(QObject):
             return
         self._state_mtime = stamp
         try:
-            want = json.loads(theme.STATE_PATH.read_text()).get("animation")
+            state = json.loads(theme.STATE_PATH.read_text())
         except Exception:                              # noqa: BLE001
             return
+        want = state.get("animation")
+        # Attract is a mode, not a look: the daemon rotates "showing" through
+        # the looks on its own clock and this follows that key instead.
+        self._attract = want == "attract"
+        if self._attract:
+            want = state.get("showing") or self._anim
         if want != self._anim and want in SHADERS:
             print(f"panel: -> {want}", flush=True)
             self.apply(want)
@@ -369,9 +417,13 @@ class Panel(QObject):
         t = self._frozen if self._frozen >= 0 else now - self._start
         # The menu times itself out. --no-gate is exempt: that flag exists so
         # the page-grab harnesses can sit on a tab as long as a render takes.
+        real = time.monotonic()
         if (self._scene == "menu" and not self._no_gate
-                and time.monotonic() - self._last_touch > MENU_IDLE_S):
+                and real - self._last_touch > MENU_IDLE_S):
             self.closeMenu()
+        if self._about and real - self._last_touch > ABOUT_IDLE_S:
+            self.closeAbout()
+        self._attract_tick(real)
         self._refresh_views()
         doc = self._feed.poll()
         name = self._feed.state()
@@ -401,6 +453,77 @@ class Panel(QObject):
         # cousin of the waste the two-signal split above removed.
         if self._scene != "menu":
             self.changed.emit()
+
+    # ---- the visitor layer ------------------------------------------------------
+    def _attract_tick(self, real: float) -> None:
+        """Sleep and wake, in attract mode, from the motion sensor and the touch.
+
+        The metrics doc is the daemon's relay of the stomach node, published
+        for the sensor overlay whether or not that overlay is showing; its
+        ``t`` is on the same monotonic clock as ours. No fresh doc means no
+        opinion: awake.
+        """
+        asleep = False
+        if self._attract and self._scene != "menu":
+            doc = self._metrics.poll()
+            fresh = real - float(doc.get("t") or 0.0) < SENSOR_FRESH_S
+            if fresh and motion_seen(doc):
+                self._motion_at = real
+            quiet = real - max(self._motion_at, self._last_touch)
+            asleep = fresh and quiet > SLEEP_AFTER_S
+        if asleep != self._asleep:
+            self._asleep = asleep
+            print(f"panel: {'asleep' if asleep else 'awake'}", flush=True)
+            self.visitorChanged.emit()
+
+    @Slot()
+    def visitorTap(self):
+        """A tap on the animation: the next look, and a word about it.
+
+        Not while the brain is in event mode — there the chest is the
+        turn-taking signal and the queue reads it, so the tap says how to talk
+        to him instead. Asleep, the tap is only a wake; the sleep flag clears
+        on the next tick from the touch it was.
+        """
+        if self._asleep:
+            return
+        nuc = self._snap.get("nuc") or {}
+        if (nuc.get("event") or {}).get("enabled"):
+            self.toast.emit('SAY "FRED" TO TALK TO ME')
+            return
+        animations = net_animations(self._snap)
+        want = next_look(self._anim, animations)
+        if want is None:
+            return
+        label = next((str(a.get("label") or want) for a in animations
+                      if a.get("id") == want), want)
+        if self._attract:
+            # Advance the cycle without leaving the mode: the daemon's next
+            # turn of its own clock carries on from wherever this lands.
+            self.apply(want)
+        else:
+            self._display_page.pick(want, self._net)
+        self.toast.emit(label.upper())
+
+    @Slot()
+    def openAbout(self):
+        if not self._about and not self._asleep:
+            self._about = True
+            self.visitorChanged.emit()
+
+    @Slot()
+    def closeAbout(self):
+        if self._about:
+            self._about = False
+            self.visitorChanged.emit()
+
+    @Property(bool, notify=visitorChanged)
+    def about(self):
+        return self._about
+
+    @Property(bool, notify=visitorChanged)
+    def asleep(self):
+        return self._asleep
 
     # ---- the voice HUD's inputs ----------------------------------------------
     def _voice_inputs(self, doc: dict, now: float, state: str) -> None:
@@ -870,6 +993,8 @@ def main() -> int:
                     help="which half of the WIFI tab to open on, for grabbing")
     ap.add_argument("--power", action="store_true",
                     help="open the power overlay, for grabbing it")
+    ap.add_argument("--about", action="store_true",
+                    help="open the visitor card, for grabbing it")
     ap.add_argument("--menu", action="store_true",
                     help="open on the menu scene (the port is not wired to the cog yet)")
     ap.add_argument("--reopen-menu", action="store_true",
@@ -918,6 +1043,8 @@ def main() -> int:
         panel.unlock_for_testing()
     if args.power:
         panel.showPower()
+    if args.about:
+        panel.openAbout()
     if args.voice_json:
         from pathlib import Path
         panel.set_feed(VoiceFeed(Path(args.voice_json)))
@@ -937,6 +1064,11 @@ def main() -> int:
     ctx.setContextProperty("FontFamily", families.get(name, ""))
     ctx.setContextProperty("StartWifiHalf", int(args.wifi_half))
     ctx.setContextProperty("FrozenT", float(args.at) if args.at >= 0 else -1.0)
+    # The visitor card's photo, if the operator has dropped one in.
+    about_png = os.path.join(_HERE, "about.png")
+    ctx.setContextProperty("AboutImage",
+                           QUrl.fromLocalFile(about_png).toString()
+                           if os.path.isfile(about_png) else "")
     ctx.setContextProperty("HideOverlay", bool(args.no_overlay))
     # The whole palette as one map, straight off theme.py. QML gets the same
     # numbers the numpy pages read as ui.INK — theme.py stays the one place a

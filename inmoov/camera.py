@@ -224,6 +224,13 @@ class _ThreadedBackend:
         self._gray = None            # newest grayscale frame, for the tracker
         self._gray_seq = 0           # bumped per new frame, so the tracker can tell a repeat
         self._gray_lock = threading.Lock()
+        # Whether anybody will read capture_gray(). Set by Camera from its hold
+        # count: with only MJPEG viewers on the stream, every frame was still
+        # being decoded and shrunk to a grayscale nobody asked for — on the
+        # head's 15 fps relay that is a JPEG decode per frame for the length of
+        # a panel session with no tracking on. False leaves the JPEG bytes to
+        # go to the viewers untouched, which is all they wanted.
+        self.gray_wanted = False
         self.last_error = None       # surfaced in settings() so the UI can explain silence
 
     def start(self, broker: _FrameBroker, rotate_180: bool,
@@ -341,7 +348,8 @@ class _MjpegBackend(_ThreadedBackend):
                 jpeg = buf[start:end + 2]
                 buf = buf[end + 2:]
                 self._broker.publish(jpeg)
-                self._decode_gray(jpeg)
+                if self.gray_wanted:
+                    self._decode_gray(jpeg)
 
     def _decode_gray(self, jpeg: bytes) -> None:
         if cv2 is None:
@@ -410,7 +418,8 @@ class _V4L2Backend(_ThreadedBackend):
                     if ok:
                         self._broker.publish(enc.tobytes())
                     # Rotation is already applied above, so don't rotate twice.
-                    self._publish_gray(_to_gray(bgr, self._lores_size, False))
+                    if self.gray_wanted:
+                        self._publish_gray(_to_gray(bgr, self._lores_size, False))
             except Exception as exc:  # noqa: BLE001 - camera unplugged: report, retry
                 self.last_error = f"{type(exc).__name__}: {exc}"
             finally:
@@ -524,6 +533,7 @@ class Camera:
         _update_indicator_locked."""
         with self._lock:
             self._holds += 1
+            self._set_gray_wanted_locked()
             if self._can_start_locked():
                 self._start_locked()
             self._update_indicator_locked()
@@ -533,9 +543,28 @@ class Camera:
         with self._lock:
             if self._holds > 0:
                 self._holds -= 1
+            self._set_gray_wanted_locked()
             self._update_indicator_locked()
             if self._viewers == 0 and self._holds == 0 and self._running_locked():
                 self._stop_locked()
+
+    def _set_gray_wanted_locked(self) -> None:
+        """Tell the backend whether its grayscale frames have a reader.
+
+        A hold is the only kind of consumer that reads capture_gray(); viewers
+        take the JPEG stream. When the last hold goes, the stale frame goes
+        with it, so the next hold's first read is None rather than a picture
+        from minutes ago carrying a seq the tracker would take as new.
+        """
+        backend = self._backend
+        if backend is None:
+            return
+        want = self._holds > 0
+        if getattr(backend, "gray_wanted", None) != want:
+            backend.gray_wanted = want
+            if not want and hasattr(backend, "_gray_lock"):
+                with backend._gray_lock:
+                    backend._gray = None
 
     def _update_indicator_locked(self) -> None:
         """Drive the privacy LED to match whether the camera is actually on —

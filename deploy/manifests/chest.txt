@@ -53,6 +53,7 @@ deploy/display/page_wireless.py
 # baked from the .frag on this Pi at first run and are git-ignored.
 deploy/display/panel.py
 deploy/display/panel.qml
+deploy/display/AboutCard.qml
 deploy/display/MenuScene.qml
 deploy/display/Btn.qml
 deploy/display/StatusPage.qml
@@ -84,6 +85,7 @@ deploy/display/voice_hud.py
 deploy/display/tools/test_menu_logic.py
 deploy/display/tools/test_panel_views.py
 deploy/display/tools/test_voice_hud_shader.py
+deploy/display/tools/test_visitor_attract.py
 deploy/display/tools/render_anims.py
 deploy/display/tools/test_fb_pack.py
 deploy/display/tools/test_touch_map.py

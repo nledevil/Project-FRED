@@ -118,6 +118,11 @@ PRESETS = [
     {"id": "face",           "label": "Face (live voice)",    "argv": ["panel.py"]},
     {"id": "voice-hud",      "label": "Voice HUD",            "argv": ["panel.py"]},
     {"id": "face-talk",      "label": "Face (demo talk)",     "argv": ["panel.py"]},
+    # A mode, not a look: the looks in turn, a minute each, written to
+    # state.json's "showing" key for the panel to follow — and, panel-side,
+    # the screen blanks when the motion sensor has seen nobody for a while and
+    # wakes when it does. The one switch for "leave him running in a hall".
+    {"id": "attract",        "label": "Attract (cycle looks)", "argv": ["panel.py"]},
     {"id": "off",            "label": "Off (blank screen)",   "argv": None},
     # The settings menu is a scene of the panel app, and the panel handles its
     # own cog without the daemon. This preset is how the menu is reached when
@@ -132,6 +137,18 @@ PRESET_BY_ID = {p["id"]: p for p in PRESETS}
 # shader replaced it; a state.json or a brain that still names it gets the
 # shader, not an error and not the boot default.
 LEGACY_PRESETS = {"voice-hud-c": "voice-hud"}
+
+# What attract mode cycles through: every panel look except itself.
+LOOKS = tuple(p["id"] for p in PRESETS
+              if p["argv"] == ["panel.py"] and p["id"] != "attract")
+ATTRACT_EVERY_S = 60.0
+
+
+def next_look(current: str | None, looks: tuple = LOOKS) -> str:
+    """The look after ``current``, wrapping; the first when current is not one."""
+    if current not in looks:
+        return looks[0]
+    return looks[(looks.index(current) + 1) % len(looks)]
 DEFAULT_PRESET = "reactor"
 
 # The presets that run no child and so paint nothing. Derived from the table
@@ -306,6 +323,7 @@ class Supervisor:
         self._started_at = 0.0
         self._error = ""                    # last crash, surfaced in /api/state
         self._touched_at = time.monotonic() # last touch the cog watcher saw
+        self._cycled_at = 0.0               # attract: when "showing" last advanced
         self._fails = 0                     # consecutive too-fast exits
         self._stop = threading.Event()
         self._watch = threading.Thread(target=self._watchdog, daemon=True)
@@ -427,6 +445,12 @@ class Supervisor:
             # show, so skipping it would leave the screen on the old animation.
             if not preset.get("hidden"):
                 self._save_choice(preset_id)
+            if preset_id == "attract":
+                # Start the cycle now, from a real look, so the panel has
+                # something to show before the first minute is up.
+                showing = read_state().get("showing")
+                write_state(showing=showing if showing in LOOKS else LOOKS[0])
+                self._cycled_at = time.monotonic()
             return self._state_locked()
 
     def restore(self) -> dict:
@@ -452,6 +476,10 @@ class Supervisor:
         """
         while not self._stop.wait(1.0):
             with self._lock:
+                if (self._preset == "attract"
+                        and time.monotonic() - self._cycled_at >= ATTRACT_EVERY_S):
+                    self._cycled_at = time.monotonic()
+                    write_state(showing=next_look(read_state().get("showing")))
                 if (self._preset == "settings"
                         and time.monotonic() - self._touched_at > 300.0):
                     self._touched_at = time.monotonic()   # one restore per idle spell

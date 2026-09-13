@@ -481,6 +481,25 @@ class Brain:
             self.faces.forget_all()
         return self.face_recall
 
+    # Tools after which the eye camera is pointed somewhere new. Within one
+    # turn, a second look inside the cache window re-sends the frame he
+    # already took — right when he has not moved, and a fabrication when he
+    # has: "turn left and tell me what you see" would describe the view from
+    # before the turn. The wide camera is on his chest and does not move with
+    # his head, so its frame survives everything but the cart.
+    _EYES_MOVED = frozenset(("look", "turn_head", "tilt_head", "nod", "shake_head",
+                             "gesture", "reset_pose", "drive"))
+    _ALL_MOVED = frozenset(("drive",))
+
+    def _after_tool(self, name: str) -> None:
+        """Forget a cached frame the tool just made stale."""
+        if name in self._EYES_MOVED:
+            self._last_frame.pop("eyes", None)
+            self._last_look.pop("eyes", None)
+        if name in self._ALL_MOVED:
+            self._last_frame.pop("wide", None)
+            self._last_look.pop("wide", None)
+
     def _look(self, which: str, tool_input: dict | None = None):
         """Answer the vision tool — with a picture, or with why there isn't one.
 
@@ -973,6 +992,7 @@ class Brain:
                                 out = self._look(which, block.input)
                             else:
                                 out = commands.run_tool(self.ctx, block.name, block.input)
+                                self._after_tool(block.name)
                         except Exception as exc:  # noqa: BLE001 - a wedged servo or I2C
                             # glitch shouldn't kill the turn. Hand the failure back and
                             # let FRED tell the user, mid-conversation, what went wrong.

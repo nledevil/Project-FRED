@@ -21,7 +21,7 @@ Item {
     property real animT: 0
     NumberAnimation on animT {
         from: 0; to: 1000000; duration: 1000000000; loops: Animation.Infinite
-        paused: P.scene === "menu"
+        paused: P.scene === "menu" || P.asleep
     }
 
     Rectangle { anchors.fill: parent; color: "black" }
@@ -96,7 +96,7 @@ Item {
     // and its input now, so the tap that opens the settings does not have to go
     // out to the daemon and come back as a new process.
     MouseArea {
-        visible: P.scene !== "menu"
+        visible: P.scene !== "menu" && !P.about && !P.asleep
         enabled: visible
         x: P.cogHotspot[0]; y: P.cogHotspot[1]
         width: P.cogHotspot[2] - P.cogHotspot[0]
@@ -110,10 +110,77 @@ Item {
     // by URL, so the URL has to change or Qt serves the first one forever.
     Image {
         anchors.fill: parent
-        visible: P.scene !== "menu" && !HideOverlay
+        visible: P.scene !== "menu" && !HideOverlay && !P.asleep
         source: "image://overlay/o" + root.overlayGeneration
         cache: false
         smooth: false
         fillMode: Image.Pad
+    }
+
+    // ---- the visitor layer --------------------------------------------------
+    // Until this, the only thing a finger could do outside the menu was find
+    // the cog and be asked for a PIN. For a screen at a child's eyeline that
+    // reads as broken. Now a tap cycles the looks and a swipe up opens the
+    // card; both are read-only and need nothing from the brain. Under the cog
+    // (z 5) so the corner still belongs to the operator, and under the menu.
+    MouseArea {
+        id: visitor
+        anchors.fill: parent
+        visible: P.scene !== "menu" && !P.about
+        enabled: visible
+        z: 1
+        property real px: 0
+        property real py: 0
+        onPressed: (m) => { px = m.x; py = m.y }
+        onReleased: (m) => {
+            var dx = m.x - px, dy = m.y - py
+            if (dy < -80 && Math.abs(dx) < 160) P.openAbout()
+            else if (Math.abs(dx) < 24 && Math.abs(dy) < 24) P.visitorTap()
+        }
+    }
+    Loader {
+        anchors.fill: parent
+        z: 8
+        active: P.about
+        visible: active
+        sourceComponent: AboutCard {}
+    }
+
+    // Asleep (attract mode, nobody about): black, clock paused, and the first
+    // touch or the motion sensor brings it back — see Panel._attract_tick.
+    Rectangle { anchors.fill: parent; color: "black"; z: 7; visible: P.asleep }
+
+    // What a tap just did, for a moment.
+    Rectangle {
+        id: toast
+        z: 9
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.bottom: parent.bottom
+        anchors.bottomMargin: 28
+        width: toastText.implicitWidth + 36
+        height: toastText.implicitHeight + 18
+        radius: Th.radius
+        color: Th.panel
+        border.color: Th.edge
+        border.width: 1
+        opacity: 0
+        visible: opacity > 0
+        Behavior on opacity { NumberAnimation { duration: 180 } }
+        Text {
+            id: toastText
+            anchors.centerIn: parent
+            color: Th.ink
+            font.pixelSize: Th.px["2"]; font.family: Th.font
+            font.letterSpacing: Th.tracking
+        }
+        Timer { id: toastTimer; interval: 1600; onTriggered: toast.opacity = 0 }
+        Connections {
+            target: P
+            function onToast(text) {
+                toastText.text = text
+                toast.opacity = 1
+                toastTimer.restart()
+            }
+        }
     }
 }

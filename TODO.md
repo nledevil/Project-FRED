@@ -285,6 +285,40 @@ one place because they are otherwise scattered through the notes above.
   before, so a larger model is affordable in a way it previously wasn't — which
   is the actual answer to this case.)*
 
+### Built 2026-09-13, untested by a person — the test phase
+
+Four things were built remotely with the boot chime off and nobody at the
+robot. Each is unit-tested and deployed; what is missing is a finger and an
+eye. Ten minutes, in this order:
+
+- **Tap the chest screen** anywhere but the cog corner while an animation is
+  showing. Expect: the next look, and a toast naming it at the bottom for a
+  second and a half. Tap again through the ring (reactor, copper, flux, face,
+  voice HUD, face-talk). *Turn event mode on from the panel and tap again:*
+  expect no change and a toast saying `SAY "FRED" TO TALK TO ME`.
+- **Swipe up** on the animation. Expect the FRED card: title, the three-machine
+  paragraph, how to talk to him. Tap the backdrop or X to close; leave it and
+  it closes itself after 45 s. **DRAW** opens the doodle page — draw with a
+  finger, it clears after 20 s idle, DONE returns. (Drop a build photo at
+  `/home/dietpi/display/about.png` and it appears on the right of the card.)
+  Check the cog corner still opens the PIN pad and nothing else does.
+- **Attract mode.** Pick `Attract (cycle looks)` from the head panel's display
+  dropdown (or the chest DISPLAY tab). Expect the looks to turn over once a
+  minute. Tap during it: the look advances and it *stays* in attract. Walk
+  away for five minutes with the stomach sensor plugged in: the screen goes
+  black; walk back and it wakes on the PIR, or on a touch. Unplug the sensor
+  node: it must never sleep. Pick any plain look to leave the mode.
+- **Vision after a head move.** With Claude up: "Fred, look at me, then turn
+  your head left and tell me what you see now." Expect two different
+  descriptions (before, the second was the first frame re-sent). And with a
+  panel open on the camera and tracking off, the NUC's `top` should show the
+  brain process a few percent lighter than it did with the relay decoding
+  every frame.
+- **Still from earlier sessions:** one look at the dance (V2), a by-ear pass
+  on the "Hmm..." line and its 1.5 s threshold (V1), the lead-in cut with sound
+  on (V3), "Fred, stop" over a long reply and Capture forward for the DOA
+  offset (R9).
+
 ## Where to go next (proposed 2026-08-12)
 
 Ideas, not commitments — nothing here has been agreed. Ordered by what would
