@@ -319,6 +319,27 @@ eye. Ten minutes, in this order:
   on (V3), "Fred, stop" over a long reply and Capture forward for the DOA
   offset (R9).
 
+### Local model: benched 2026-09-13, the 3B stays
+
+`tools/bench_local_models.py` times candidates with FRED's real prompt (3.5k
+tokens of system + 22 tool schemas) on the NUC's iGPU, six event questions
+each. Settled, so it stops being re-asked:
+
+| model | first word p50 | worst | tok/s | answer p50 | verdict |
+|---|---|---|---|---|---|
+| qwen2.5:3b (current) | 0.4 s | 1.1 s (tool call) | 23 | 1.2 s | keep |
+| qwen2.5:7b | 0.6 s | 2.2 s (tool call) | 11 | 2.9 s | answers take twice as long; the tool call misses the 1.5 s earcon |
+| qwen3:4b | 17–23 s | — | 17 | 24 s | thinks silently for twenty seconds; unusable without `think: false` |
+| llama3.1:8b | 2.2 s | 5.9 s | 9.5 | 2.3 s | invents tools (`speak`, `read_facts`, `tell_weather`), calls the camera for "why is the sky blue" |
+
+The prefix costs ~0.2–0.4 s a turn on Vulkan whatever its size, so the 28 s
+stall the brain's notes describe is a CPU-fallback figure, not a live one.
+AirLLM-style layer streaming is the wrong direction entirely: it trades
+seconds-per-token for fitting models this machine does not need to stream
+(30 GB RAM, the 3B uses 2 GB). The quality ceiling at events is still the
+speech recognition, not the model. Both larger models are still pulled
+(`ollama rm qwen2.5:7b llama3.1:8b` frees 9.6 GB if wanted).
+
 ## Where to go next (proposed 2026-08-12)
 
 Ideas, not commitments — nothing here has been agreed. Ordered by what would
