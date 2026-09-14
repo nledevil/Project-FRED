@@ -117,6 +117,16 @@ def main() -> int:
           second == ["second sentence"] and took < 0.1, f"{second} in {took:.2f}s")
     time.sleep(0.5)
     check("...and the first still arrives on Whisper's", first == ["late"], str(first))
+    lis = L.Listener(on_command=lambda t: None,
+                     transcriber=FakeWhisper("i have ten frames left so far " * 5))
+    check("a runaway paragraph where Vosk heard three words: Vosk's words",
+          routed(lis, "ten frames left", b"\x00" * 32) == ["ten frames left"]
+          and lis._refine_fallbacks == 1)
+    lis = L.Listener(on_command=lambda t: None,
+                     transcriber=FakeWhisper("fred can you turn your head to the left please"))
+    check("...but a sentence three times Vosk's three words is fine",
+          routed(lis, "turn head left", b"\x00" * 32)
+          == ["fred can you turn your head to the left please"])
     check("the empty utterance never asks Whisper",
           routed(L.Listener(on_command=lambda t: None, transcriber=FakeWhisper("x")), "hi", b"")
           == ["hi"])

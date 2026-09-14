@@ -29,6 +29,11 @@ The earcon plays at 1.5 s after the turn is handed to a model, and the
 transcription happens *before* that hand-off, so a candidate's per-utterance
 time is added straight to what a child waits. Under a second is the bar.
 
+One honesty note on the Vosk rows: the listener streams audio into Vosk as
+it arrives, so live it answers almost the moment the sentence ends — its
+per-utterance time here is the *CPU* it spends on the sentence, not what a
+person waits. Whisper's number is both, because it runs after the sentence.
+
     venv/bin/python tools/bench_transcribers.py --libri DIR   # DIR holds LibriSpeech/test-other
     venv/bin/python tools/bench_transcribers.py --libri DIR --engines vosk:lgraph,whisper:base.en
 """
@@ -249,6 +254,7 @@ def run(engine, clips: list[tuple[str, np.ndarray]]) -> dict:
 
 
 def main() -> int:
+    global THREADS
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--libri", default="", help="directory holding LibriSpeech/test-other")
@@ -257,7 +263,10 @@ def main() -> int:
                                          "whisper:base.en,whisper:small.en")
     ap.add_argument("--tmp", default=str(Path(os.environ.get("TMPDIR", "/tmp")) / "bench-asr"))
     ap.add_argument("--seed", type=int, default=7)
+    ap.add_argument("--threads", type=int, default=THREADS,
+                    help="CPU threads for whisper (the listener's whisper_threads)")
     args = ap.parse_args()
+    THREADS = max(1, args.threads)
     tmp = Path(args.tmp)
     tmp.mkdir(parents=True, exist_ok=True)
     rng = random.Random(args.seed)

@@ -723,6 +723,15 @@ class Listener:
                 except Exception as exc:  # noqa: BLE001 - a broken model is Vosk's words
                     print(f"[Listener] transcriber failed: {exc}")
                     better = ""
+                if better and _runaway(better, text):
+                    # Whisper's one bad habit: under heavy babble it writes a
+                    # paragraph — "I have 10 frames left, so far I have 10
+                    # frames left, so far..." — where Vosk heard a few words.
+                    # A second opinion three times the length of the first is
+                    # not a better hearing of the same sentence.
+                    print(f"[Listener] whisper runaway ({len(better.split())} words), "
+                          f"keeping vosk: {text!r}")
+                    better = ""
                 if better:
                     self._refined += 1
                     if better != text:
@@ -872,6 +881,16 @@ class Listener:
         with self._proc_lock:
             p, self._proc = self._proc, None
         _reap(p)
+
+
+def _runaway(better: str, vosk: str) -> bool:
+    """Is Whisper's answer implausibly longer than what Vosk heard?
+
+    Three times Vosk's word count and at least twelve words: a child's
+    sentence Vosk mangled to three words can honestly be nine, not thirty.
+    """
+    n, m = len(better.split()), len(vosk.split())
+    return n >= 12 and n > 3 * max(1, m)
 
 
 def _reap(p) -> None:

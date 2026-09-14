@@ -340,6 +340,38 @@ seconds-per-token for fitting models this machine does not need to stream
 speech recognition, not the model. Both larger models are still pulled
 (`ollama rm qwen2.5:7b llama3.1:8b` frees 9.6 GB if wanted).
 
+### Speech recognition: Whisper for the sentence after his name (2026-09-14)
+
+`tools/bench_transcribers.py` — Vosk against faster-whisper on LibriSpeech
+test-other under babble (other speakers mixed in, the right noise for a hall)
+and on FRED's own phrases in the four piper voices. Word error rate, and the
+seconds a person waits per sentence on 4 CPU threads:
+
+| engine | hall clean | hall 10 dB | hall 5 dB | fred clean | fred 5 dB | wait/sentence |
+|---|---|---|---|---|---|---|
+| vosk lgraph (was) | 14% | 49% | 74% | 7% | 67% | ~0 (streams) |
+| whisper tiny.en | 13% | 29% | 85% | 8% | 76% | 0.20 s |
+| whisper base.en | 12% | 26% | 43% | 7% | 44% | 0.28 s |
+| **whisper small.en (now)** | 9% | 18% | 33% | 6% | 30% | 0.74 s |
+
+At 0 dB every engine is lost (Whisper writes paragraphs there — the listener
+now drops a second opinion three times longer than Vosk's words). Eight
+threads do not speed small.en (0.69 s), so it runs on four. **Live since
+2026-09-14: `voice.transcriber = "whisper"`, `whisper_model = "small.en"`.**
+Vosk still does the wake word and barge-in; Whisper only re-hears the
+endpointed sentence, and any failure or delay falls back to Vosk's words.
+If the 0.7 s wait reads as slow in the room, `base.en` is 0.28 s at 43%.
+
+**By ear, when you are at the robot:** talk to him normally and watch
+`journalctl -u fred-panel -f` for `[Listener] whisper:` lines — each shows
+Whisper's words next to Vosk's. Say "Fred, terminator mode off" (Vosk's
+classic miss). Say "Fred hello" fast: the bench saw Whisper run the two
+words together on synthetic voices ("fredalow"); a real pause after his name
+should not. `/api/voice` → `mic.transcriber` counts `refined` vs `fallbacks`.
+Synthetic and read speech are not a child in a hall: turn
+`voice.capture.enabled` on for the next event and re-run the bench on
+`logs/utterances/*.wav` — that is the number that settles it.
+
 ## Where to go next (proposed 2026-08-12)
 
 Ideas, not commitments — nothing here has been agreed. Ordered by what would
