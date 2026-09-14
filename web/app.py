@@ -39,6 +39,7 @@ from inmoov.wide_spotter import WideSpotter  # noqa: E402
 from inmoov.assistant import Assistant, EARCON_AFTER  # noqa: E402
 from inmoov.brain import BACKENDS  # noqa: E402
 from inmoov import hotspot as hotspot_mod  # noqa: E402
+from inmoov import transcriber as transcriber_mod  # noqa: E402
 from inmoov import uplink as uplink_mod    # noqa: E402
 from inmoov import heardlog                # noqa: E402
 from inmoov import wakestats               # noqa: E402
@@ -203,7 +204,14 @@ _tracker = FaceTracker(_camera, _ctrl,       # face-follow: eyes + neck + head t
                        event_cb=_log.event,  # logs face-detected / lost / tracking on-off
                        bearing_cb=_bearing_hint,
                        **_track_cfg)         # bench tuning persisted from /api/track
+# Whisper's second opinion on the sentence after his name, if voice.transcriber
+# asks for it. Loads on its own thread from here, like the local brain warms,
+# so the first sentence after boot does not pay for the model.
+_transcriber = transcriber_mod.make(_voice_cfg)
+if _transcriber is not None:
+    _transcriber.start()
 _assistant = Assistant(_ctrl, _status_led, _tracker, _sound,  # voice: wake word + Claude + lip-sync
+                       transcriber=_transcriber,
                        device=_snd_cfg.get("device", "plughw:0,0"), log=_log,
                        mic_gain=float(_voice_cfg.get("gain", 1.0)),
                        # Which channel of the mic to transcribe, for an array

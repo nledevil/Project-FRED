@@ -155,6 +155,10 @@ SPEECH_FLOOR = 250
 # reach back far enough to include the whole of it — 2 s is comfortably more than
 # the 0.5 s the persistence rule costs, plus whatever ran before it.
 REPLAY_SECONDS = 2.0
+# The most utterance audio kept for the transcriber's second opinion: the
+# tail of a long hot spell, at 16 kHz mono 16-bit. Whisper's own cap is the
+# same number of seconds (transcriber.MAX_SECONDS).
+UTT_MAX_BYTES = 20 * 16000 * 2
 # 4000 bytes = 2000 samples at 16 kHz = 125 ms, which is the loop's read size.
 CHUNK_SECONDS = 0.125
 
@@ -192,8 +196,17 @@ class Listener:
     def __init__(self, on_command, on_wake=None, on_barge=None,
                  device: str = "plughw:0,0", model_path: str | Path = MODEL_PATH,
                  gain: float = 1.0, barge_in: bool = True,
-                 channels: int = 1, channel: int = 0):
+                 channels: int = 1, channel: int = 0, transcriber=None):
         self._on_command = on_command
+        # The optional second opinion on a finished sentence — see
+        # inmoov/transcriber.py. ``_utt`` is the audio the full recogniser has
+        # been fed for the current utterance, so Whisper hears exactly what
+        # Vosk endpointed; one worker so the microphone loop never waits.
+        self._transcriber = transcriber
+        self._utt = bytearray()
+        self._refine_busy = threading.Lock()
+        self._refined = 0                      # sentences Whisper answered
+        self._refine_fallbacks = 0             # ...and the ones it didn't in time
         self._on_wake = on_wake or (lambda: None)
         # Called the moment somebody starts talking over him, so the reply can be
         # cut short. Separate from on_command because it fires on a *partial* —
@@ -433,8 +446,12 @@ class Listener:
         silent_for = None
         if capturing and captured_at:
             silent_for = round(now - silent_since, 1) if silent_since else 0.0
+        tr = self._transcriber
         return {"device": self.device, "running": running, "paused": paused,
                 "capturing": capturing, "peak": peak, "silent_for": silent_for,
+                "transcriber": {**(tr.status() if tr else {"engine": "vosk"}),
+                                "refined": self._refined,
+                                "fallbacks": self._refine_fallbacks},
                 "levels": levels, "peak_recent": max(levels) if levels else 0,
                 "full_scale": FULL_SCALE,
                 "capture_age": round(now - captured_at, 1) if captured_at else None,
@@ -568,38 +585,37 @@ class Listener:
                         # the whole request, and _strip_wake still decides
                         # whether it was for him.
                         rec, _ = self._wake_full()
+                    self._utt += data
                     if rec.AcceptWaveform(data):
                         text = json.loads(rec.Result()).get("text", "").strip()
+                        utt, self._utt = bytes(self._utt), bytearray()
                         if text:
                             if not barged and _wants_him(text):
                                 # Nothing caught it earlier — a whole utterance
                                 # landing in one chunk. Stop him now.
                                 barged = True
                                 self._barge()
-                            if not barged:
-                                # The detector didn't fire, so route it the
-                                # ordinary way: his name has to be in the
-                                # sentence or it was not for him. This is what
-                                # keeps a television talking through his reply
-                                # from becoming a command.
-                                try:
+                            was_barged = barged
+
+                            def over_him(text, was_barged=was_barged):
+                                # Not barged: the detector didn't fire, so
+                                # route it the ordinary way — his name has to
+                                # be in the sentence or it was not for him,
+                                # which is what keeps a television talking
+                                # through his reply from becoming a command.
+                                # Barged: this was aimed at him. If his name
+                                # survived into the transcript let the normal
+                                # path strip it (and answer a bare "Fred" with
+                                # "Yes?"); if it came out as "fresh" or
+                                # "alfred", take the sentence whole rather than
+                                # demand a name the recogniser just lost.
+                                if not was_barged:
                                     self._dispatch(text, time.monotonic())
-                                except Exception as exc:  # noqa: BLE001
-                                    print(f"[Listener] handler error: {exc}")
-                            else:
-                                # He was interrupted, so this was aimed at him.
-                                # If his name survived into this transcript let
-                                # the normal path strip it (and answer a bare
-                                # "Fred" with "Yes?"); if it came out as "fresh"
-                                # or "alfred", take the sentence whole rather
-                                # than demand a name the recogniser just lost.
-                                try:
-                                    if _strip_wake(text) is None:
-                                        self._dispatch(text, time.monotonic(), armed=True)
-                                    else:
-                                        self._dispatch(text, time.monotonic())
-                                except Exception as exc:  # noqa: BLE001
-                                    print(f"[Listener] handler error: {exc}")
+                                elif _strip_wake(text) is None:
+                                    self._dispatch(text, time.monotonic(), armed=True)
+                                else:
+                                    self._dispatch(text, time.monotonic())
+                            self._refine(text, utt, over_him)
                         barged = False
                         name_seen = False
                         self._reset_rec(brec)  # next utterance starts clean
@@ -640,6 +656,7 @@ class Listener:
                     hot_until = time.monotonic() + HOT_LINGER
                 if not (self.is_armed() or time.monotonic() < hot_until):
                     rec = None                 # let it go; _wake_full rebuilds it
+                    self._utt = bytearray()
                     continue
                 if rec is None:
                     rec, carried = self._wake_full()
@@ -652,27 +669,77 @@ class Listener:
                             print(f"[Listener] handler error: {exc}")
                         name_seen = False
                         self._reset_rec(brec)
+                self._utt += data
+                if len(self._utt) > UTT_MAX_BYTES:
+                    del self._utt[:len(self._utt) - UTT_MAX_BYTES]
                 if not rec.AcceptWaveform(data):
                     continue
                 text = json.loads(rec.Result()).get("text", "").strip()
+                utt, self._utt = bytes(self._utt), bytearray()
                 heard_name, name_seen = name_seen, False
                 self._reset_rec(brec)          # next utterance starts clean
                 if not text:
                     continue
-                try:                           # a handler crash must not stop listening
-                    # armed only when the detector heard his name and the sentence
-                    # itself doesn't carry it — i.e. the name was mangled on its
-                    # way through the general model. When it did survive, the
-                    # normal path strips it and still answers a bare name with
-                    # "Yes?".
+
+                def to_him(text, heard_name=heard_name):
+                    # armed only when the detector heard his name and the
+                    # sentence itself doesn't carry it — i.e. the name was
+                    # mangled on its way through the general model. When it
+                    # did survive, the normal path strips it and still answers
+                    # a bare name with "Yes?".
                     self._dispatch(text, time.monotonic(),
                                    armed=heard_name and _strip_wake(text) is None)
-                except Exception as exc:  # noqa: BLE001
-                    print(f"[Listener] handler error: {exc}")
+                self._refine(text, utt, to_him)
         except Exception as exc:  # noqa: BLE001 - log a crash instead of dying silently
             print(f"[Listener] loop error: {exc}")
         finally:
             self._close_proc()
+
+    def _refine(self, text: str, utt: bytes, then) -> None:
+        """Route a finished sentence — on Whisper's words if it can answer now.
+
+        ``text`` is Vosk's final, ``utt`` the audio it came from, ``then`` the
+        routing to run on whichever words win. Without a transcriber, or with
+        one not yet loaded, the routing runs here and now on Vosk's words. With
+        one, it runs on a worker thread after Whisper has heard the audio — and
+        if that worker is still busy with the previous sentence, this one goes
+        out on Vosk's words at once: queueing would answer the wrong question
+        late. Whisper returning nothing also means Vosk's words. A handler
+        crash never stops listening, whichever thread it is on.
+        """
+        tr = self._transcriber
+        if tr is None or not tr.ready() or not utt:
+            self._safe(then, text)
+            return
+        if not self._refine_busy.acquire(blocking=False):
+            self._refine_fallbacks += 1
+            self._safe(then, text)
+            return
+
+        def work():
+            try:
+                try:
+                    better = tr.transcribe(utt)
+                except Exception as exc:  # noqa: BLE001 - a broken model is Vosk's words
+                    print(f"[Listener] transcriber failed: {exc}")
+                    better = ""
+                if better:
+                    self._refined += 1
+                    if better != text:
+                        print(f"[Listener] whisper: {better!r} (vosk: {text!r})")
+                else:
+                    self._refine_fallbacks += 1
+                self._safe(then, better or text)
+            finally:
+                self._refine_busy.release()
+        threading.Thread(target=work, name="refine", daemon=True).start()
+
+    @staticmethod
+    def _safe(then, text: str) -> None:
+        try:
+            then(text)
+        except Exception as exc:  # noqa: BLE001 - a handler crash must not stop listening
+            print(f"[Listener] handler error: {exc}")
 
     def _reset_rec(self, rec) -> None:
         """Clear the name detector between utterances, tolerating one that can't.
@@ -743,7 +810,9 @@ class Listener:
         """
         rec = KaldiRecognizer(self._model, 16000)
         carried = ""
+        self._utt = bytearray()
         for chunk in list(self._replay):
+            self._utt += chunk
             if rec.AcceptWaveform(chunk):
                 text = json.loads(rec.Result()).get("text", "").strip()
                 if text and _wants_him(text):

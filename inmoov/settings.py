@@ -222,6 +222,15 @@ DEFAULT_SETTINGS = {
         # noisy hall — at a real CPU cost on a machine already giving ~4 cores
         # to the wide camera. Measure with tools/bench_asr.py before switching.
         "asr_model": "vosk-model-en-us-0.22-lgraph",
+        # A second opinion on the sentence after his name. "vosk" uses Vosk's
+        # own words; "whisper" hands the endpointed utterance to faster-whisper
+        # on a worker thread and uses its words when it answers in time — Vosk
+        # keeps the wake word and barge-in either way (see inmoov/transcriber.py
+        # and tools/bench_transcribers.py for the numbers). Needs
+        # `venv/bin/pip install faster-whisper`; the model downloads once.
+        "transcriber": "vosk",
+        "whisper_model": "base.en",
+        "whisper_threads": 4,
         # Opt-in capture of the utterances he was actually spoken to, to feed the
         # ASR-model decision that bench_asr.py is waiting on — the child-in-a-hall
         # case cannot be synthesised. OFF by default; only what passes the wake

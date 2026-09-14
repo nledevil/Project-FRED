@@ -53,7 +53,8 @@ class Assistant:
                  asr_model: str | None = None, barge_in: bool = True,
                  stop_when_alone: bool = True,
                  mic_channels: int = 1, mic_channel: int = 0,
-                 diagnostic=None, earcon_after: float = EARCON_AFTER):
+                 diagnostic=None, earcon_after: float = EARCON_AFTER,
+                 transcriber=None):
         # sensors is the SensorHub, or None on a build with no sensor node — the
         # read_sensors action degrades to saying so rather than failing. The same
         # goes for diagnostic: absent, the tools say he hasn't got it rather
@@ -82,11 +83,15 @@ class Assistant:
             # in a JSON file and should not be a chance to point the recogniser
             # anywhere on disk.
             listener_kw["model_path"] = MODELS_DIR / str(asr_model)
+        # The optional Whisper second opinion on what was said after his name;
+        # None means Vosk's words. See inmoov/transcriber.py.
+        self._transcriber = transcriber
         self.listener = Listener(on_command=self._on_command, on_wake=self._on_wake,
                                  on_barge=self.interrupt,
                                  barge_in=bool(barge_in),
                                  device=device, gain=mic_gain,
                                  channels=mic_channels, channel=mic_channel,
+                                 transcriber=transcriber,
                                  **listener_kw)
         self._speaking = False
         # True from "FRED heard you" until the first audio of his reply — the
