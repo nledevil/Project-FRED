@@ -171,8 +171,8 @@ def main() -> int:
               f"{statistics.median(ttfts):8.2f} {max(ttfts):8.2f} "
               f"{statistics.median(t['tps'] for t in ts):6.1f} "
               f"{statistics.median(t['wall'] for t in ts):10.2f}")
-    print(f"\nearcon threshold is {settings.load_settings().get("voice", {}).get('earcon_after', 1.5)} s; "
-          "a candidate's ttft p50 should sit under it.")
+    print("\nttft p50 is what a person waits after the thinking line starts; "
+          "under ~1.5 s reads as prompt, over it as slow.")
 
     # Leave the robot as boot leaves it: the configured model loaded, prefix read.
     print(f"\nre-warming {configured} for the brain")

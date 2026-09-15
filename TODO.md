@@ -314,10 +314,18 @@ eye. Ten minutes, in this order:
   panel open on the camera and tracking off, the NUC's `top` should show the
   brain process a few percent lighter than it did with the relay decoding
   every frame.
-- **Still from earlier sessions:** one look at the dance (V2), a by-ear pass
-  on the "Hmm..." line and its 1.5 s threshold (V1), the lead-in cut with sound
-  on (V3), "Fred, stop" over a long reply and Capture forward for the DOA
-  offset (R9).
+- **The thinking line (2026-09-14).** Heard in the room: "Hmm..." was short
+  and arrived with the answer, because it waited 1.5 s and the Whisper pass
+  had already added 0.7 s of silence before that clock started. Now it is
+  "Hmm, let me think." (1.2 s in his voice) the moment a model takes the turn
+  (`voice.earcon_after` 0; `voice.earcon` false turns it off; `earcon_text`
+  is the line), the chest shows THINKING while Whisper re-hears a sentence,
+  and a sentence Vosk already heard as a command skips Whisper entirely. By
+  ear: ask him something a model answers — the line should start within a
+  second of you finishing, and the answer should follow it without a gap.
+- **Still from earlier sessions:** one look at the dance (V2), the lead-in
+  cut with sound on (V3), "Fred, stop" over a long reply and Capture forward
+  for the DOA offset (R9).
 
 ### Local model: benched 2026-09-13, the 3B stays
 

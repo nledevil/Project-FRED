@@ -131,6 +131,25 @@ def main() -> int:
           routed(L.Listener(on_command=lambda t: None, transcriber=FakeWhisper("x")), "hi", b"")
           == ["hi"])
 
+    print("a sentence Vosk already heard as a command skips Whisper")
+    fw = FakeWhisper("something else")
+    lis = L.Listener(on_command=lambda t: None, transcriber=fw,
+                     quick=lambda t: t in ("tell me a joke", "stop"))
+    check("'fred tell me a joke' routes on Vosk's words at once, Whisper never asked",
+          routed(lis, "fred tell me a joke", b"\x00" * 32) == ["fred tell me a joke"]
+          and fw.calls == [])
+    check("...and an armed bare command too", routed(lis, "stop", b"\x00" * 32) == ["stop"]
+          and fw.calls == [])
+    check("a sentence the matcher doesn't know still goes to Whisper",
+          routed(lis, "fred what is a black hole", b"\x00" * 32) == ["something else"]
+          and len(fw.calls) == 1)
+    heard: list[bool] = []
+    lis = L.Listener(on_command=lambda t: None, transcriber=FakeWhisper("x", delay=0.05),
+                     on_hearing=heard.append)
+    routed(lis, "fred what is a black hole", b"\x00" * 32)
+    time.sleep(0.1)
+    check("the display is told he is hearing, then that he is done", heard == [True, False], str(heard))
+
     print("a handler crash never stops listening")
     def bad(t):
         raise RuntimeError("handler exploded")

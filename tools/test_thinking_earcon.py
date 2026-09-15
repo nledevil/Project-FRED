@@ -15,7 +15,7 @@ more importantly, when it must not:
     "Yes?", a greeting, a matched command), and never after a barge-in
   * while it plays he is still *thinking*, not answering: the chest HUD's
     THINKING state survives it, and comes straight back when it ends
-  * earcon_after = 0 turns the whole thing off
+  * earcon_after = 0 fires it at once; voice.earcon = false turns it off
 
 Driven with a fake Sound (records what was played, "plays" for 50 ms), a fake
 brain (sleeps, then emits), and a servo-less controller — no microphone, no
@@ -164,12 +164,17 @@ def main() -> int:
     check("no earcon when the answer beats the delay",
           [p for p, _ in s.played] == ["/fake/Here is the answer..wav"], str(s.played))
 
-    print("earcon_after = 0 turns it off")
+    print("earcon_after = 0 fires at once; earcon=False turns it off")
     a, s = make(earcon_after=0.0, delay=0.4)
+    a.converse("what is a robot", source="voice")
+    check("with no delay the earcon still plays, first",
+          [p for p, _ in s.played][:1] == [earcon], str([p for p, _ in s.played]))
+    a, s = make(earcon_after=0.0, delay=0.4)
+    a.earcon = False
     a.converse("slow one", source="voice")
     check("a slow turn plays only the answer",
           [p for p, _ in s.played] == ["/fake/Here is the answer..wav"], str(s.played))
-    check("status reports it off", a.status()["earcon_after"] == 0.0)
+    check("status reports it off", a.status()["earcon"] is False)
 
     print("a turn no model is answering never gets one")
     a, s = make(earcon_after=0.05, delay=0.0)

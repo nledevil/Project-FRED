@@ -228,7 +228,9 @@ _assistant = Assistant(_ctrl, _status_led, _tracker, _sound,  # voice: wake word
                        # Stop mid-reply when the visitor walks off.
                        stop_when_alone=bool(_voice_cfg.get("stop_when_alone", True)),
                        # Say "Hmm..." when a model keeps him silent this long (V1).
-                       earcon_after=float(_voice_cfg.get("earcon_after", EARCON_AFTER)))
+                       earcon_after=float(_voice_cfg.get("earcon_after", EARCON_AFTER)),
+                       earcon=bool(_voice_cfg.get("earcon", True)),
+                       earcon_text=str(_voice_cfg.get("earcon_text") or ""))
 # The earcon into the TTS cache now, for the same reason the voice is warmed
 # above: the first slow answer of the day should not also pay a render.
 threading.Thread(target=_assistant.warm_earcon, name="earcon-warm", daemon=True).start()

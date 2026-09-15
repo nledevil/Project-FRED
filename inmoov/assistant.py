@@ -26,7 +26,7 @@ import numpy as np
 
 from pathlib import Path
 
-from . import heardlog
+from . import commands, heardlog
 from .brain import LOOK_MIN_SECS, Brain
 from .listener import ARM_WINDOW, Listener
 
@@ -34,16 +34,19 @@ MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
 
 # The thinking earcon (V1). What he says to fill the silence while a language
 # model is working, and how long that silence gets to run before he says it.
-# Short, and cached by Sound.render_tts after its first render (warm_earcon
-# does that at boot), so playing it costs nothing but its own length.
+# Cached by Sound.render_tts after its first render (warm_earcon does that at
+# boot), so playing it costs nothing but its own length.
 #
-# The default delay is the line between the two backends as measured on this
-# rig: a plain Claude turn is audible at ~1.1 s (first sentence ~0.7 s plus
-# its render), the local model at ~1.5 s or more, and any turn with a tool
-# call or a look at ~3 s. Below the delay the answer itself is the signal and
-# a "Hmm" would only push it later; above it the child has started to wonder.
-EARCON_TEXT = "Hmm..."
-EARCON_AFTER = 1.5
+# It fires the moment a model takes the turn. The first version waited 1.5 s
+# — the measured line between a plain Claude answer and everything slower —
+# on the theory that a fast answer is its own signal. Heard in the room, with
+# the Whisper pass now adding ~0.7 s of silence *before* that clock starts, a
+# child got two seconds of nothing and then "Hmm" and the answer together,
+# which is the opposite of what the earcon is for. So: immediately, and a
+# line long enough to be heard as one — 1.2 s in his voice, about what a
+# Claude answer takes to arrive, so it ends as the answer begins.
+EARCON_TEXT = "Hmm, let me think."
+EARCON_AFTER = 0.0
 
 
 class Assistant:
@@ -54,6 +57,7 @@ class Assistant:
                  stop_when_alone: bool = True,
                  mic_channels: int = 1, mic_channel: int = 0,
                  diagnostic=None, earcon_after: float = EARCON_AFTER,
+                 earcon: bool = True, earcon_text: str = EARCON_TEXT,
                  transcriber=None):
         # sensors is the SensorHub, or None on a build with no sensor node — the
         # read_sensors action degrades to saying so rather than failing. The same
@@ -86,12 +90,22 @@ class Assistant:
         # The optional Whisper second opinion on what was said after his name;
         # None means Vosk's words. See inmoov/transcriber.py.
         self._transcriber = transcriber
+        # While Whisper re-hears a sentence he has "heard you" but nothing has
+        # been routed yet — the chest shows THINKING for it, so the pass is
+        # not a second of nothing. Cleared by the listener once routed; a turn
+        # that starts carries _thinking itself.
+        self._hearing = False
         self.listener = Listener(on_command=self._on_command, on_wake=self._on_wake,
                                  on_barge=self.interrupt,
                                  barge_in=bool(barge_in),
                                  device=device, gain=mic_gain,
                                  channels=mic_channels, channel=mic_channel,
                                  transcriber=transcriber,
+                                 # A sentence Vosk already heard as a command
+                                 # skips Whisper: instant, and the matcher
+                                 # wanted Vosk's shape anyway.
+                                 quick=lambda t: commands.match_local(t) is not None,
+                                 on_hearing=self._on_hearing,
                                  **listener_kw)
         self._speaking = False
         # True from "FRED heard you" until the first audio of his reply — the
@@ -103,6 +117,8 @@ class Assistant:
         # turn has been handed to a model — the brain sets it through
         # _on_thinking, the speaker thread consumes it, converse clears it.
         self.earcon_after = max(0.0, float(earcon_after))
+        self.earcon = bool(earcon)
+        self.earcon_text = (earcon_text or EARCON_TEXT).strip() or EARCON_TEXT
         self._earcon_due = 0.0
         self._speak_lock = threading.Lock()
         # Barge-in: set to cut the current reply short because someone started
@@ -147,7 +163,10 @@ class Assistant:
 
     def is_thinking(self) -> bool:
         """Heard you, hasn't answered yet. Cheap enough to poll."""
-        return self._thinking
+        return self._thinking or self._hearing
+
+    def _on_hearing(self, on: bool) -> None:
+        self._hearing = bool(on)
 
     def mouth_seq(self) -> int:
         """Which clip's envelope is current. Cheap enough for the head poll."""
@@ -180,8 +199,10 @@ class Assistant:
             "available": self.available(),          # mic + Vosk model present
             "listening": self.listener.is_running(),
             "speaking": self._speaking,
-            "thinking": self._thinking,
-            "earcon_after": self.earcon_after,      # 0 = the thinking "Hmm" is off
+            "thinking": self._thinking or self._hearing,
+            "earcon": self.earcon,                  # the thinking line at all
+            "earcon_after": self.earcon_after,      # seconds of silence before it; 0 = at once
+            "earcon_text": self.earcon_text,
             "ai_available": self.brain.ai_available(),
             "can_speak": self._sound.can_speak(),
             "last_heard": self._last_heard,
@@ -409,7 +430,7 @@ class Assistant:
         """The brain has handed this turn to a language model: start the clock
         on the earcon. Called on the brain's thread; the speaker thread, already
         waiting for the first sentence, is the one that acts on it."""
-        if self.earcon_after > 0:
+        if self.earcon:
             self._earcon_due = time.monotonic() + self.earcon_after
 
     def warm_earcon(self) -> None:
@@ -417,7 +438,7 @@ class Assistant:
         day does not pay a synthesis on top of the wait it exists to cover.
         Safe with no TTS backend, and never raises — it runs on a boot thread."""
         try:
-            self._sound.render_tts(EARCON_TEXT, speed=150)
+            self._sound.render_tts(self.earcon_text, speed=150)
         except Exception as exc:  # noqa: BLE001
             print(f"[Assistant] earcon warm-up failed: {exc}")
 
@@ -451,7 +472,7 @@ class Assistant:
         shows THINKING again the moment it ends, not SPEAKING, because the
         answer is still on its way. True if it played."""
         try:
-            path = self._sound.render_tts(EARCON_TEXT, speed=150)
+            path = self._sound.render_tts(self.earcon_text, speed=150)
         except Exception as exc:  # noqa: BLE001
             print(f"[Assistant] earcon render failed: {exc}")
             return False

@@ -196,8 +196,15 @@ class Listener:
     def __init__(self, on_command, on_wake=None, on_barge=None,
                  device: str = "plughw:0,0", model_path: str | Path = MODEL_PATH,
                  gain: float = 1.0, barge_in: bool = True,
-                 channels: int = 1, channel: int = 0, transcriber=None):
+                 channels: int = 1, channel: int = 0, transcriber=None,
+                 quick=None, on_hearing=None):
         self._on_command = on_command
+        # ``quick(text)`` says whether Vosk's words are already a command the
+        # robot answers offline; those skip the transcriber. ``on_hearing``
+        # is told True while a sentence is with the transcriber and False
+        # once it has been routed, so a display can show he heard.
+        self._quick = quick or (lambda text: False)
+        self._on_hearing = on_hearing or (lambda on: None)
         # The optional second opinion on a finished sentence — see
         # inmoov/transcriber.py. ``_utt`` is the audio the full recogniser has
         # been fed for the current utterance, so Whisper hears exactly what
@@ -711,12 +718,23 @@ class Listener:
         if tr is None or not tr.ready() or not utt:
             self._safe(then, text)
             return
+        # Already a command as Vosk heard it: "tell me a joke", "stop",
+        # "terminator mode off" — answer now. Whisper only helps where Vosk
+        # missed, and the matcher was written for Vosk's words.
+        probe = _strip_wake(text)
+        try:
+            if self._quick(probe or text):
+                self._safe(then, text)
+                return
+        except Exception as exc:  # noqa: BLE001 - a broken probe is not a lost sentence
+            print(f"[Listener] quick probe failed: {exc}")
         if not self._refine_busy.acquire(blocking=False):
             self._refine_fallbacks += 1
             self._safe(then, text)
             return
 
         def work():
+            self._on_hearing(True)
             try:
                 try:
                     better = tr.transcribe(utt)
@@ -741,6 +759,7 @@ class Listener:
                 self._safe(then, better or text)
             finally:
                 self._refine_busy.release()
+                self._on_hearing(False)
         threading.Thread(target=work, name="refine", daemon=True).start()
 
     @staticmethod
