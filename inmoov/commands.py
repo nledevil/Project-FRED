@@ -268,6 +268,14 @@ def _gesture(ctx, routine: str) -> str:
     return "I can dance, or look around. Those are my moves."
 
 
+def _weather(ctx) -> str:
+    """The weather where he is, from the NWS client on ctx — see weather.py."""
+    w = getattr(ctx, "weather", None)
+    if w is None:
+        return "I don't have a weather service on this build."
+    return w.report()
+
+
 def _speak_distance(cm: float) -> str:
     """A distance the way a person would say it out loud."""
     if cm >= 399:
@@ -789,6 +797,8 @@ def execute_action(ctx, name: str, **args) -> str:
         return sysinfo.spoken_ip()
     if name == "say_temp":
         return sysinfo.spoken_temp()
+    if name == "say_weather":
+        return _weather(ctx)
 
     if name == "reset":
         ctx.controller.rest()
@@ -933,6 +943,13 @@ _PATTERNS = [
     (re.compile(r"\bhow far\b", re.I), "read_sensors", {"which": "distance"}),
     (re.compile(r"\b(distance|proximity|ultrasonic)\b.*\b(sensor|reading|say|read)", re.I), "read_sensors", {"which": "distance"}),
     (re.compile(r"\bwhat\b.*\byour sensors?\b", re.I), "read_sensors", {}),
+    # The weather, from the National Weather Service — instant and, unlike a
+    # web search, current. Ahead of the temperature rule, which is about his
+    # own chip and already refuses "outside"/"weather"; "how hot is it out
+    # there" lands here.
+    (re.compile(r"\b(weather|forecast|going to rain|raining|snowing|umbrella"
+                r"|how (hot|cold|warm|chilly) is it (outside|out there|out|today))\b", re.I),
+     "say_weather", {}),
     # System facts — instant, offline answers (Claude also gets these via its
     # injected context block for other phrasings).
     (re.compile(r"\b(what('?s| is)?\s+(the\s+)?(current\s+)?time|time is it|what time)\b", re.I), "say_time", {}),
@@ -1095,6 +1112,13 @@ CLAUDE_TOOLS = [
      "input_schema": {"type": "object", "properties": {
          "times": {"type": "integer",
                    "description": "How many shakes, 1-5. Defaults to 2."}}}},
+    {"name": "get_weather", "description":
+        "The weather where FRED is right now and today's forecast, from the "
+        "National Weather Service. Use this for any question about the weather, "
+        "the temperature outside, rain, or what to wear — never search the web "
+        "for weather, which returns days-old numbers. Say what it returns in "
+        "your own words, briefly.",
+     "input_schema": {"type": "object", "properties": {}}},
     {"name": "tell_joke", "description":
         "Tell one joke from FRED's own book of short, child-safe jokes. Use this "
         "every time someone asks for a joke, something funny, or another one — "
@@ -1252,6 +1276,8 @@ def run_tool(ctx, tool_name: str, tool_input: dict) -> str:
         return execute_action(ctx, "shake_head", times=ti.get("times", 2))
     if tool_name == "tell_joke":
         return execute_action(ctx, "tell_joke")
+    if tool_name == "get_weather":
+        return execute_action(ctx, "say_weather")
     if tool_name == "gesture":
         # ``routine``, not ``name`` — see play_sound below for why that key is
         # taken. The test caught this one before the model did.

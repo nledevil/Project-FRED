@@ -58,14 +58,15 @@ class Assistant:
                  mic_channels: int = 1, mic_channel: int = 0,
                  diagnostic=None, earcon_after: float = EARCON_AFTER,
                  earcon: bool = True, earcon_text: str = EARCON_TEXT,
-                 transcriber=None):
+                 transcriber=None, weather=None):
         # sensors is the SensorHub, or None on a build with no sensor node — the
         # read_sensors action degrades to saying so rather than failing. The same
         # goes for diagnostic: absent, the tools say he hasn't got it rather
         # than raising, which is what a build without the mode should look like.
         self._ctx = types.SimpleNamespace(controller=controller, led=led,
                                           tracker=tracker, sound=sound,
-                                          sensors=sensors, diagnostic=diagnostic)
+                                          sensors=sensors, diagnostic=diagnostic,
+                                          weather=weather)
         self._sound = sound
         self._controller = controller
         self._log = log                           # ConversationLog (optional)

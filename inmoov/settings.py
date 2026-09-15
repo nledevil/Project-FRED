@@ -181,6 +181,10 @@ DEFAULT_SETTINGS = {
         "web_search": True,
         "web_search_location": {"city": "", "region": "", "country": "US",
                                 "timezone": ""},
+        # Where he is, for the weather — the National Weather Service, not a
+        # web search, which read back a days-old 92 on a 67-degree morning.
+        # lat/lon of the grid he stands in and the name he says for it.
+        "weather": {"lat": 41.6986, "lon": -88.0684, "name": "Bolingbrook"},
         "local_model": "qwen2.5:3b",
         "local_host": "http://127.0.0.1:11434",
         # Whether FRED may look through his eye camera to answer a question.
