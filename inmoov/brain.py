@@ -195,8 +195,9 @@ SYSTEM = (
 # answers, so the length and plainness rules have to be restated where the search
 # happens rather than left to the general brevity rule further up.
 SYSTEM_WEB = (
-    " For the weather where you are, call get_weather — never search the web "
-    "for weather, which hands back numbers days old. "
+    " For the weather — here, or anywhere someone names — call get_weather "
+    "with the place; never search the web for weather, which hands back "
+    "numbers days old. "
     "You can look other things up on the internet when the answer depends on "
     "something current — news, prices, scores, when something opens. "
     "Say the answer in your own words, in one or two short spoken sentences: no "
@@ -212,8 +213,8 @@ SYSTEM_WEB = (
 SYSTEM_NO_WEB = (
     " You have no way to look anything up on the internet right now. If someone "
     "asks for something current, like the news, say that plainly rather than "
-    "guessing at it. The weather where you are is the exception: call "
-    "get_weather, and if that fails say so."
+    "guessing at it. The weather is the exception: call get_weather with the "
+    "place, and if that fails say so."
 )
 
 # Face recall's half. Two rules, and the second one is the important one: FRED

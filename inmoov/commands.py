@@ -268,12 +268,31 @@ def _gesture(ctx, routine: str) -> str:
     return "I can dance, or look around. Those are my moves."
 
 
-def _weather(ctx) -> str:
-    """The weather where he is, from the NWS client on ctx — see weather.py."""
+def _weather(ctx, place: str = "", day: str = "today") -> str:
+    """The weather here or anywhere named, from the client on ctx — see weather.py."""
     w = getattr(ctx, "weather", None)
     if w is None:
         return "I don't have a weather service on this build."
-    return w.report()
+    return w.report(str(place or ""), str(day or "today"))
+
+
+# "in Chicago", "for 60440", "at Disney World" — the place a weather question
+# names, if any. Things that are not places but follow "in" — "in the
+# morning", "in town" — mean here.
+_WEATHER_PLACE = re.compile(
+    r"\b(?:in|for|at|around|over in)\s+(?P<place>[a-z0-9][a-z0-9 ,.'-]*?)"
+    r"(?:\s+(?:today|tomorrow|tonight|right now|now|this (?:morning|afternoon|evening|week)))?"
+    r"\s*[?.!]*$", re.I)
+_NOT_A_PLACE = re.compile(r"^(the\b|here\b|home\b|town\b|my area\b|this area\b|outside\b)", re.I)
+
+
+def _weather_args(text: str) -> dict:
+    m = _WEATHER_PLACE.search(text)
+    place = m.group("place").strip(" ,.") if m else ""
+    if _NOT_A_PLACE.match(place):
+        place = ""
+    day = "tomorrow" if re.search(r"\btomorrow\b", text, re.I) else "today"
+    return {"place": place, "day": day}
 
 
 def _speak_distance(cm: float) -> str:
@@ -798,7 +817,7 @@ def execute_action(ctx, name: str, **args) -> str:
     if name == "say_temp":
         return sysinfo.spoken_temp()
     if name == "say_weather":
-        return _weather(ctx)
+        return _weather(ctx, str(args.get("place", "")), str(args.get("day", "today")))
 
     if name == "reset":
         ctx.controller.rest()
@@ -949,7 +968,7 @@ _PATTERNS = [
     # there" lands here.
     (re.compile(r"\b(weather|forecast|going to rain|raining|snowing|umbrella"
                 r"|how (hot|cold|warm|chilly) is it (outside|out there|out|today))\b", re.I),
-     "say_weather", {}),
+     "say_weather", "weather"),
     # System facts — instant, offline answers (Claude also gets these via its
     # injected context block for other phrasings).
     (re.compile(r"\b(what('?s| is)?\s+(the\s+)?(current\s+)?time|time is it|what time)\b", re.I), "say_time", {}),
@@ -1017,6 +1036,8 @@ def match_local(text: str):
             args = {"on": _toggle(text)}
         elif spec == "group":
             args = {"direction": m.group("direction").lower()}
+        elif spec == "weather":
+            args = _weather_args(text)
         else:
             args = dict(spec)
         return name, args
@@ -1113,12 +1134,17 @@ CLAUDE_TOOLS = [
          "times": {"type": "integer",
                    "description": "How many shakes, 1-5. Defaults to 2."}}}},
     {"name": "get_weather", "description":
-        "The weather where FRED is right now and today's forecast, from the "
-        "National Weather Service. Use this for any question about the weather, "
-        "the temperature outside, rain, or what to wear — never search the web "
-        "for weather, which returns days-old numbers. Say what it returns in "
-        "your own words, briefly.",
-     "input_schema": {"type": "object", "properties": {}}},
+        "Current weather and the forecast, for where FRED is or for any place "
+        "someone names, from the weather services (real observations, not a "
+        "search). Use this for any question about the weather, the temperature "
+        "outside, rain, or what to wear — anywhere in the world — and never "
+        "search the web for weather, which returns days-old numbers. Say what "
+        "it returns in your own words, briefly.",
+     "input_schema": {"type": "object", "properties": {
+         "place": {"type": "string",
+                   "description": "A city, 'city, country', or US zip code. Leave "
+                                  "empty for where FRED is."},
+         "day": {"type": "string", "enum": ["today", "tomorrow"]}}}},
     {"name": "tell_joke", "description":
         "Tell one joke from FRED's own book of short, child-safe jokes. Use this "
         "every time someone asks for a joke, something funny, or another one — "
@@ -1277,7 +1303,8 @@ def run_tool(ctx, tool_name: str, tool_input: dict) -> str:
     if tool_name == "tell_joke":
         return execute_action(ctx, "tell_joke")
     if tool_name == "get_weather":
-        return execute_action(ctx, "say_weather")
+        return execute_action(ctx, "say_weather", place=ti.get("place", ""),
+                              day=ti.get("day", "today"))
     if tool_name == "gesture":
         # ``routine``, not ``name`` — see play_sound below for why that key is
         # taken. The test caught this one before the model did.

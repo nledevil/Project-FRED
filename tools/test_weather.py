@@ -62,7 +62,10 @@ def docs(temp_c=19.0, stamp=None, pop=69):
              "shortForecast": "Showers And Thunderstorms Likely",
              "probabilityOfPrecipitation": {"value": pop}},
             {"name": "Tonight", "temperature": 64, "isDaytime": False,
-             "shortForecast": "Chance Showers", "probabilityOfPrecipitation": {"value": 52}}]}},
+             "shortForecast": "Chance Showers", "probabilityOfPrecipitation": {"value": 52}},
+            {"name": "Wednesday", "temperature": 74, "isDaytime": True,
+             "shortForecast": "Chance Showers And Thunderstorms",
+             "probabilityOfPrecipitation": {"value": 48}}]}},
     }
 
 
@@ -103,8 +106,8 @@ def main() -> int:
     old = time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime(time.time() - 4 * 3600))
     w = W.Weather(fetch=fetcher(docs(stamp=old)), log=lambda *a: None)
     said = w.report()
-    check("a four-hour-old observation is left out; the forecast stays",
-          not said.startswith("Right now") and said.startswith("Today,"), said)
+    check("a four-hour-old observation is left out; the forecast stays, and names the place",
+          not said.startswith("Right now") and said.startswith("Today in Bolingbrook,"), said)
     w = W.Weather(fetch=fetcher(docs(pop=10)), log=lambda *a: None)
     check("a small chance of rain is not mentioned", "percent" not in w.report())
     w = W.Weather(fetch=fetcher({"points": {"properties": {"forecast": "F", "observationStations": "S"}},
@@ -120,21 +123,87 @@ def main() -> int:
     w._fetch = fetcher(docs())
     check("the next ask tries again and succeeds", w.report().startswith("Right now"))
 
-    print("the matcher hears the question")
-    for text in ("what's the weather like today", "fred what's the forecast",
-                 "is it going to rain", "how hot is it outside", "do i need an umbrella"):
+    print("any place: zips through Zippopotam, names through the geocoder, the rest of the world through Open-Meteo")
+    geo = {"points": {"properties": {"forecast": "F", "observationStations": "S"}},
+           "S": {"features": [{"properties": {"stationIdentifier": "KORD"}}]},
+           "obs": docs()["obs"], "F": docs()["F"]}
+    def fetch(url, timeout=5.0):
+        fetch.calls.append(url)
+        if url.startswith(W.ZIPPO):
+            return {"places": [{"place name": "Chicago", "state abbreviation": "IL",
+                                "latitude": "41.85", "longitude": "-87.65"}]}
+        if url.startswith(W.GEOCODE):
+            q = url.split("name=")[1].split("&")[0].replace("+", " ")
+            if q == "Paris":
+                return {"results": [{"name": "Paris", "country": "France", "country_code": "FR",
+                                     "latitude": 48.85, "longitude": 2.35}]}
+            if q == "Sydney":
+                return {"results": [{"name": "Sydney", "country": "Australia", "country_code": "AU",
+                                     "latitude": -33.87, "longitude": 151.2}]}
+            return {"results": []}
+        if url.startswith(W.OPEN_METEO):
+            return {"current": {"temperature_2m": 88.6, "weather_code": 0, "wind_speed_10m": 4.2,
+                                "relative_humidity_2m": 40},
+                    "daily": {"time": ["2026-09-15", "2026-09-16"], "weather_code": [3, 61],
+                              "temperature_2m_max": [91.2, 70.4], "temperature_2m_min": [70, 60],
+                              "precipitation_probability_max": [5, 100]}}
+        if "/points/" in url:
+            return geo["points"]
+        if url.endswith("/observations/latest"):
+            return geo["obs"]
+        return geo[url]
+    fetch.calls = []
+    w = W.Weather(fetch=fetch, log=lambda *a: None)
+    said = w.report("60606")
+    check("a US zip: NWS, named by the zip's town",
+          said.startswith("Right now it's 66 degrees and partly cloudy in Chicago, IL."), said)
+    said = w.report("Paris, France")
+    check("a foreign city: Open-Meteo, in fahrenheit, with the country",
+          said == "Right now it's 89 degrees and clear in Paris, France. Today, overcast, with a high near 91.", said)
+    said = w.report("Paris", "tomorrow")
+    check("tomorrow, elsewhere: the second daily row, rain when likely",
+          said == "Tomorrow in Paris, France, light rain, with a high near 70 and a 100 percent chance of rain.", said)
+    n = len(fetch.calls)
+    w.report("paris")
+    check("a place is resolved once, then cached", len(fetch.calls) == n)
+    said = w.report("Sydney Australia")
+    check("'Sydney Australia': the geocoder is asked again with the last word dropped",
+          said.startswith("Right now it's 89 degrees") and "Sydney, Australia" in said, said)
+    check("an unknown place is said to be unknown, not guessed",
+          w.report("Xyzzyville") == "I don't know where Xyzzyville is.")
+    check("no place, 'here' and 'home' all mean home",
+          w.resolve("") == w.home and w.resolve("here") == w.home and w.resolve("home") == w.home)
+    said = w.report("", "tomorrow")
+    check("tomorrow at home: NWS's next daytime period, not today's or tonight's",
+          said == "Wednesday in Bolingbrook, chance showers and thunderstorms, with a high near 74 "
+                  "and a 48 percent chance of rain.", said)
+
+    print("the matcher hears the question, and the place in it")
+    for text, want in (("what's the weather like today", {"place": "", "day": "today"}),
+                       ("fred what's the forecast", {"place": "", "day": "today"}),
+                       ("is it going to rain tomorrow", {"place": "", "day": "tomorrow"}),
+                       ("how hot is it outside", {"place": "", "day": "today"}),
+                       ("do i need an umbrella", {"place": "", "day": "today"}),
+                       ("what's the weather in chicago", {"place": "chicago", "day": "today"}),
+                       ("what's the weather like in paris, france tomorrow",
+                        {"place": "paris, france", "day": "tomorrow"}),
+                       ("weather for 60440?", {"place": "60440", "day": "today"}),
+                       ("what's the weather in the morning", {"place": "", "day": "today"}),
+                       ("is it raining in town", {"place": "", "day": "today"})):
         got = C.match_local(text)
-        check(f"{text!r:36} -> say_weather", got == ("say_weather", {}), str(got))
+        check(f"{text!r:46} -> {want['place'] or 'home'} {want['day']}",
+              got == ("say_weather", want), str(got))
     for text, want in (("how hot are you", "say_temp"), ("what's your cpu temperature", "say_temp")):
         got = C.match_local(text)
         check(f"{text!r:36} -> {want} (his own chip)", got is not None and got[0] == want, str(got))
     class FakeWeather:
-        def report(self):
-            return "Right now it's 66 degrees."
+        def report(self, place="", day="today"):
+            return f"{place or 'home'}/{day}"
     ctx = types.SimpleNamespace(controller=None, weather=FakeWeather())
-    check("the action speaks the report", C.execute_action(ctx, "say_weather") == "Right now it's 66 degrees.")
+    check("the action passes the place and day", C.execute_action(ctx, "say_weather", place="Tokyo", day="tomorrow") == "Tokyo/tomorrow")
     check("the tool reaches the same place",
-          C.run_tool(ctx, "get_weather", {}) == "Right now it's 66 degrees.")
+          C.run_tool(ctx, "get_weather", {"place": "Paris"}) == "Paris/today"
+          and C.run_tool(ctx, "get_weather", {}) == "home/today")
     check("a build without the service says so",
           "weather service" in C.execute_action(types.SimpleNamespace(controller=None), "say_weather"))
     check("get_weather is offered to the model", any(t["name"] == "get_weather" for t in C.CLAUDE_TOOLS))
