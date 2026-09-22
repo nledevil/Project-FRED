@@ -34,6 +34,7 @@ deploy/display/metrics_hud.py
 # numpy menu retired — they are the menu's judgements, served to the QML as
 # data, and net_snapshot is the poller those judgements read from.
 deploy/display/cog_hud.py
+deploy/display/backlight.py
 deploy/display/touch.py
 deploy/display/theme.py
 deploy/display/net_snapshot.py

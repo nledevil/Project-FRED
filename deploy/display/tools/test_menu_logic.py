@@ -81,6 +81,41 @@ def main() -> int:                                    # noqa: PLR0915
     lit = DisplayPage().view(snap2)["animations"][0]
     check("a lit 'off' is dim, not healthy-green", lit["ink"] == "dim", str(lit))
 
+    print("display: the sleep row lights what is true")
+    d = DisplayPage()
+    snap3 = {"chest": {"animations": [{"id": "flux", "label": "Flux"}],
+                       "display": {"animation": "flux", "running": True,
+                                   "sleep_after_s": 300}}}
+    row = d.view(snap3)["sleep"]
+    check("six choices, the first is never",
+          len(row) == 6 and row[0]["seconds"] == 0 and row[0]["label"] == "NEVER")
+    check("the daemon's number lights its button",
+          [c["label"] for c in row if c["on"]] == ["5 MIN"])
+    snap3["chest"]["display"]["sleep_after_s"] = 420
+    row = d.view(snap3)["sleep"]
+    check("a number from the web admin that is not a button lights the nearest",
+          [c["label"] for c in row if c["on"]] == ["5 MIN"], str([c for c in row if c["on"]]))
+    del snap3["chest"]["display"]["sleep_after_s"]
+    row = d.view(snap3)["sleep"]
+    check("an older daemon that does not say means the default lights, not never",
+          [c["seconds"] for c in row if c["on"]] != [0])
+    check("...and the default is a real button, not a nearest guess",
+          any(c["seconds"] == 600 for c in row))
+    sent = []
+
+    class SleepNet:
+        def post_sleep(self, s):
+            sent.append(s)
+
+    snap3["chest"]["display"]["sleep_after_s"] = 300
+    d.pick_sleep(0, SleepNet())
+    check("a tap asks the daemon", sent == [0])
+    check("...and lights at once, before the daemon answers",
+          [c["seconds"] for c in d.view(snap3)["sleep"] if c["on"]] == [0])
+    snap3["chest"]["display"]["sleep_after_s"] = 0
+    check("...then follows the daemon once it agrees",
+          d._sleep_pending is None or d.view(snap3)["sleepAfter"] == 0)
+
     print("servos: order, paging, the finger, the flush")
     p = ServosPage()
     servos = {f"servo_{i}": {"current": 90, "min_angle": 0, "max_angle": 180,

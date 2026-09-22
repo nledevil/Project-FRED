@@ -60,6 +60,32 @@ Item {
             Btn { label: ">"; implicitWidth: 60; onTapped: P.turnPage(1) }
         }
 
+        // How long the screen may sit untouched before it goes dark. A choice
+        // about this screen, made in front of it; the web admin offers the
+        // same six and both end up in the daemon's state.json.
+        RowLayout {
+            Layout.fillWidth: true
+            Layout.preferredHeight: 40
+            spacing: 12
+            Text {
+                text: "SCREEN SLEEP"
+                color: Th.dimInk
+                font.pixelSize: Th.px["2"]; font.family: Th.font
+                font.letterSpacing: Th.tracking
+                verticalAlignment: Text.AlignVCenter
+                Layout.preferredWidth: 150
+            }
+            Repeater {
+                model: P.displayView.sleep || []
+                Btn {
+                    Layout.fillWidth: true
+                    label: modelData.label
+                    on: modelData.on
+                    onTapped: P.setSleepAfter(modelData.seconds)
+                }
+            }
+        }
+
         // The look of the menu: a local choice, and available even when the Pi
         // cannot say what it is running.
         RowLayout {

@@ -89,6 +89,14 @@ class DisplayClient:
         """
         return self._request("POST", "/api/metrics", {"enabled": bool(enabled)})
 
+    def set_sleep(self, after_s: int) -> dict:
+        """How long the chest screen may sit untouched before it goes dark.
+
+        0 is never. The chest Pi remembers it and its panel enforces it; we
+        keep no copy, and read it back in state() like the metrics flag.
+        """
+        return self._request("POST", "/api/sleep", {"after_s": int(after_s)})
+
     def push_voice(self, payload: dict) -> dict:
         """Send FRED's voice state (and, on a new clip, the whole envelope)."""
         return self._request("POST", "/api/voice", payload)

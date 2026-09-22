@@ -12,6 +12,9 @@ Switching is just "kill the child, spawn the next one", so it lands in ~100ms.
     POST /api/animation  -> {"animation": "reactor-copper"}; switch now
     POST /api/metrics    -> {"enabled": true}; overlay the live sensor readout
                             on top of whatever animation is running
+    POST /api/sleep      -> {"after_s": 600}; the screen sleeps (backlight off)
+                            after this long without a touch, 0 = never. The
+                            panel enforces it; this only remembers it
     POST /api/voice      -> FRED's live voice state + speech envelope, handed to
                             the animation through voice_state.py
     GET  /api/cart       -> drive base state: telemetry, PS2 priority, watchdog
@@ -57,6 +60,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import cart_driver                          # noqa: E402 — sibling module
+import backlight                            # noqa: E402 — sibling module
 import cog_hud                              # noqa: E402 — sibling module
 import gamepad as gamepad_mod               # noqa: E402 — sibling module
 import metrics_hud                          # noqa: E402 — sibling module
@@ -99,6 +103,28 @@ def write_state(**changes) -> None:
         tmp.replace(STATE_PATH)
     except OSError:
         pass                              # read-only fs: the live change still works
+
+# The screen's idle sleep: seconds without a touch before the panel cuts the
+# backlight, 0 for never. Remembered here in state.json like the theme and the
+# metrics flag, because it is a fact about this screen and belongs beside it —
+# but *enforced* by panel.py, which is the process that sees the touches. Ten
+# minutes by default: long enough that nobody watching him talk sees it go
+# dark (and speech keeps it awake anyway — see panel.py), short enough that a
+# robot parked in a bedroom overnight is not a lamp.
+SLEEP_DEFAULT_S = 600
+SLEEP_MAX_S = 24 * 3600
+
+
+def sleep_after_s(state: dict | None = None) -> int:
+    """The idle-sleep setting out of state.json, defaulted and clamped."""
+    if state is None:
+        state = read_state()
+    try:
+        n = int(state.get("sleep_after_s", SLEEP_DEFAULT_S))
+    except (TypeError, ValueError):
+        return SLEEP_DEFAULT_S
+    return max(0, min(SLEEP_MAX_S, n))
+
 
 # The dropdown the head shows is exactly this list, flattened so each entry is
 # one concrete look: variants (--copper, --talk) are presets, not extra widgets.
@@ -349,6 +375,9 @@ class Supervisor:
         except subprocess.TimeoutExpired:
             proc.kill()                     # a wedged animation still frees the fb
             proc.wait(timeout=2)
+        # A panel asleep when it died had the backlight off. Whatever comes
+        # next — another panel, "off", a latched error card — must be seen.
+        backlight.force_on()
 
     def preset_id(self) -> str:
         """Which preset is showing. Read by the cog watcher, which stands down
@@ -623,6 +652,7 @@ class Handler(BaseHTTPRequestHandler):
             # it is two cheap reads and saves the menu a second request.
             self._send(200, {**self.supervisor.state(),
                              "metrics": bool(self.metrics and self.metrics.enabled),
+                             "sleep_after_s": sleep_after_s(),
                              "hostname": _hostname(), "uptime_s": _uptime_s(),
                              "deployed": _deployed()})
         elif self.path.startswith("/api/cart"):
@@ -653,6 +683,7 @@ class Handler(BaseHTTPRequestHandler):
         if not (self.path.startswith("/api/animation")
                 or self.path.startswith("/api/voice")
                 or self.path.startswith("/api/metrics")
+                or self.path.startswith("/api/sleep")
                 or self.path.startswith("/api/pin")
                 or self.path.startswith("/api/cart")):
             self._send(404, {"error": "not found"})
@@ -669,6 +700,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self.path.startswith("/api/metrics"):
             self._send(200, self._metrics(data))
+            return
+        if self.path.startswith("/api/sleep"):
+            self._sleep(data)
             return
         if self.path.startswith("/api/pin"):
             # The brain telling us its PIN changed, so the settings menu's gate
@@ -709,6 +743,25 @@ class Handler(BaseHTTPRequestHandler):
         enabled = self.metrics.set_enabled(bool(data.get("enabled")))
         write_state(metrics=enabled)
         return {"ok": True, "metrics": enabled}
+
+    def _sleep(self, data: dict) -> None:
+        """Remember how long the screen may sit untouched before it sleeps.
+
+        Written to state.json and nothing else: the panel follows that file by
+        mtime and applies the new number on its next tick, the same way it
+        learns of an animation change. Both admins — the web one through the
+        brain, the touchscreen one through the panel — arrive here, so the
+        clamp and the "0 means never" live in exactly one place.
+        """
+        raw = data.get("after_s")
+        try:
+            n = int(raw)
+        except (TypeError, ValueError):
+            self._send(400, {"error": "after_s must be a whole number of seconds (0 = never)"})
+            return
+        n = max(0, min(SLEEP_MAX_S, n))
+        write_state(sleep_after_s=n)
+        self._send(200, {"ok": True, "sleep_after_s": n})
 
     def _cart(self, data: dict) -> dict:
         """Drive or stop the cart.

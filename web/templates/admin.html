@@ -477,10 +477,24 @@
         Overlay sensor metrics on the chest panel</label>
       <div class="grow"></div>
     </div>
+    <div class="row">
+      <div class="label"><b>Screen sleep</b><span>go dark when nobody touches it</span></div>
+      <select id="dispSleep" onchange="onSleep(this.value)">
+        <option value="0">Never</option>
+        <option value="60">After 1 minute</option>
+        <option value="300">After 5 minutes</option>
+        <option value="600">After 10 minutes</option>
+        <option value="1800">After 30 minutes</option>
+        <option value="3600">After 1 hour</option>
+      </select>
+      <div class="grow"></div>
+    </div>
     <p class="hint">The second Pi driving the 7" chest panel, running
        <code>inmoov-display</code>. The dropdown is read from that Pi, so it always lists what
        it can actually render; picking one switches it <b>immediately</b> (no Save needed) and
-       sticks across reboots. Address, port and token are saved with the button below.
+       sticks across reboots. Screen sleep cuts the backlight after that long without a touch;
+       a touch wakes it, speech keeps it awake, and the chest's own DISPLAY tab offers the
+       same choices. Address, port and token are saved with the button below.
        <b>LAN-only — plain HTTP; don't forward this port.</b></p>
   </section>
 
@@ -1111,6 +1125,7 @@ async function refreshDisplay() {
     // The chest Pi owns this flag (it survives reboots there), so reflect it
     // rather than keeping a second copy on this side.
     document.getElementById('dispMetrics').checked = !!s.metrics;
+    reflectSleep(s.sleep_after_s);
   } else {
     dot.className = 'dot off';
     st.textContent = 'offline';
@@ -1126,6 +1141,31 @@ async function onMetrics(on) {
     return;
   }
   toast('Sensor readout ' + (r.metrics ? 'on' : 'off'));
+}
+
+// The chest Pi owns this number too. An older chest that does not report it
+// is left showing the default it would assume (10 min); a value set to
+// something not in the list snaps to the nearest entry rather than to blank.
+function reflectSleep(secs) {
+  const sel = document.getElementById('dispSleep');
+  const n = (secs === undefined || secs === null) ? 600 : +secs;
+  let best = sel.options[0];
+  for (const o of sel.options)
+    if (Math.abs(+o.value - n) < Math.abs(+best.value - n)) best = o;
+  sel.value = best.value;
+}
+
+async function onSleep(v) {
+  const r = await api('/api/display/sleep', { after_s: +v });
+  if (r.error) { toast('⚠ ' + r.error, true); refreshDisplay(); return; }
+  toast(+r.sleep_after_s ? 'Chest screen sleeps after ' + describeSleep(+r.sleep_after_s)
+                         : 'Chest screen never sleeps');
+}
+
+function describeSleep(s) {
+  return s >= 3600 ? (s / 3600) + ' hour' + (s >= 7200 ? 's' : '')
+       : s >= 60 ? (s / 60) + ' minute' + (s >= 120 ? 's' : '')
+       : s + ' s';
 }
 
 async function onAnim(v) {

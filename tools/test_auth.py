@@ -52,7 +52,8 @@ GATED = [
     # on the access point could do with one request.
     "/api/poweroff",
     "/api/cart/drive", "/api/cart/controller", "/api/hotspot",
-    "/api/display", "/api/display/metrics", "/api/led", "/api/track",
+    "/api/display", "/api/display/metrics", "/api/display/sleep", "/api/led",
+    "/api/track",
     "/api/voice", "/api/command", "/api/log/clear", "/api/move", "/api/rest",
     "/api/relax", "/api/record", "/api/channel", "/api/identify", "/api/save",
     "/api/camera", "/api/sounds/terminator/upload", "/api/sounds/terminator/delete",

@@ -1265,6 +1265,30 @@ def api_display_metrics():
     return jsonify({"configured": True, "online": True, **state})
 
 
+@app.post("/api/display/sleep")
+@protected
+def api_display_sleep():
+    """How long the chest screen sits untouched before it sleeps.
+    Body: ``{"after_s": 600}``; 0 means never.
+
+    Like the metrics flag, the chest Pi owns the number — its panel is what
+    sees the touches — and mirrors it back in ``/api/state`` as
+    ``sleep_after_s``, so nothing is kept here. Gated: turning a robot's face
+    off at a show is a passer-by's prank, not a setting."""
+    data = request.get_json(force=True) or {}
+    try:
+        after = int(data.get("after_s"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "after_s must be a whole number of seconds (0 = never)"}), 400
+    if after < 0:
+        return jsonify({"error": "after_s must be 0 or more"}), 400
+    try:
+        state = _display.set_sleep(after)
+    except DisplayError as e:
+        return jsonify({"error": str(e)}), 502
+    return jsonify({"configured": True, "online": True, **state})
+
+
 @app.post("/api/led")
 @protected
 def api_led():

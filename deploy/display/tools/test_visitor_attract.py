@@ -25,6 +25,12 @@ wakes it, and the menu is never put to sleep.
 **The daemon's cycle is a ring**, and picking attract starts it from a real
 look at once rather than a minute later.
 
+**Idle sleep needs nothing but a clock** (added 2026-09-19). In any look, no
+touch for state.json's ``sleep_after_s`` puts the screen to sleep — backlight
+off — and a touch wakes it. 0 is never. Speech counts as a touch, the menu is
+never put to sleep, event mode is exempt, and the number is read back from the
+file the daemon writes, so the web admin and the touchscreen change one thing.
+
 Hardware-free, with the panel's poller, PIN material and shader compiler
 stubbed as the other panel tests do.
 
@@ -88,6 +94,25 @@ class FakeNet:
 
     def post_showing(self, anim):
         FakeNet.showing.append(anim)
+
+    sleeps: list = []
+
+    def post_sleep(self, seconds):
+        FakeNet.sleeps.append(seconds)
+
+
+class FakeFeed:
+    """The voice HUD's feed, with a state we set by hand."""
+    name = "idle"
+
+    def poll(self):
+        return {}
+
+    def state(self):
+        return FakeFeed.name
+
+    def level(self, now):
+        return 0.0
 
 
 class FakeMetrics:
@@ -187,6 +212,92 @@ def main() -> int:
     p._attract = False
     p.tick()
     check("not in attract: never asleep, whatever the sensor says", not p.asleep)
+
+    print("idle sleep needs nothing but a clock")
+    lit: list = []
+    panel.backlight.set_on = lambda on: lit.append(on) or True
+    p, _ = make()
+    p.set_feed(FakeFeed())
+    FakeMetrics.doc = {}
+    now = time.monotonic()
+    p._sleep_after = 0
+    p._last_touch = now - 100000
+    p._voice_at = now - 100000
+    p.tick()
+    check("0 = never: an untouched screen stays awake", not p.asleep)
+    p._sleep_after = 600
+    p._last_touch = now - 599
+    p.tick()
+    check("inside the idle time: awake", not p.asleep)
+    p._last_touch = now - 601
+    p.tick()
+    check("no touch for sleep_after_s, no sensor at all: asleep", p.asleep)
+    check("...and the backlight went off with it", lit and lit[-1] is False, str(lit[-3:]))
+    check("the cog and the visitor layer are gone from under the finger",
+          not p.about and p.asleep)
+    p._last_touch = time.monotonic()
+    p.tick()
+    check("a touch wakes it", not p.asleep)
+    check("...and the backlight comes back", lit[-1] is True)
+    p._last_touch = now - 601
+    FakeFeed.name = "speaking"
+    p.tick()
+    check("speech counts as activity: he does not go dark mid-answer", not p.asleep)
+    FakeFeed.name = "idle"
+    p._voice_at = now - 601
+    p.tick()
+    check("...and once the speech is old, it sleeps", p.asleep)
+    p._no_gate = True
+    p.scene = "menu"
+    p.tick()
+    check("the menu is never put to sleep", not p.asleep)
+    p.scene = "anim"
+    p._no_gate = False
+    FakeNet.snap = {**FakeNet.snap, "nuc": {"event": {"enabled": True}}}
+    p._refresh_views()
+    p.tick()
+    check("event mode is exempt: the chest is the queue's signal", not p.asleep)
+    FakeNet.snap = {**FakeNet.snap, "nuc": None}
+    p._refresh_views()
+    p.tick()
+    check("...and sleeps again outside it", p.asleep)
+    p.setSleepAfter(0)
+    check("the DISPLAY tab's button goes to the daemon", FakeNet.sleeps == [0], str(FakeNet.sleeps))
+    p.tick()
+    check("...and applies at once, before the file comes back", not p.asleep)
+    with tempfile.TemporaryDirectory() as td:
+        state = Path(td) / "state.json"
+        keep = theme.STATE_PATH
+        theme.STATE_PATH = state
+        try:
+            state.write_text(json.dumps({"animation": "reactor", "sleep_after_s": 60}))
+            p.follow_state()
+            check("the number is read back from state.json", p._sleep_after == 60, str(p._sleep_after))
+            state.write_text(json.dumps({"animation": "reactor"}))
+            time.sleep(0.02)
+            os.utime(state, None)
+            p.follow_state()
+            check("a file without it means the default, not never",
+                  p._sleep_after == panel.sleep_after_s({}) > 0, str(p._sleep_after))
+            state.write_text(json.dumps({"animation": "attract", "showing": "flux",
+                                         "sleep_after_s": 0}))
+            time.sleep(0.02)
+            os.utime(state, None)
+            p.follow_state()
+            check("...and it is read before attract's early return", p._sleep_after == 0)
+            check("a fresh panel reads it at start-up",
+                  panel.Panel._read_sleep_after() == 0)
+        finally:
+            theme.STATE_PATH = keep
+    check("the daemon defaults and clamps it",
+          dc.sleep_after_s({}) == dc.SLEEP_DEFAULT_S
+          and dc.sleep_after_s({"sleep_after_s": -5}) == 0
+          and dc.sleep_after_s({"sleep_after_s": "junk"}) == dc.SLEEP_DEFAULT_S
+          and dc.sleep_after_s({"sleep_after_s": 10 ** 9}) == dc.SLEEP_MAX_S)
+    check("the panel and the daemon agree on the default",
+          panel.sleep_after_s({}) == dc.SLEEP_DEFAULT_S)
+    check("/api/sleep is a route the daemon accepts a POST on",
+          '"/api/sleep"' in Path(dc.__file__).read_text())
 
     print("the panel follows the daemon's cycle")
     with tempfile.TemporaryDirectory() as td:

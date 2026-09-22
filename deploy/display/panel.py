@@ -36,9 +36,10 @@ sys.path.insert(0, _HERE)
 
 import numpy as np                                      # noqa: E402
 
+import backlight                                        # noqa: E402
 import cog_hud                                          # noqa: E402
 import metrics_hud                                      # noqa: E402
-from page_display import net_animations                 # noqa: E402
+from page_display import net_animations, sleep_after_s  # noqa: E402
 import theme                                            # noqa: E402
 import touch                                            # noqa: E402
 import voice_hud                                        # noqa: E402
@@ -88,6 +89,13 @@ ABOUT_IDLE_S = 45.0
 # dark because the sensor node is unplugged would read as a crash.
 SLEEP_AFTER_S = 300.0
 SENSOR_FRESH_S = 30.0
+# Idle sleep, in every mode: no touch for state.json's ``sleep_after_s`` and
+# the screen goes dark — backlight off, clock paused — until the next touch.
+# Unlike attract's sleep this needs no sensor; it is the thing a phone does.
+# Speech counts as activity: a chest that goes dark while he is mid-answer
+# reads as a crash, so the voice HUD's state keeps the screen up and wakes it.
+# Event mode is exempt for the same reason — the chest is the queue's
+# turn-taking signal there, and a dark one says "closed".
 # Presets the visitor's tap must not land on: blank, the menu, and attract
 # itself (a mode, not a look).
 NOT_LOOKS = frozenset(("off", "settings", "attract"))
@@ -327,8 +335,12 @@ class Panel(QObject):
         self._attract = False              # state.json says "attract": follow "showing"
         self._showing = None               # the ring's current look, from state.json
         self._about = False                # the visitor card is up
-        self._asleep = False               # attract mode, nobody about
+        self._asleep = False               # attract mode, nobody about — or idle
         self._motion_at = time.monotonic() # last time a motion sensor said active
+        self._voice_at = time.monotonic()  # last time the voice HUD was not idle
+        # Idle sleep, from state.json: how long without a touch before the
+        # screen goes dark, 0 for never. Followed by mtime like the animation.
+        self._sleep_after = self._read_sleep_after()
         self._metrics = metrics_hud.MetricsFeed()
         self._shader = ""
         self._copper = 0.0
@@ -371,6 +383,14 @@ class Panel(QObject):
         self._shader = QUrl.fromLocalFile(qsb_for(SHADERS[preset])).toString()
         self.sceneChanged.emit()
 
+    @staticmethod
+    def _read_sleep_after() -> int:
+        try:
+            state = json.loads(theme.STATE_PATH.read_text())
+        except Exception:                              # noqa: BLE001
+            state = {}
+        return sleep_after_s(state if isinstance(state, dict) else {})
+
     def follow_state(self) -> None:
         """Pick up an animation change written by the daemon.
 
@@ -390,6 +410,14 @@ class Panel(QObject):
             state = json.loads(theme.STATE_PATH.read_text())
         except Exception:                              # noqa: BLE001
             return
+        # The idle time rides in the same file, written by the daemon for
+        # whichever admin asked. Read before the animation logic below, which
+        # returns early in attract mode.
+        after = sleep_after_s(state if isinstance(state, dict) else {})
+        if after != self._sleep_after:
+            self._sleep_after = after
+            print(f"panel: sleep after {after}s" if after else "panel: never sleeps",
+                  flush=True)
         want = state.get("animation")
         # Attract is a mode, not a look: the daemon rotates "showing" through
         # the looks on its own clock and this follows that key instead —
@@ -448,9 +476,11 @@ class Panel(QObject):
         # The snapshot first: the ring's event-mode pin reads it, and should
         # read this tick's, not the last one's.
         self._refresh_views()
-        self._attract_tick(real)
         doc = self._feed.poll()
         name = self._feed.state()
+        if name != "idle":
+            self._voice_at = real           # speech keeps the screen awake
+        self._attract_tick(real)
         self._voice = {"idle": 0.0, "listening": 1.0,
                        "thinking": 2.0, "speaking": 3.0}.get(name, 0.0)
         self._level = float(self._feed.level(now) or 0.0)
@@ -480,12 +510,17 @@ class Panel(QObject):
 
     # ---- the visitor layer ------------------------------------------------------
     def _attract_tick(self, real: float) -> None:
-        """Sleep and wake, in attract mode, from the motion sensor and the touch.
+        """Sleep and wake: attract mode's, from the motion sensor, and the idle
+        sleep every mode has, from the touch clock alone.
 
         The metrics doc is the daemon's relay of the stomach node, published
         for the sensor overlay whether or not that overlay is showing; its
         ``t`` is on the same monotonic clock as ours. No fresh doc means no
         opinion: awake.
+
+        Either reason is enough to sleep; a touch ends both. The menu is never
+        put to sleep — somebody is using it — and neither is a screen the
+        brain is using as the event queue's signal.
         """
         asleep = False
         if self._attract and self._scene != "menu":
@@ -496,10 +531,18 @@ class Panel(QObject):
                 self._motion_at = real
             quiet = real - max(self._motion_at, self._last_touch)
             asleep = fresh and quiet > SLEEP_AFTER_S
+        if (self._sleep_after > 0 and self._scene != "menu"
+                and not self._no_gate and not self._event_on()):
+            idle = real - max(self._last_touch, self._voice_at)
+            asleep = asleep or idle > self._sleep_after
         if asleep != self._asleep:
             self._asleep = asleep
             print(f"panel: {'asleep' if asleep else 'awake'}", flush=True)
             self.visitorChanged.emit()
+        # Every tick, not only on the change: cheap (a cached compare), and it
+        # means a backlight somebody else switched — the daemon, a shell — is
+        # put back to what the sleep state says within a frame.
+        backlight.set_on(not self._asleep)
 
     def _event_on(self) -> bool:
         nuc = self._snap.get("nuc") or {}
@@ -771,6 +814,14 @@ class Panel(QObject):
     @Slot(str)
     def pickAnimation(self, anim):
         self._display_page.pick(anim, self._net)
+
+    @Slot(int)
+    def setSleepAfter(self, seconds):
+        """The DISPLAY tab's sleep row. Applied here at once so a screen set to
+        NEVER stops counting this frame, and sent to the daemon, which owns the
+        number; follow_state reads it back when the file lands."""
+        self._sleep_after = max(0, int(seconds))
+        self._display_page.pick_sleep(self._sleep_after, self._net)
 
     @Slot(str)
     def pickTheme(self, name):
@@ -1064,6 +1115,8 @@ def main() -> int:
     os.environ.setdefault("QT_LOGGING_RULES", "qt.qpa.*=false")
 
     app = QGuiApplication(sys.argv[:1])
+    # A panel that died asleep left the backlight off. This one is awake.
+    backlight.force_on()
     families = load_fonts()
     name = args.theme or theme.load_name()
     ramp = theme.ramp(name)

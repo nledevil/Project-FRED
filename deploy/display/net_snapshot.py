@@ -246,6 +246,12 @@ class Net:
         self._fire(f"{LOCAL}/api/animation", {"animation": "attract",
                                               "showing": str(animation)})
 
+    def post_sleep(self, seconds: int) -> None:
+        """How long the screen may sit untouched before it sleeps. Local: the
+        daemon keeps it in state.json and the panel reads it back from there,
+        so the touchscreen and the web admin end up changing the same number."""
+        self._fire(f"{LOCAL}/api/sleep", {"after_s": int(seconds)})
+
     def post_cart_controller(self, mode: str) -> None:
         """Set who may drive. Sent to our *own* daemon, not the brain: the chest
         owns the arbitration, so this still works with the brain switched off."""

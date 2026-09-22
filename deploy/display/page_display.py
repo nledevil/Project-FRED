@@ -29,6 +29,30 @@ PER_PAGE = COLS * ROWS
 # in a lifetime, and a tab for that would cost a tab on every other screen.
 THEME_Y0, THEME_Y1 = 376, 424
 STATUS_Y = 438
+# How long the screen may sit untouched before it sleeps. Six buttons rather
+# than a slider, for the reason everything else on this panel is buttons: a
+# thumb on a 7" screen hits a button and misses a knob, and nobody needs 7
+# minutes rather than 5. 0 is never. The daemon owns the number (state.json);
+# the panel enforces it; this only offers the choices and lights the one in
+# force.
+# The default (10 min) has to be one of them, or a fresh robot's row would
+# light a button that is not what it is doing.
+SLEEP_CHOICES = ((0, "NEVER"), (60, "1 MIN"), (300, "5 MIN"),
+                 (600, "10 MIN"), (1800, "30 MIN"), (3600, "1 HR"))
+SLEEP_DEFAULT_S = 600                      # matches display_control.SLEEP_DEFAULT_S
+
+
+def sleep_after_s(display: dict) -> int:
+    """The daemon's idle-sleep number out of its /api/state, defensively.
+
+    Missing (an older daemon) means the default, the same one the daemon
+    itself would assume — so the button that lights is the one that is true.
+    """
+    try:
+        n = int(display.get("sleep_after_s", SLEEP_DEFAULT_S))
+    except (TypeError, ValueError):
+        return SLEEP_DEFAULT_S
+    return max(0, n)
 
 
 def net_animations(snap: dict) -> list[dict]:
@@ -46,6 +70,7 @@ class DisplayPage:
 
     def __init__(self):
         self._pending: str | None = None
+        self._sleep_pending: int | None = None
         self._page = 0
         self._snap: dict = {}
 
@@ -74,6 +99,15 @@ class DisplayPage:
         else:
             status, ink = str(display.get("label") or "").upper(), "dim"
 
+        sleep_now = sleep_after_s(display)
+        if self._sleep_pending is not None and self._sleep_pending == sleep_now:
+            self._sleep_pending = None           # the daemon caught up
+        sleep_shown = sleep_now if self._sleep_pending is None else self._sleep_pending
+        # A value set from the web admin that is not one of the six still has
+        # to show as *something*: the nearest button lights, so the row never
+        # reads as "nothing chosen" for a screen that will in fact sleep.
+        nearest = min(SLEEP_CHOICES, key=lambda c: abs(c[0] - sleep_shown))[0]
+
         pages = max(1, -(-len(animations) // PER_PAGE))
         page = min(self._page, pages - 1)
         start = page * PER_PAGE
@@ -85,6 +119,9 @@ class DisplayPage:
                            for a in animations[start:start + PER_PAGE]],
             "themes": [{"name": n, "label": t.label, "on": n == active}
                        for n, t in theme_mod.THEMES.items()],
+            "sleep": [{"seconds": secs, "label": label, "on": secs == nearest}
+                      for secs, label in SLEEP_CHOICES],
+            "sleepAfter": sleep_shown,
             "status": status, "statusInk": ink,
             "page": page, "pages": pages,
             "empty": not animations,
@@ -94,6 +131,12 @@ class DisplayPage:
         """Ask the daemon for an animation, wherever the tap came from."""
         self._pending = anim
         net.post_animation(anim)
+
+    def pick_sleep(self, seconds: int, net) -> None:
+        """Ask the daemon to remember a new idle time. Optimistic like pick():
+        the button lights now and the poll confirms it a moment later."""
+        self._sleep_pending = int(seconds)
+        net.post_sleep(int(seconds))
 
     @staticmethod
     def pick_theme(name: str) -> None:
