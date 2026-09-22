@@ -299,6 +299,42 @@ def main() -> int:
     check("/api/sleep is a route the daemon accepts a POST on",
           '"/api/sleep"' in Path(dc.__file__).read_text())
 
+    print("a picture from the brain goes up, wakes the screen, and comes down")
+    p, _ = make()
+    p.set_feed(FakeFeed())
+    now = time.monotonic()
+    p._sleep_after = 600
+    p._last_touch = now - 601
+    p._voice_at = now - 601
+    p.tick()
+    check("asleep to start with", p.asleep)
+    entry = {"file": "/tmp/nope.jpg", "caption": "a dragon", "at": time.time(),
+             "hold_s": 30, "n": 7}
+    p._follow_picture(entry)
+    p.tick()
+    check("a new picture is showing, with its caption and a cache-busting URL",
+          p.picture.get("showing") and p.picture.get("caption") == "a dragon"
+          and p.picture.get("url", "").endswith("?n=7"), str(p.picture))
+    check("...and it woke the screen", not p.asleep)
+    shown_at = p.picture["shown_at"]
+    p._follow_picture(entry)
+    check("the same entry again is not a new picture",
+          p._picture_n == 7 and p.picture["shown_at"] == shown_at)
+    p.closePicture()
+    check("a tap takes it down", not p.picture)
+    p._follow_picture({**entry, "n": 8})
+    p._picture["shown_at"] = time.monotonic() - 31
+    p.tick()
+    check("the hold runs out and it comes down by itself", not p.picture)
+    p._follow_picture({**entry, "n": 9, "at": time.time() - 100})
+    check("a picture older than its hold (before a restart) is never shown", not p.picture)
+    p._follow_picture({**entry, "n": 10, "hold_s": 0})
+    p._picture["shown_at"] = time.monotonic() - 100000
+    p.tick()
+    check("hold 0 means until tapped", p.picture.get("showing"))
+    p._follow_picture(None)
+    check("the daemon clearing it takes it down", not p.picture)
+
     print("the panel follows the daemon's cycle")
     with tempfile.TemporaryDirectory() as td:
         state = Path(td) / "state.json"

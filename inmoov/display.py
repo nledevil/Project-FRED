@@ -97,6 +97,22 @@ class DisplayClient:
         """
         return self._request("POST", "/api/sleep", {"after_s": int(after_s)})
 
+    def show_picture(self, jpeg: bytes, caption: str = "", hold_s: int = 180) -> dict:
+        """Put a picture on the chest screen, over whatever animation is playing.
+
+        Sent as base64 in the JSON body — the chest daemon writes it beside its
+        state file and the panel shows it until a tap or ``hold_s`` seconds
+        (0 = until tapped). A picture wakes a sleeping screen.
+        """
+        import base64                                          # noqa: PLC0415
+        return self._request("POST", "/api/picture",
+                             {"jpeg_b64": base64.b64encode(jpeg).decode("ascii"),
+                              "caption": str(caption or "")[:120],
+                              "hold_s": int(hold_s)})
+
+    def clear_picture(self) -> dict:
+        return self._request("POST", "/api/picture", {"clear": True})
+
     def push_voice(self, payload: dict) -> dict:
         """Send FRED's voice state (and, on a new clip, the whole envelope)."""
         return self._request("POST", "/api/voice", payload)

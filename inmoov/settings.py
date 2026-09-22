@@ -275,6 +275,26 @@ DEFAULT_SETTINGS = {
                                       # Haiku answers in ~0.7s vs Opus's ~1.7s; for one- or
                                       # two-sentence spoken replies that trade is worth it.
     },
+    "images": {
+        # FRED paints: "draw me a dragon" becomes a picture on the chest screen.
+        # See inmoov/images.py. Which painter:
+        #   "auto"   — the local one when tools/install_sdcpp.sh has been run,
+        #              else the OpenAI Images API when a key is set, else none.
+        #   "local"  — stable-diffusion.cpp on the NUC's cores; no internet.
+        #   "openai" — the cloud painter only (needs the key and an uplink).
+        #   "off"    — he says he can't.
+        "backend": "auto",
+        "sd_bin": "~/fred/sdcpp/stable-diffusion.cpp/build/bin/sd-cli",
+        "sd_model": "~/fred/sdcpp/models/sd_turbo-f16-q8_0.gguf",
+        "sd_taesd": "~/fred/sdcpp/models/taesd.safetensors",   # tiny decoder: 10 s -> 1 s
+        "steps": 2,                   # sd-turbo: 1-4; more is slower, not better
+        "size": 512,                  # square, pixels; the chest shows it at 480
+        "openai_api_key": "",         # or the OPENAI_API_KEY environment variable
+        "openai_model": "gpt-image-1",
+        "hold_s": 180,                # how long the chest shows a picture (0 = until tapped)
+        "wait_s": 8.0,                # how long the spoken reply waits for a fast
+                                      # painter before saying "it's on the way"
+    },
     "greet": {
         "enabled": True,              # say hello when someone walks up (approach event)
         "cooldown": 90.0,             # seconds before the same arrival can greet again;

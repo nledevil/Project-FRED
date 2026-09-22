@@ -148,6 +148,17 @@ Item {
         sourceComponent: AboutCard {}
     }
 
+    // A picture the brain sent (FRED painting on request). Above the cog and
+    // the visitor layer, below sleep, the card and the menu: a tap clears it,
+    // and its arrival wakes the screen — see Panel.follow_state.
+    Loader {
+        anchors.fill: parent
+        z: 6
+        active: P.picture.showing || false
+        visible: active
+        sourceComponent: PictureCard {}
+    }
+
     // Asleep (attract mode, nobody about): black, clock paused, and the first
     // touch or the motion sensor brings it back — see Panel._attract_tick.
     Rectangle { anchors.fill: parent; color: "black"; z: 7; visible: P.asleep }

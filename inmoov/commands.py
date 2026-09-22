@@ -19,6 +19,7 @@ from __future__ import annotations
 import io
 import random
 import re
+from pathlib import Path
 
 from . import diagnostic, jokes, sysinfo, whoami
 
@@ -352,6 +353,57 @@ def _set_chest_display(ctx, animation: str) -> str:
     label = next((str(a.get("label") or want) for a in available
                   if a.get("id") == want), want)
     return f"Chest screen is showing {label} now."
+
+
+def _show_picture(ctx, path, prompt: str) -> None:
+    """Send a finished picture to the chest. Runs on the painter's thread."""
+    display = getattr(ctx, "display", None)
+    images = getattr(ctx, "images", None)
+    if display is None or not display.configured():
+        return
+    from . import images as images_mod                       # noqa: PLC0415
+    jpeg = images_mod.for_chest(Path(path).read_bytes())
+    display.show_picture(jpeg, caption=prompt,
+                         hold_s=images.hold_s() if images else 180)
+
+
+def _make_picture(ctx, prompt: str) -> str:
+    """Paint what was asked for and put it on the chest screen.
+
+    The painter runs on its own thread. A fast one (sd-turbo on the NUC is a
+    few seconds) finishes inside ``wait_s`` and the answer is "here it is"; a
+    slow one gets "it's on the way", and the picture appears — announced, if
+    a voice is wired in — when it lands. Either way the reply is not held
+    hostage by the brush.
+    """
+    images = getattr(ctx, "images", None)
+    if images is None or not images.available():
+        why = images.why_not() if images is not None else "I don't have a painter set up"
+        return f"I can't make pictures right now: {why}."
+    prompt = " ".join(str(prompt or "").split())
+    if not prompt:
+        return "Tell me what to paint."
+    display = getattr(ctx, "display", None)
+    if display is None or not display.configured():
+        return "I can paint, but I don't have a chest screen to show it on."
+    from .images import ImageError                            # noqa: PLC0415
+    try:
+        images.request(prompt, on_done=lambda path, text: _show_picture(ctx, path, text))
+    except ImageError as exc:
+        return f"I can't paint that right now: {exc}."
+    if images.wait(images.wait_s()):
+        last = images.status().get("last") or {}
+        if last.get("error"):
+            return f"I tried to paint that, but it didn't work: {last['error']}."
+        return f"Here it is, on my chest: {prompt}."
+    # Too slow to wait for. Say so, and have him say when it lands — registered
+    # only now, so a painter that finished during the wait is never announced
+    # twice (on_finish runs at once if the job is already over).
+    images.on_finish(lambda ok: images.announce(
+        "Your picture is ready. It's on my chest." if ok
+        else "Sorry, that picture didn't come out."))
+    return ("I'm painting it now. Give me a little while and it'll be on my "
+            "chest screen.")
 
 
 def _play_sound(ctx, name: str) -> str:
@@ -745,6 +797,8 @@ def execute_action(ctx, name: str, **args) -> str:
         return _health_report(ctx)
     if name == "set_chest_display":
         return _set_chest_display(ctx, str(args.get("animation", "")))
+    if name == "make_picture":
+        return _make_picture(ctx, str(args.get("prompt", "")))
     if name == "play_sound":
         return _play_sound(ctx, str(args.get("sound", "")))
     if name == "set_volume":
@@ -1230,6 +1284,21 @@ CLAUDE_TOOLS = [
                        "description": "The animation id, e.g. reactor, flux, "
                                       "face, voice-hud, off."}},
          "required": ["animation"]}},
+    {"name": "make_picture", "description":
+        "Paint a picture from a description and show it on the screen in "
+        "FRED's chest. Use it whenever someone asks him to draw, paint, make, "
+        "generate or show a picture of something — 'draw me a dragon', 'paint "
+        "a sunset over Chicago', 'show me what a robot cat looks like'. Pass a "
+        "short, vivid description of the picture itself, in English, adding "
+        "style words if the person gave any. It takes a few seconds; the "
+        "result tells you whether it is already up or still on the way, so "
+        "answer from that rather than promising. Not for showing his built-in "
+        "animations — that is set_chest_display.",
+     "input_schema": {"type": "object", "properties": {
+         "prompt": {"type": "string",
+                    "description": "What the picture should show, e.g. 'a green "
+                                   "dragon reading a book in a library, watercolour'."}},
+         "required": ["prompt"]}},
     {"name": "play_sound", "description":
         "Play one of the sound clips on the robot. Punctuation for an answer — "
         "not speech, which you do by replying normally. Name a clip; if it is "
@@ -1334,6 +1403,8 @@ def run_tool(ctx, tool_name: str, tool_input: dict) -> str:
     if tool_name == "set_chest_display":
         return execute_action(ctx, "set_chest_display",
                               animation=ti.get("animation", ""))
+    if tool_name == "make_picture":
+        return execute_action(ctx, "make_picture", prompt=ti.get("prompt", ""))
     if tool_name == "play_sound":
         # Not `name=`: execute_action's own first parameter is called name, and
         # passing the clip under that key raised "multiple values for argument

@@ -433,6 +433,20 @@ Presets: arc reactor (cyan/copper), flux capacitor, animated face, voice HUD.
 It also carries the **sensor relay** and can overlay a live sensor readout on
 top of whichever animation is playing — toggled from the admin page.
 
+**He paints.** "Fred, draw me a dragon" calls the `make_picture` tool
+(`inmoov/images.py`): the picture is generated on the NUC — locally with
+stable-diffusion.cpp and sd-turbo after a one-time `tools/install_sdcpp.sh`
+(a few seconds a picture, no internet), or through the OpenAI Images API if a
+key is set in the admin page — then sent to the chest as a JPEG
+(`POST /api/picture`) and shown over the animation until a tap or a hold
+time. A picture wakes a sleeping screen. The admin page's Chest display
+section has a "Paint a picture" box for trying it without a microphone, and
+shows the last one. Pictures are kept under `logs/pictures/`.
+
+The screen also **sleeps**: no touch for an adjustable time (default ten
+minutes, set from the chest's DISPLAY tab or the admin page) cuts the
+backlight; a touch, a picture, or FRED speaking brings it back.
+
 ### Sensor node
 
 The Pico does all the timing-critical work: echo measurement, median filtering,

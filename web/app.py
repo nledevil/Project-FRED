@@ -41,6 +41,7 @@ from inmoov.brain import BACKENDS  # noqa: E402
 from inmoov import hotspot as hotspot_mod  # noqa: E402
 from inmoov import transcriber as transcriber_mod  # noqa: E402
 from inmoov import weather as weather_mod  # noqa: E402
+from inmoov.images import ImageMaker, BACKENDS as IMAGE_BACKENDS  # noqa: E402
 from inmoov import uplink as uplink_mod    # noqa: E402
 from inmoov import heardlog                # noqa: E402
 from inmoov import wakestats               # noqa: E402
@@ -331,6 +332,11 @@ _assistant.ctx.event = _event
 # Same object the admin dropdown drives, so the two never disagree about what
 # is showing.
 _assistant.ctx.display = _display
+# FRED paints. The painter announces a slow picture through the assistant's
+# own voice, so "it's ready" comes out of the same speaker as everything else.
+_images = ImageMaker(_settings.get("images", {}), log=_log.event,
+                     announce=_assistant.speak)
+_assistant.ctx.images = _images
 # The cart asks event mode for its ceiling on every command rather than being
 # told when it changes — one source of truth, and no way for the two to drift.
 _cart.speed_ceiling = lambda: _event.cart_speed
@@ -711,6 +717,26 @@ def api_set_settings():
         # Apply live so a Save is enough to reach a newly-configured chest Pi.
         _display.configure(host=cur.get("host"), port=cur.get("port"),
                            token=cur.get("token"))
+
+    imgs = data.get("images")
+    if isinstance(imgs, dict):
+        cur = _settings.setdefault("images", {})
+        if "backend" in imgs:
+            backend = str(imgs["backend"]).strip().lower()
+            if backend not in IMAGE_BACKENDS:
+                return jsonify({"error": "images.backend must be one of "
+                                         + ", ".join(IMAGE_BACKENDS)}), 400
+            cur["backend"] = backend
+        if "openai_api_key" in imgs:
+            cur["openai_api_key"] = str(imgs["openai_api_key"]).strip()
+        for key, lo, hi in (("hold_s", 0, 3600), ("steps", 1, 8), ("size", 256, 1024)):
+            if key in imgs:
+                try:
+                    val = int(imgs[key])
+                except (TypeError, ValueError):
+                    return jsonify({"error": f"images.{key} must be a whole number"}), 400
+                cur[key] = max(lo, min(hi, val))
+        _images.configure(cur)                 # live: the next picture uses it
 
     greet = data.get("greet")
     if isinstance(greet, dict):
@@ -1287,6 +1313,60 @@ def api_display_sleep():
     except DisplayError as e:
         return jsonify({"error": str(e)}), 502
     return jsonify({"configured": True, "online": True, **state})
+
+
+@app.get("/api/picture")
+@protected
+def api_picture_status():
+    """What the painter is, whether it is busy, and the last picture's story.
+
+    Gated with the rest of the admin: the last prompt is something a visitor
+    said to him, which is the same class of thing as the transcript."""
+    return jsonify({**_images.status(), "latest": _images.latest_meta(),
+                    "chest": _display.configured()})
+
+
+@app.post("/api/picture")
+@protected
+def api_picture_make():
+    """Paint ``{"prompt": "..."}`` and show it on the chest — the admin page's
+    way of asking, so the feature can be tried without a microphone. Answers
+    at once; poll GET /api/picture for the result."""
+    data = request.get_json(force=True) or {}
+    prompt = " ".join(str(data.get("prompt") or "").split())
+    if not prompt:
+        return jsonify({"error": "prompt must not be empty"}), 400
+    from inmoov.images import ImageError                       # noqa: PLC0415
+    from inmoov import commands as commands_mod                 # noqa: PLC0415
+    try:
+        _images.request(prompt, on_done=lambda path, text:
+                        commands_mod._show_picture(_assistant.ctx, path, text))
+    except ImageError as e:
+        return jsonify({"error": str(e), **_images.status()}), 409
+    return jsonify({"ok": True, **_images.status()})
+
+
+@app.get("/api/picture/latest.png")
+@protected
+def api_picture_latest():
+    """The last picture he painted, for the admin page's thumbnail."""
+    path = _images.latest_path()
+    if path is None:
+        return jsonify({"error": "no picture yet"}), 404
+    resp = Response(path.read_bytes(), mimetype="image/png")
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
+@app.post("/api/picture/clear")
+@protected
+def api_picture_clear():
+    """Take the picture off the chest screen now."""
+    try:
+        _display.clear_picture()
+    except DisplayError as e:
+        return jsonify({"error": str(e)}), 502
+    return jsonify({"ok": True})
 
 
 @app.post("/api/led")

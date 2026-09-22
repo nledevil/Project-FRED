@@ -335,6 +335,12 @@ class Panel(QObject):
         self._attract = False              # state.json says "attract": follow "showing"
         self._showing = None               # the ring's current look, from state.json
         self._about = False                # the visitor card is up
+        # A picture the brain sent, from state.json: shown until a tap or its
+        # hold runs out. ``n`` is the daemon's counter, so a picture that was
+        # already on screen when this process started is not shown twice —
+        # and one older than its hold is not shown at all.
+        self._picture: dict = {}
+        self._picture_n = None
         self._asleep = False               # attract mode, nobody about — or idle
         self._motion_at = time.monotonic() # last time a motion sensor said active
         self._voice_at = time.monotonic()  # last time the voice HUD was not idle
@@ -418,6 +424,7 @@ class Panel(QObject):
             self._sleep_after = after
             print(f"panel: sleep after {after}s" if after else "panel: never sleeps",
                   flush=True)
+        self._follow_picture(state.get("picture") if isinstance(state, dict) else None)
         want = state.get("animation")
         # Attract is a mode, not a look: the daemon rotates "showing" through
         # the looks on its own clock and this follows that key instead —
@@ -433,6 +440,43 @@ class Panel(QObject):
         if want != self._anim and want in SHADERS:
             print(f"panel: -> {want}", flush=True)
             self.apply(want)
+
+    def _follow_picture(self, entry) -> None:
+        """A new picture in state.json goes up; its removal takes it down."""
+        if not isinstance(entry, dict) or not entry.get("file"):
+            if self._picture:
+                self._picture = {}
+                self.visitorChanged.emit()
+            return
+        n = entry.get("n")
+        if n == self._picture_n:
+            return
+        self._picture_n = n
+        hold = int(entry.get("hold_s") or 0)
+        age = time.time() - float(entry.get("at") or 0.0)
+        if hold and age > hold:
+            return                              # stale: before a restart, say
+        self._picture = {"url": QUrl.fromLocalFile(str(entry["file"])).toString()
+                                + f"?n={n}",
+                         "caption": str(entry.get("caption") or ""),
+                         "hold_s": hold, "shown_at": time.monotonic(),
+                         "showing": True}
+        # A picture is a reason to look: it wakes a sleeping screen and
+        # restarts the idle clock, the same as a touch would.
+        self._last_touch = time.monotonic()
+        print(f"panel: picture up ({self._picture['caption'][:40]!r})", flush=True)
+        self.visitorChanged.emit()
+
+    @Slot()
+    def closePicture(self):
+        if self._picture:
+            self._picture = {}
+            print("panel: picture down", flush=True)
+            self.visitorChanged.emit()
+
+    @Property("QVariantMap", notify=visitorChanged)
+    def picture(self):
+        return dict(self._picture)
 
     def _apply_ring(self) -> None:
         """Show what attract mode should be showing right now.
@@ -473,6 +517,9 @@ class Panel(QObject):
             self.closeMenu()
         if self._about and real - self._last_touch > ABOUT_IDLE_S:
             self.closeAbout()
+        hold = self._picture.get("hold_s") if self._picture else 0
+        if hold and real - self._picture["shown_at"] > hold:
+            self.closePicture()
         # The snapshot first: the ring's event-mode pin reads it, and should
         # read this tick's, not the last one's.
         self._refresh_views()

@@ -54,6 +54,9 @@ GATED = [
     "/api/cart/drive", "/api/cart/controller", "/api/hotspot",
     "/api/display", "/api/display/metrics", "/api/display/sleep", "/api/led",
     "/api/track",
+    # FRED painting on request. The prompt is something a visitor said to him
+    # (the transcript's class), and asking costs cores or money.
+    "/api/picture", "/api/picture/latest.png", "/api/picture/clear",
     "/api/voice", "/api/command", "/api/log/clear", "/api/move", "/api/rest",
     "/api/relax", "/api/record", "/api/channel", "/api/identify", "/api/save",
     "/api/camera", "/api/sounds/terminator/upload", "/api/sounds/terminator/delete",

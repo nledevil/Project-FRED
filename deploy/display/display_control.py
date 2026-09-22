@@ -15,6 +15,10 @@ Switching is just "kill the child, spawn the next one", so it lands in ~100ms.
     POST /api/sleep      -> {"after_s": 600}; the screen sleeps (backlight off)
                             after this long without a touch, 0 = never. The
                             panel enforces it; this only remembers it
+    POST /api/picture    -> {"jpeg_b64": ..., "caption": "...", "hold_s": 180};
+                            show a picture over the animation until a tap or
+                            hold_s seconds (0 = until tapped). {"clear": true}
+                            takes it down. The brain sends what FRED painted
     POST /api/voice      -> FRED's live voice state + speech envelope, handed to
                             the animation through voice_state.py
     GET  /api/cart       -> drive base state: telemetry, PS2 priority, watchdog
@@ -48,6 +52,8 @@ justify adding one. Runs as root because /dev/fb0 needs it.
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import json
 import os
 import socket
@@ -124,6 +130,34 @@ def sleep_after_s(state: dict | None = None) -> int:
     except (TypeError, ValueError):
         return SLEEP_DEFAULT_S
     return max(0, min(SLEEP_MAX_S, n))
+
+
+# A picture the brain sent (FRED painting on request — see inmoov/images.py).
+# The bytes live in a file beside state.json and state.json carries the
+# caption, the moment, the hold and a counter, which is how the panel notices
+# a new one — same channel as the animation pick, no new socket.
+PICTURE_DIR = HERE / "pictures"
+PICTURE_FILE = PICTURE_DIR / "latest.jpg"
+PICTURE_MAX_BYTES = 4 * 1024 * 1024
+_picture_n = [0]
+
+
+def set_picture(jpeg: bytes, caption: str, hold_s: int) -> dict:
+    """Write the picture and tell the panel about it through state.json."""
+    PICTURE_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = PICTURE_FILE.with_suffix(".tmp")
+    tmp.write_bytes(jpeg)
+    tmp.replace(PICTURE_FILE)
+    _picture_n[0] += 1
+    entry = {"file": str(PICTURE_FILE), "caption": str(caption or "")[:120],
+             "at": time.time(), "hold_s": max(0, int(hold_s)),
+             "n": int(time.time() * 1000) + _picture_n[0]}
+    write_state(picture=entry)
+    return entry
+
+
+def clear_picture() -> None:
+    write_state(picture=None)
 
 
 # The dropdown the head shows is exactly this list, flattened so each entry is
@@ -653,6 +687,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, {**self.supervisor.state(),
                              "metrics": bool(self.metrics and self.metrics.enabled),
                              "sleep_after_s": sleep_after_s(),
+                             "picture": read_state().get("picture"),
                              "hostname": _hostname(), "uptime_s": _uptime_s(),
                              "deployed": _deployed()})
         elif self.path.startswith("/api/cart"):
@@ -684,6 +719,7 @@ class Handler(BaseHTTPRequestHandler):
                 or self.path.startswith("/api/voice")
                 or self.path.startswith("/api/metrics")
                 or self.path.startswith("/api/sleep")
+                or self.path.startswith("/api/picture")
                 or self.path.startswith("/api/pin")
                 or self.path.startswith("/api/cart")):
             self._send(404, {"error": "not found"})
@@ -703,6 +739,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self.path.startswith("/api/sleep"):
             self._sleep(data)
+            return
+        if self.path.startswith("/api/picture"):
+            self._picture(data)
             return
         if self.path.startswith("/api/pin"):
             # The brain telling us its PIN changed, so the settings menu's gate
@@ -762,6 +801,34 @@ class Handler(BaseHTTPRequestHandler):
         n = max(0, min(SLEEP_MAX_S, n))
         write_state(sleep_after_s=n)
         self._send(200, {"ok": True, "sleep_after_s": n})
+
+    def _picture(self, data: dict) -> None:
+        """A picture from the brain, or the word to take it down."""
+        if data.get("clear"):
+            clear_picture()
+            self._send(200, {"ok": True, "picture": None})
+            return
+        try:
+            jpeg = base64.b64decode(str(data.get("jpeg_b64") or ""), validate=True)
+        except (ValueError, binascii.Error):
+            self._send(400, {"error": "jpeg_b64 must be base64"})
+            return
+        if not jpeg or len(jpeg) > PICTURE_MAX_BYTES:
+            self._send(400, {"error": "picture missing or too large"})
+            return
+        if not (jpeg[:3] == b"\xff\xd8\xff" or jpeg[:8] == b"\x89PNG\r\n\x1a\n"):
+            self._send(400, {"error": "picture must be a JPEG or PNG"})
+            return
+        try:
+            hold = int(data.get("hold_s", 180))
+        except (TypeError, ValueError):
+            hold = 180
+        try:
+            entry = set_picture(jpeg, str(data.get("caption") or ""), hold)
+        except OSError as exc:
+            self._send(500, {"error": f"could not keep the picture: {exc}"})
+            return
+        self._send(200, {"ok": True, "picture": entry})
 
     def _cart(self, data: dict) -> dict:
         """Drive or stop the cart.

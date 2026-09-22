@@ -55,6 +55,7 @@ deploy/display/page_wireless.py
 deploy/display/panel.py
 deploy/display/panel.qml
 deploy/display/AboutCard.qml
+deploy/display/PictureCard.qml
 deploy/display/MenuScene.qml
 deploy/display/Btn.qml
 deploy/display/StatusPage.qml
@@ -126,6 +127,8 @@ keep: state.json
 # changes. Never deployed: it is per-robot state, not source.
 keep: pin.json
 keep: child-stderr.log
+# The last picture the brain sent for the screen (FRED painting on request).
+keep: pictures
 keep: __pycache__
 # The push-role stamp: git rev + date of the last sync, reported by /api/state.
 keep: DEPLOYED

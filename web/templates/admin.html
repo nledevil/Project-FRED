@@ -489,12 +489,46 @@
       </select>
       <div class="grow"></div>
     </div>
+    <div class="row">
+      <div class="label"><b>Paint a picture</b><span>what he does for “draw me a…”</span></div>
+      <input type="text" id="picPrompt" class="wide" spellcheck="false"
+             placeholder="a green dragon reading a book, watercolour"
+             onkeydown="if (event.key === 'Enter') makePicture()">
+      <button onclick="makePicture()">🎨 Paint it</button>
+      <button onclick="clearPicture()">Clear</button>
+      <div class="grow"></div>
+    </div>
+    <div class="row">
+      <div class="label"><b>Last picture</b><span id="picStat">&hellip;</span></div>
+      <img id="picThumb" alt="" style="max-height:160px; max-width:240px; border-radius:8px; display:none">
+      <div class="grow"></div>
+    </div>
+    <div class="row">
+      <div class="label"><b>Painter</b><span>where pictures come from</span></div>
+      <select id="picBackend">
+        <option value="auto">Auto — local if installed, else OpenAI</option>
+        <option value="local">Local (stable-diffusion.cpp on the NUC)</option>
+        <option value="openai">OpenAI Images API</option>
+        <option value="off">Off</option>
+      </select>
+      <input type="password" id="picKey" class="wide" spellcheck="false" placeholder="OpenAI API key (optional)">
+      <div class="grow"></div>
+    </div>
+    <div class="row">
+      <div class="label"><b>Show for</b><span>seconds before the chest clears it (0 = until tapped)</span></div>
+      <input type="text" id="picHold" class="narrow" spellcheck="false" placeholder="180">
+      <div class="grow"></div>
+    </div>
     <p class="hint">The second Pi driving the 7" chest panel, running
        <code>inmoov-display</code>. The dropdown is read from that Pi, so it always lists what
        it can actually render; picking one switches it <b>immediately</b> (no Save needed) and
        sticks across reboots. Screen sleep cuts the backlight after that long without a touch;
        a touch wakes it, speech keeps it awake, and the chest's own DISPLAY tab offers the
-       same choices. Address, port and token are saved with the button below.
+       same choices. <b>Paint a picture</b> is what “Fred, draw me a…” does: the local painter
+       (run <code>tools/install_sdcpp.sh</code> once) takes a few seconds and needs no internet;
+       the OpenAI one paints better, slower, and needs a key. A picture wakes the chest and a tap
+       clears it. Painter, key and hold time are saved with the button below, as are address,
+       port and token.
        <b>LAN-only — plain HTTP; don't forward this port.</b></p>
   </section>
 
@@ -801,6 +835,10 @@ function fill(s) {
   document.getElementById('voiceEnabled').checked = !!voice.enabled;
   document.getElementById('micGain').value = voice.gain ?? 1.0;
   onGain(voice.gain ?? 1.0);
+  const imgs = s.images || {};
+  document.getElementById('picBackend').value = imgs.backend || 'auto';
+  document.getElementById('picKey').value = imgs.openai_api_key || '';
+  document.getElementById('picHold').value = imgs.hold_s ?? 180;
   const greet = s.greet || DEFAULTS.greet || {};
   document.getElementById('greetEnabled').checked = greet.enabled !== false;
   document.getElementById('greetCooldown').value = greet.cooldown ?? 90;
@@ -877,6 +915,9 @@ async function save() {
              cooldown: +document.getElementById('greetCooldown').value || 0 },
     sound: { lead_in: +document.getElementById('leadIn').value,
              sync_offset: +document.getElementById('syncOffset').value },
+    images: { backend: document.getElementById('picBackend').value,
+              openai_api_key: document.getElementById('picKey').value.trim(),
+              hold_s: +document.getElementById('picHold').value || 0 },
     display: { host: document.getElementById('dispHost').value.trim(),
                port: +document.getElementById('dispPort').value || 8081,
                token: document.getElementById('dispToken').value },
@@ -1168,12 +1209,53 @@ function describeSleep(s) {
        : s + ' s';
 }
 
+// ---- FRED paints ----------------------------------------------------------
+// The painter runs on the brain; this asks, then polls until it is done so the
+// thumbnail and the status line tell the truth about a slow one.
+let PIC_POLL = null;
+function describePainter(p) {
+  if (!p.backend) return p.wanted === 'off' ? 'off'
+    : 'no painter — install the local one or set an OpenAI key';
+  return p.backend === 'local' ? 'local painter' : 'OpenAI';
+}
+async function refreshPicture() {
+  const p = await api('/api/picture');
+  if (p.error && !p.last) return;
+  const st = document.getElementById('picStat'), img = document.getElementById('picThumb');
+  const last = p.last || {};
+  let line = describePainter(p);
+  if (p.busy) line += ' · painting “' + (last.prompt || '') + '”…';
+  else if (last.error) line += ' · failed: ' + last.error;
+  else if (last.prompt) line += ' · “' + last.prompt + '” in ' + last.seconds + ' s';
+  else if (p.latest && p.latest.prompt) line += ' · “' + p.latest.prompt + '”';
+  st.textContent = line;
+  if (p.latest && p.latest.file) {
+    img.src = '/api/picture/latest.png?t=' + encodeURIComponent(p.latest.at || Date.now());
+    img.style.display = '';
+  }
+  if (p.busy && !PIC_POLL) PIC_POLL = setTimeout(() => { PIC_POLL = null; refreshPicture(); }, 1500);
+}
+async function makePicture() {
+  const prompt = document.getElementById('picPrompt').value.trim();
+  if (!prompt) { toast('Say what to paint', true); return; }
+  const r = await api('/api/picture', { prompt });
+  if (r.error) { toast('⚠ ' + r.error, true); return; }
+  toast('Painting…');
+  refreshPicture();
+}
+async function clearPicture() {
+  const r = await api('/api/picture/clear', {});
+  if (r.error) { toast('⚠ ' + r.error, true); return; }
+  toast('Chest picture cleared');
+}
+
 async function onAnim(v) {
   if (!v) return;
   const r = await api('/api/display', { animation: v });
   if (r.error) { toast('⚠ ' + r.error, true); return; }
   toast('Chest display → ' + r.label);
   refreshDisplay();
+refreshPicture();
 }
 
 // ---- brain backend (cloud / local LLM) ---------------------------------
