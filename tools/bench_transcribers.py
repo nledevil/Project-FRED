@@ -25,6 +25,23 @@ latency a person waits after they stop talking) and the real-time factor.
 Whisper runs through faster-whisper (CTranslate2, int8, CPU); the GPU is
 Ollama's and the brain's.
 
+Two more engines since 2026-09-22, asked about by name:
+
+  moonshine:tiny|base[@float|quantized]
+                        Moonshine (useful-moonshine-onnx), a small encoder-
+                        decoder built for speech commands on CPUs, run through
+                        onnxruntime on the same threads. The claim is Whisper-
+                        base accuracy at a fraction of the compute. float is
+                        the reference weights; quantized is the int8 pair,
+                        a quarter the download.
+  ov:<dir>[@DEVICE]     Whisper through OpenVINO GenAI (openvino-genai), from
+                        a pre-converted model directory (e.g. one of the
+                        OpenVINO/whisper-*.en-int8-ov repos) on CPU, GPU (the
+                        Arc iGPU, needs intel-opencl-icd) or NPU (needs
+                        Intel's NPU user-space driver). This is the "Intel-
+                        accelerated Whisper" question: same model, does the
+                        silicon buy back the 0.74 s?
+
 The earcon plays at 1.5 s after the turn is handed to a model, and the
 transcription happens *before* that hand-off, so a candidate's per-utterance
 time is added straight to what a child waits. Under a second is the bar.
@@ -36,6 +53,8 @@ person waits. Whisper's number is both, because it runs after the sentence.
 
     venv/bin/python tools/bench_transcribers.py --libri DIR   # DIR holds LibriSpeech/test-other
     venv/bin/python tools/bench_transcribers.py --libri DIR --engines vosk:lgraph,whisper:base.en
+    venv/bin/python tools/bench_transcribers.py --libri DIR \
+        --engines whisper:small.en,moonshine:base,ov:~/models/whisper-small.en-int8-ov@GPU
 """
 from __future__ import annotations
 
@@ -180,6 +199,50 @@ class WhisperEngine:
         return " ".join(s.text.strip() for s in segments)
 
 
+class MoonshineEngine:
+    def __init__(self, spec: str):
+        import onnxruntime as ort
+        from moonshine_onnx import MoonshineOnnxModel, load_tokenizer
+        from moonshine_onnx.model import _get_onnx_weights
+        size, _, precision = spec.partition("@")
+        size, precision = size or "base", precision or "float"
+        self._model = MoonshineOnnxModel(model_name=size, model_precision=precision)
+        # The package builds its sessions with default options, which means
+        # every core on the box; rebuild them on the bench's thread budget so
+        # the number is comparable with the other engines.
+        opts = ort.SessionOptions()
+        opts.intra_op_num_threads = THREADS
+        opts.inter_op_num_threads = 1
+        encoder, decoder = _get_onnx_weights(size, precision)
+        self._model.encoder = ort.InferenceSession(encoder, opts)
+        self._model.decoder = ort.InferenceSession(decoder, opts)
+        self._tok = load_tokenizer()
+
+    def transcribe(self, pcm: np.ndarray) -> str:
+        tokens = self._model.generate(pcm[np.newaxis, :].astype(np.float32))
+        return self._tok.decode_batch(tokens)[0]
+
+
+class OpenVINOEngine:
+    def __init__(self, spec: str):
+        import openvino_genai as ov_genai
+        path, _, device = spec.partition("@")
+        self.device = (device or "CPU").upper()
+        cfg = {}
+        if self.device == "CPU":
+            cfg = {"INFERENCE_NUM_THREADS": THREADS}
+        self._pipe = ov_genai.WhisperPipeline(str(Path(path).expanduser()), self.device, **cfg)
+        # The pipeline's own config knows the model is English-only; a fresh
+        # WhisperGenerationConfig() assumes multilingual and demands lang_to_id.
+        self._gen = self._pipe.get_generation_config()
+        self._gen.max_new_tokens = 120
+        self._gen.return_timestamps = False
+
+    def transcribe(self, pcm: np.ndarray) -> str:
+        out = self._pipe.generate(pcm.astype(np.float32).tolist(), self._gen)
+        return " ".join(t.strip() for t in out.texts)
+
+
 def make_engine(spec: str):
     kind, _, name = spec.partition(":")
     if kind == "vosk":
@@ -187,6 +250,10 @@ def make_engine(spec: str):
         return VoskEngine(MODELS / dirs.get(name, name))
     if kind == "whisper":
         return WhisperEngine(name or "base.en")
+    if kind == "moonshine":
+        return MoonshineEngine(name)
+    if kind == "ov":
+        return OpenVINOEngine(name)
     raise SystemExit(f"unknown engine {spec!r}")
 
 

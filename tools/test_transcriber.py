@@ -176,6 +176,23 @@ def main() -> int:
     check("status names the engine, even when it is Vosk alone",
           st.get("engine") == "vosk" and "refined" in st and "fallbacks" in st, str(st))
     check("settings ask for nothing by default", T.make({}) is None and T.make({"transcriber": "vosk"}) is None)
+    cpu = T.make({"transcriber": "whisper", "whisper_model": "small.en", "whisper_threads": 2})
+    check("whisper on the cpu is faster-whisper on the asked threads",
+          isinstance(cpu, T.WhisperTranscriber) and cpu.threads == 2 and cpu.model_name == "small.en")
+    npu = T.make({"transcriber": "whisper", "whisper_device": "npu"})
+    check("whisper on the npu is OpenVINO from the default model under models/",
+          isinstance(npu, T.OpenVINOTranscriber) and npu.device == "NPU"
+          and npu.model_dir == T.MODELS_DIR / T.DEFAULT_OV_MODEL, str(npu.model_dir))
+    gpu = T.make({"transcriber": "whisper", "whisper_device": "GPU", "whisper_ov_model": "/opt/w"})
+    check("...an absolute model path is taken as is, the device upper-cased",
+          isinstance(gpu, T.OpenVINOTranscriber) and gpu.device == "GPU" and str(gpu.model_dir) == "/opt/w")
+    check("status carries the device before loading, and no error",
+          npu.status()["device"] == "NPU" and npu.status()["ready"] is False and npu.status()["error"] == "")
+    missing = T.OpenVINOTranscriber(model_dir="/nonexistent", device="npu", log=lambda *_: None)
+    missing._load()
+    check("a missing model directory is an error, not a crash, and Vosk's words stay",
+          not missing.ready() and "FileNotFoundError" in missing._error and missing.transcribe(b"\x00" * 32) == "",
+          missing._error)
 
     print()
     if FAILURES:

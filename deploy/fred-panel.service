@@ -27,8 +27,11 @@ Group=nledevil
 # valid answer), it does that without ever complaining. It was down this way
 # until 2026-08-13. Granted to the service rather than by `usermod -aG video
 # nledevil`, so a rebuilt machine gets it from this file instead of from
-# somebody remembering.
-SupplementaryGroups=video
+# somebody remembering. `render` is the same story for /dev/accel/accel0 (the
+# NPU) and /dev/dri/renderD128 (the Arc iGPU), which Whisper runs on when
+# voice.whisper_device is "npu" or "gpu" -- without it OpenVINO lists only the
+# CPU and the transcriber logs "not in group render" and leaves Vosk's words.
+SupplementaryGroups=video render
 Environment=PYTHONUNBUFFERED=1
 # Optional (the leading '-'): holds ANTHROPIC_API_KEY for FRED's replies. The
 # app runs without it — brain.py degrades to local commands only.

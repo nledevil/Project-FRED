@@ -370,6 +370,50 @@ Vosk still does the wake word and barge-in; Whisper only re-hears the
 endpointed sentence, and any failure or delay falls back to Vosk's words.
 If the 0.7 s wait reads as slow in the room, `base.en` is 0.28 s at 43%.
 
+**Two more asked by name, benched 2026-09-22 (same 40 utterances, same seed,
+CPU only, 4 threads):**
+
+| engine | hall clean | hall 10 dB | hall 5 dB | fred clean | fred 5 dB | wait/sentence |
+|---|---|---|---|---|---|---|
+| whisper small.en, faster-whisper (re-run) | 9% | 18% | 33% | 5% | 36% | 0.70 s |
+| whisper small.en int8, OpenVINO GenAI, CPU | 9% | 17% | 30% | 6% | 36% | 0.56 s |
+| whisper small.en int8, OpenVINO GenAI, **Arc iGPU** | 9% | 17% | 30% | 6% | 37% | **0.07 s** |
+| whisper small.en int8, OpenVINO GenAI, **NPU** | 9% | 17% | 30% | 6% | 37% | **0.11 s** |
+| moonshine base int8 | 9% | 53% | 55% | 9% | 180% | 0.10 s |
+| moonshine tiny int8 | 14% | 36% | 66% | 14% | 64% | 0.06 s |
+
+Moonshine is as fast as claimed (a tenth of a second) and matches small.en on
+clean speech, but it was trained for quiet rooms: under babble base is worse
+than Vosk and writes paragraphs ("And the way we hid to rest when we were on
+the car. And the way we hid to rest..."), 180% on his phrases at 5 dB. Not for
+a hall. OpenVINO's int8 small.en is the same model with a different
+quantiser, same accuracy within noise, 20% quicker on CPU (0.56 vs 0.70 s).
+Not the number that changes the wait. **The silicon is** (2026-09-23): the
+same int8 small.en on the Arc iGPU answers in 0.07 s and on the NPU in
+0.11 s, ten times faster than CPU, same word error rate to the decimal.
+The wait a child feels after the sentence drops from 0.7 s to under a tenth,
+and the four CPU threads come back. Installed for it: `intel-opencl-icd`,
+`libze-intel-gpu1`, `libze1` from apt, and Intel's NPU user-space driver
+(`intel-level-zero-npu` + `intel-driver-compiler-npu` 1.38.0, the ubuntu2604
+tarball from github.com/intel/linux-npu-driver; the kernel's `intel_vpu`
+and firmware were already there). Both devices are `render`-group owned, so
+the user running the listener must be in `render` (nledevil is now; a
+service needs `SupplementaryGroups=render`). The NPU is the natural home:
+Ollama already owns the iGPU, the NPU is otherwise idle. Costs: 35 s to
+compile at load and ~1.8 GB RSS on the NPU (4 s and ~1.2 GB on the GPU).
+**Live on the NPU since 2026-09-23:** `voice.whisper_device = "npu"`,
+`whisper_ov_model = "whisper-small.en-int8-ov"` (under models/), a second
+backend in `inmoov/transcriber.py` on the same lifecycle as the CPU one,
+`SupplementaryGroups=video render` in the unit, and the compile cache in
+`models/.ov-cache` (1.4 s to ready from cache, 32 s cold). One trap found
+on the way: importing openvino_genai fires Intel's telemetry from a
+`multiprocessing.Process`, and on Python 3.14 that child re-imports the app
+— three copies of everything came up. `venv/bin/opt_in_out --opt_out` once
+per user stops it; a rebuilt machine needs that again. With a tenth of a
+second to spare, `medium.en` on the NPU is the next bench question.
+`~/models/whisper-small.en-int8-ov` and `~/datasets/libri` are on disk; the
+bench takes `moonshine:base@quantized` and `ov:<dir>@CPU|GPU|NPU`.
+
 **By ear, when you are at the robot:** talk to him normally and watch
 `journalctl -u fred-panel -f` for `[Listener] whisper:` lines — each shows
 Whisper's words next to Vosk's. Say "Fred, terminator mode off" (Vosk's

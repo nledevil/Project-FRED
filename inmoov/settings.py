@@ -232,9 +232,16 @@ DEFAULT_SETTINGS = {
         # keeps the wake word and barge-in either way (see inmoov/transcriber.py
         # and tools/bench_transcribers.py for the numbers). Needs
         # `venv/bin/pip install faster-whisper`; the model downloads once.
+        # whisper_device "cpu" is faster-whisper on whisper_threads threads;
+        # "npu" or "gpu" is the same model through OpenVINO on the NUC's Intel
+        # silicon, from the model directory whisper_ov_model (under models/,
+        # or absolute) — ten times faster, and the CPU threads come back.
+        # Needs the Intel drivers and the render group; transcriber.py says how.
         "transcriber": "vosk",
         "whisper_model": "base.en",
         "whisper_threads": 4,
+        "whisper_device": "cpu",
+        "whisper_ov_model": "whisper-small.en-int8-ov",
         # Opt-in capture of the utterances he was actually spoken to, to feed the
         # ASR-model decision that bench_asr.py is waiting on — the child-in-a-hall
         # case cannot be synthesised. OFF by default; only what passes the wake
