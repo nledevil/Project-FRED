@@ -424,6 +424,84 @@ Synthetic and read speech are not a child in a hall: turn
 `voice.capture.enabled` on for the next event and re-run the bench on
 `logs/utterances/*.wav` — that is the number that settles it.
 
+### FRED paints: a painter that draws people right, and a guard (2026-09-24)
+
+Built 2026-09-21: `make_picture(prompt)` → `inmoov/images.py` on a thread →
+the chest. Two things Ryan found on 2026-09-23 with it in use:
+
+**The painter was wrong for the room.** sd-turbo (a distilled SD 2.1, 2 steps
+on the cores) paints children with mangled mouths, three arms, two faces —
+"creepy or disturbing to kids", which is the audience. **What changed:**
+Mesa's Intel Vulkan driver was already on the NUC (installed with the NPU
+work), so stable-diffusion.cpp now has a Vulkan build (`build-vulkan/`, the
+Arc iGPU, `KHR_coopmat` matrix cores) beside the CPU one; sd-turbo's sampling
+went from ~5 s to 1.2 s, which buys a model big enough to get faces right.
+The weights are settings now (`images.sd_*`): a split set (FLUX:
+`sd_diffusion_model` + VAE + CLIP-L + T5) or a single file (sd-turbo,
+sdxl-turbo), argv built by `ImageMaker._local_command`.
+`tools/install_sdcpp.sh` builds both and fetches a set (`--model flux|sdxl|sd`).
+
+**Benched 2026-09-24 on the Arc iGPU (Vulkan), 512 px, seed 7, the same
+prompts he was given on 2026-09-23:**
+
+| painter | steps | a picture | what came out |
+|---|---|---|---|
+| sd-turbo q8 (was; on the cores) | 2 | 6.7 s | children with mangled mouths, a workshop with a warped figure |
+| sd-turbo q8, iGPU | 2 | 5 s (1.2 s sampling) | the same pictures, faster |
+| **FLUX.1-schnell q4_k_s + T5 q8, iGPU** | 4 | **21 s** (2 s text, 17 s sampling, 1.6 s decode) | whole children, one face each; a realistic workshop; a clean storybook scene |
+| FLUX without T5 (CLIP-L only) | 4 | 18 s | as good, counts wrong ("three children" gave four) |
+
+FLUX is the default: 21 s is past `wait_s` (8 s), so he says "I'm painting
+it now" and announces it when it lands — the path the tool always had. The
+weights are 12 GB on disk and load from page cache in 1.4 s; one process a
+picture, nothing resident between pictures. sdxl-turbo was not benched: its
+7 GB download was stopped to let FLUX through the house WiFi's 4 MB/s, and
+FLUX answered the question. Two traps on the way: two curls appending to one
+file left T5 96 MB long and only the SHA-256 said so (the installer checks
+every file now), and `pip install nudenet` replaced the venv's contrib
+OpenCV with the plain build, which in OpenCV 5 has no HOGDescriptor — face
+ID would have died at the next restart (`--no-deps` now; requirements say
+so). `config/settings.json` carried sd-turbo's paths and `steps: 2`
+explicitly, so it was edited by hand; a rebuilt machine gets the defaults.
+
+**The painter did what it was told.** "A romance novel hunk" came back as a
+shirtless man — the brain itself wrote "shirtless muscular man" into the
+prompt, and the painter obliged. Not for a school gym. **What changed:** three
+layers, `inmoov/picture_guard.py` and the tool's description:
+
+1. **The brain is told the audience** in `make_picture`'s description:
+   children and families, a screen at a child's eye height, pictures fit for a
+   primary-school wall — people fully clothed, nothing sexual, no gore, horror,
+   weapons, drugs, alcohol, hate symbols, real people — and to say a kind no and
+   offer something else rather than call the tool. Claude follows this; the
+   local 3B may not, hence the rest.
+2. **The words**, before the brush: a word list by kind (nudity, sexual,
+   gore, horror, weapons, drugs/alcohol, hate), whole words with plurals,
+   hyphens read as spaces. "shirtless", "bare-chested", "romance novel",
+   "bloody", "creepy", "rifle", "beer", "swastika" refuse; "killer whale",
+   "shooting star", "sword", "haunted house", "Tasmanian devil", "hunk of
+   cheese", "swimsuits" pass — the innocent ones are in the tests so nobody
+   tightens the list into refusing a child's dragon. The tool answers the
+   brain with the kind ("Not painted: that would show nudity or revealing
+   clothing…, offer a different picture") and the brain phrases the no.
+3. **The picture**, after the brush: NudeNet (ONNX, in the venv, 30 ms a
+   picture) looks at every finished picture; exposed genitals, breasts or
+   buttocks at low confidence, or a bare belly at 0.35, and it is not shown,
+   not `latest.png`, kept under `logs/pictures/refused/` (last 10) with the
+   labels seen, so the admin can judge the guard by what it refused. The tool
+   says "I painted it, but it came out showing undressed people…"; on the slow
+   path he says "Sorry, that picture came out as something I don't show here."
+   Both hunk pictures from 2026-09-23 trip it (breast 0.39–0.67); the
+   children-playing and workshop pictures pass (faces only). Without NudeNet
+   installed the words alone stand and status says `picture_check: false`.
+
+`images.guard` = "family" (default) or "off"; the admin page has the select
+and shows the state next to the painter. `tools/test_pictures.py` pins all of
+it with the detector stubbed. Not done: a check on what the *brain* says
+around the picture (it is Claude, with the audience in its description), and
+a way for a parent to see a refused picture from the admin page rather than
+the disk.
+
 ## Where to go next (proposed 2026-08-12)
 
 Ideas, not commitments — nothing here has been agreed. Ordered by what would

@@ -34,6 +34,11 @@ Jinja2==3.1.6
 jiter==0.16.0
 MarkupSafe==3.0.3
 numpy==2.5.1
+# nudenet must be installed with --no-deps (its opencv-python-headless dependency
+# overwrites the contrib OpenCV above and takes HOGDescriptor with it); see
+# tools/install_sdcpp.sh. onnxruntime is its other dependency.
+nudenet==3.4.2
+onnxruntime==1.30.0
 opencv-contrib-python-headless==5.0.0.93
 pillow==12.3.0
 pycparser==3.0

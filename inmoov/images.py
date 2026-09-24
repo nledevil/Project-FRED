@@ -4,9 +4,11 @@
 brush of its own — Claude describes, it does not paint — so the picture comes
 from one of two places, chosen by ``images.backend`` in config/settings.json:
 
-  local   stable-diffusion.cpp on the NUC's own cores, with sd-turbo: a
-          512px picture in a handful of seconds, no internet, no key, no cost.
-          tools/install_sdcpp.sh builds the binary and fetches the weights.
+  local   stable-diffusion.cpp on the NUC, on the Arc iGPU through Vulkan
+          (or the cores, if the Vulkan build is missing): no internet, no
+          key, no cost. tools/install_sdcpp.sh builds it and fetches weights.
+          Which weights is the ``sd_*`` settings — see _local_command below
+          and the numbers in TODO.md, "FRED paints".
   openai  the Images API (gpt-image-1 by default), which is a much better
           painter and a much slower one, and needs a key and an uplink. Sent
           as plain HTTPS from here so the brain's own SDK is not involved.
@@ -22,6 +24,13 @@ chest and, if a voice is wired in, announces it. Nothing here blocks the reply.
 Every picture is kept under logs/pictures/ with its prompt, the latest also as
 latest.png, so the admin page can show what he painted and the next person can
 see the last one. logs/ is git-ignored.
+
+The audience is children (inmoov/picture_guard.py). With ``images.guard`` at
+its default "family", a prompt that asks for what he does not paint is
+refused before the easel (``PictureRefused``, which the tool turns into a kind
+no), and a finished picture is looked at before it is kept or shown; one that
+came out undressed lands in logs/pictures/refused/ for the admin's eyes and
+nowhere else. "off" skips both.
 """
 from __future__ import annotations
 
@@ -40,20 +49,35 @@ try:
 except ImportError:                                        # pragma: no cover
     requests = None
 
+from . import picture_guard
+
 ROOT = Path(__file__).resolve().parent.parent
 PICTURES_DIR = ROOT / "logs" / "pictures"
 KEEP = 40                       # pictures kept on disk before the oldest go
+KEEP_REFUSED = 10               # ...and refused ones, for the admin to judge the guard by
 
 BACKENDS = ("auto", "local", "openai", "off")
 
 # Where tools/install_sdcpp.sh puts things. Overridable in settings; these are
-# the defaults so a fresh install works with no admin visit.
-DEFAULT_SD_BIN = "~/fred/sdcpp/stable-diffusion.cpp/build/bin/sd-cli"
-DEFAULT_SD_MODEL = "~/fred/sdcpp/models/sd_turbo-f16-q8_0.gguf"
-# The tiny autoencoder: the full VAE decode of a 512px latent is ten seconds
-# on these cores, TAESD's is one. Slightly softer picture, and the difference
-# between "here it is" and "it's on the way". Used when present.
-DEFAULT_SD_TAESD = "~/fred/sdcpp/models/taesd.safetensors"
+# the defaults so a fresh install works with no admin visit. The Vulkan build
+# paints on the Arc iGPU; the plain build is the fallback when it is absent.
+SDCPP = "~/fred/sdcpp"
+DEFAULT_SD_BIN = f"{SDCPP}/stable-diffusion.cpp/build-vulkan/bin/sd-cli"
+CPU_SD_BIN = f"{SDCPP}/stable-diffusion.cpp/build/bin/sd-cli"
+# The weights. A model is either one file (``sd_model``: sd-turbo, sdxl-turbo)
+# or a split set (``sd_diffusion_model`` plus its text encoders and VAE: FLUX);
+# when both are set the split set wins. Defaults are the FLUX.1-schnell set
+# tools/install_sdcpp.sh fetches; the settings comments carry the others.
+DEFAULT_SD_MODEL = ""
+DEFAULT_SD_DIFFUSION = f"{SDCPP}/models/flux1-schnell-q4_k_s.gguf"
+DEFAULT_SD_VAE = f"{SDCPP}/models/ae.safetensors"
+DEFAULT_SD_CLIP_L = f"{SDCPP}/models/clip_l.safetensors"
+DEFAULT_SD_T5XXL = f"{SDCPP}/models/t5xxl-q8_0.gguf"
+# The tiny autoencoder: a fast, slightly soft decode. Worth it on the cores
+# (10 s -> 1 s for SD); on the iGPU the real VAE is quick enough, so the
+# default is none. Used when set and present; it must match the model family
+# (taesd for SD, taesdxl for SDXL, taef1 for FLUX) or the picture is noise.
+DEFAULT_SD_TAESD = ""
 LOCAL_TIMEOUT_S = 180.0
 OPENAI_TIMEOUT_S = 120.0
 OPENAI_URL = "https://api.openai.com/v1/images/generations"
@@ -61,6 +85,11 @@ OPENAI_URL = "https://api.openai.com/v1/images/generations"
 
 class ImageError(Exception):
     """No painter, a painter that failed, or a request that cannot be taken."""
+
+
+class PictureRefused(ImageError):
+    """Not a picture for this audience. ``str()`` is the kind of thing asked for
+    ("nudity or revealing clothing"), speakable as "I don't paint ..."."""
 
 
 def _expand(p: str) -> Path:
@@ -99,21 +128,52 @@ class ImageMaker:
         return self._cfg.get(key, default)
 
     def sd_bin(self) -> Path:
-        return _expand(self._get("sd_bin", DEFAULT_SD_BIN))
+        """The painter binary: the configured one, else the CPU build if only
+        that exists (a machine where the Vulkan build was never made)."""
+        b = _expand(self._get("sd_bin", DEFAULT_SD_BIN))
+        if not b.is_file():
+            cpu = _expand(CPU_SD_BIN)
+            if cpu.is_file():
+                return cpu
+        return b
 
-    def sd_model(self) -> Path:
-        return _expand(self._get("sd_model", DEFAULT_SD_MODEL))
+    def sd_model(self) -> Path | None:
+        """The single-file model, or None when a split set is configured."""
+        if self._optional_path("sd_diffusion_model", DEFAULT_SD_DIFFUSION) is not None:
+            return None
+        return self._optional_path("sd_model", DEFAULT_SD_MODEL)
+
+    def sd_diffusion_model(self) -> Path | None:
+        return self._optional_path("sd_diffusion_model", DEFAULT_SD_DIFFUSION)
+
+    def _optional_path(self, key: str, default: str) -> Path | None:
+        raw = str(self._get(key, default) or "").strip()
+        return _expand(raw) if raw else None
 
     def sd_taesd(self) -> Path | None:
-        p = _expand(self._get("sd_taesd", DEFAULT_SD_TAESD))
-        return p if p.is_file() else None
+        p = self._optional_path("sd_taesd", DEFAULT_SD_TAESD)
+        return p if p is not None and p.is_file() else None
+
+    def model_name(self) -> str:
+        """What the local painter is, for the log and the admin page."""
+        m = self.sd_diffusion_model() or self.sd_model()
+        return m.stem if m is not None else ""
 
     def _openai_key(self) -> str:
         return str(self._get("openai_api_key", "") or os.environ.get("OPENAI_API_KEY", ""))
 
     def local_available(self) -> bool:
-        b, m = self.sd_bin(), self.sd_model()
-        return b.is_file() and os.access(b, os.X_OK) and m.is_file()
+        b = self.sd_bin()
+        m = self.sd_diffusion_model() or self.sd_model()
+        return b.is_file() and os.access(b, os.X_OK) and m is not None and m.is_file()
+
+    # ---- the guard ------------------------------------------------------------
+    def guard_on(self) -> bool:
+        return str(self._get("guard", "family") or "family").lower() != "off"
+
+    def style(self) -> str:
+        """Words added to every prompt sent to the painter, or ""."""
+        return " ".join(str(self._get("style", "") or "").split())
 
     def openai_available(self) -> bool:
         return bool(self._openai_key()) and requests is not None
@@ -170,7 +230,14 @@ class ImageMaker:
             "backend": self.backend() or None,
             "wanted": str(self._get("backend", "auto") or "auto"),
             "local_installed": self.local_available(),
+            "local_model": self.model_name(),
             "openai_key": bool(self._openai_key()),
+            "guard": "family" if self.guard_on() else "off",
+            # Whether the picture check has its detector. Asked lazily, so an
+            # admin page load is what first loads NudeNet — 0.2 s, once.
+            "picture_check": (picture_guard.detector_available()
+                              if self.guard_on() else False),
+            "picture_check_error": picture_guard.detector_error() if self.guard_on() else "",
             "busy": self._busy,
             "hold_s": self.hold_s(),
             "last": dict(self._last),
@@ -185,8 +252,10 @@ class ImageMaker:
         """Start painting ``prompt`` on the worker thread.
 
         Raises ImageError at once when there is no painter or one is already
-        at work — the caller can say so — and never for a failure during
-        painting, which lands in status()["last"]["error"] and in the log.
+        at work — the caller can say so — and PictureRefused when the words
+        ask for what he does not paint; never for a failure during painting,
+        which lands in status()["last"]["error"] and in the log, nor for a
+        picture refused on sight, which lands there too with "refused" set.
         ``on_done(path, prompt)`` runs on the worker after success.
         """
         prompt = " ".join(str(prompt or "").split())
@@ -195,13 +264,14 @@ class ImageMaker:
         backend = self.backend()
         if not backend:
             raise ImageError(self.why_not())
+        self._refuse_words(prompt)
         with self._lock:
             if self._busy:
                 raise ImageError("I'm still painting the last one")
             self._busy = True
             self._done.clear()
             self._last = {"prompt": prompt, "at": time.time(), "backend": backend,
-                          "file": None, "seconds": None, "error": None}
+                          "file": None, "seconds": None, "error": None, "refused": None}
         self._thread = threading.Thread(target=self._work, args=(prompt, backend, on_done),
                                         name="image-maker", daemon=True)
         self._thread.start()
@@ -234,6 +304,7 @@ class ImageMaker:
         started = time.monotonic()
         try:
             png = self._paint(prompt, backend)
+            self._refuse_sight(prompt, png, backend)
             path = self._store(prompt, png, backend)
             took = round(time.monotonic() - started, 1)
             self._last.update(file=str(path), seconds=took)
@@ -243,6 +314,9 @@ class ImageMaker:
                     on_done(path, prompt)
                 except Exception as exc:                        # noqa: BLE001
                     self._log(f"picture made but not shown: {exc}")
+        except PictureRefused as exc:
+            self._last.update(error=f"it came out showing {exc}", refused=str(exc),
+                              seconds=round(time.monotonic() - started, 1))
         except Exception as exc:                                # noqa: BLE001
             self._last.update(error=str(exc)[:200],
                               seconds=round(time.monotonic() - started, 1))
@@ -260,45 +334,98 @@ class ImageMaker:
                     self._log(f"picture hook failed: {exc}")
 
     def generate(self, prompt: str) -> Path:
-        """Paint synchronously and return the PNG's path. For tools and tests."""
+        """Paint synchronously and return the PNG's path. For tools and tests.
+        The guard applies here too: PictureRefused before or after the brush."""
+        prompt = " ".join(str(prompt or "").split())
         backend = self.backend()
         if not backend:
             raise ImageError(self.why_not())
-        return self._store(prompt, self._paint(prompt, backend), backend)
+        self._refuse_words(prompt)
+        png = self._paint(prompt, backend)
+        self._refuse_sight(prompt, png, backend)
+        return self._store(prompt, png, backend)
+
+    # ---- the guard, applied --------------------------------------------------
+    def _refuse_words(self, prompt: str) -> None:
+        if not self.guard_on():
+            return
+        reason = picture_guard.check_prompt(prompt)
+        if reason:
+            self._log(f"not painting '{prompt}': {reason}")
+            raise PictureRefused(reason)
+
+    def _refuse_sight(self, prompt: str, png: bytes, backend: str) -> None:
+        """Look at what the painter did; keep a refused one aside, unshown."""
+        if not self.guard_on():
+            return
+        reason, seen = picture_guard.check_picture(png)
+        if not reason:
+            if seen:                       # the detector complained, not the picture
+                self._log(f"picture check skipped: {seen[0]}")
+            return
+        self._log(f"refusing the picture for '{prompt}': {reason} ({', '.join(seen)})")
+        self._store_refused(prompt, png, backend, reason, seen)
+        raise PictureRefused(reason)
 
     # ---- the painters ---------------------------------------------------------
     def _paint(self, prompt: str, backend: str) -> bytes:
+        style = self.style()
+        if style:
+            prompt = f"{prompt}, {style}"
         if backend == "local":
             return self._paint_local(prompt)
         if backend == "openai":
             return self._paint_openai(prompt)
         raise ImageError(f"no such painter: {backend}")
 
-    def _paint_local(self, prompt: str) -> bytes:
-        """stable-diffusion.cpp, txt2img, one process per picture.
+    def _local_command(self, prompt: str, out: Path) -> list[str]:
+        """The sd-cli argv for one picture.
 
-        sd-turbo is a distilled model: 1–4 steps and no classifier-free
-        guidance (cfg 1.0). Steps and size are settings because a slower
-        machine wants fewer of both. Threads leave a few cores for the voice.
+        The weights decide the shape: a single-file model goes as --model, a
+        split set as --diffusion-model with its VAE and text encoders. The
+        distilled models this runs (sd-turbo, sdxl-turbo, FLUX.1-schnell) all
+        want few steps and no classifier-free guidance (cfg 1.0), at which the
+        negative prompt is ignored — it is passed anyway for a model that
+        does use it. Flow models (FLUX) sample with euler, the SD family with
+        euler_a; the default follows the shape. Threads only matter to the
+        CPU build; they leave a few cores for the voice.
         """
         size = int(self._get("size", 512))
-        steps = int(self._get("steps", 2))
+        steps = int(self._get("steps", 4))
         threads = int(self._get("threads", max(2, (os.cpu_count() or 4) - 4)))
-        out_dir = Path(self._get("work_dir", "") or (self._dir / "work"))
-        out_dir.mkdir(parents=True, exist_ok=True)
-        out = out_dir / f"sd-{int(time.time() * 1000)}.png"
-        cmd = [str(self.sd_bin()), "--mode", "img_gen",
-               "--model", str(self.sd_model()),
-               "--prompt", prompt,
-               "--negative-prompt", str(self._get("negative", "blurry, low quality, text, watermark")),
-               "--width", str(size), "--height", str(size),
-               "--steps", str(steps), "--cfg-scale", str(self._get("cfg", 1.0)),
-               "--sampling-method", str(self._get("sampler", "euler_a")),
-               "--seed", "-1", "--threads", str(threads),
-               "--output", str(out)]
+        split = self.sd_diffusion_model()
+        cmd = [str(self.sd_bin()), "--mode", "img_gen"]
+        if split is not None:
+            cmd += ["--diffusion-model", str(split)]
+            for flag, key, default in (("--vae", "sd_vae", DEFAULT_SD_VAE),
+                                       ("--clip_l", "sd_clip_l", DEFAULT_SD_CLIP_L),
+                                       ("--t5xxl", "sd_t5xxl", DEFAULT_SD_T5XXL)):
+                p = self._optional_path(key, default)
+                if p is not None:
+                    cmd += [flag, str(p)]
+        else:
+            cmd += ["--model", str(self.sd_model())]
+        sampler = str(self._get("sampler", "") or ("euler" if split is not None else "euler_a"))
+        cmd += ["--prompt", prompt,
+                "--negative-prompt", str(self._get(
+                    "negative", "blurry, low quality, text, watermark, deformed, "
+                                "extra limbs, extra fingers, bad anatomy, nsfw")),
+                "--width", str(size), "--height", str(size),
+                "--steps", str(steps), "--cfg-scale", str(self._get("cfg", 1.0)),
+                "--sampling-method", sampler,
+                "--seed", "-1", "--threads", str(threads),
+                "--output", str(out)]
         taesd = self.sd_taesd()
         if taesd is not None:
             cmd += ["--taesd", str(taesd)]
+        return cmd
+
+    def _paint_local(self, prompt: str) -> bytes:
+        """stable-diffusion.cpp, txt2img, one process per picture."""
+        out_dir = Path(self._get("work_dir", "") or (self._dir / "work"))
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out = out_dir / f"sd-{int(time.time() * 1000)}.png"
+        cmd = self._local_command(prompt, out)
         try:
             proc = subprocess.run(cmd, capture_output=True, text=True,
                                   timeout=float(self._get("timeout_s", LOCAL_TIMEOUT_S)))
@@ -363,9 +490,27 @@ class ImageMaker:
         self._prune()
         return path
 
-    def _prune(self) -> None:
-        pngs = sorted(p for p in self._dir.glob("*.png") if p.name != "latest.png")
-        for old in pngs[:-KEEP] if len(pngs) > KEEP else []:
+    def _store_refused(self, prompt: str, png: bytes, backend: str,
+                       reason: str, seen: list) -> None:
+        """Keep a refused picture under refused/, never as latest, never shown:
+        the admin's way to see what the guard is refusing and tune it."""
+        d = self._dir / "refused"
+        try:
+            d.mkdir(parents=True, exist_ok=True)
+            path = d / f"{time.strftime('%Y%m%d-%H%M%S')}.png"
+            path.write_bytes(png)
+            path.with_suffix(".json").write_text(json.dumps(
+                {"prompt": prompt, "backend": backend, "at": time.time(),
+                 "file": path.name, "refused": reason, "seen": seen}) + "\n")
+            self._prune(d, KEEP_REFUSED)
+        except OSError as exc:
+            self._log(f"could not keep the refused picture: {exc}")
+
+    def _prune(self, where: Path | None = None, keep: int | None = None) -> None:
+        where = where or self._dir
+        keep = KEEP if keep is None else keep
+        pngs = sorted(p for p in where.glob("*.png") if p.name != "latest.png")
+        for old in pngs[:-keep] if len(pngs) > keep else []:
             for victim in (old, old.with_suffix(".json")):
                 try:
                     victim.unlink()

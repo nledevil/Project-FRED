@@ -515,6 +515,14 @@
       <div class="grow"></div>
     </div>
     <div class="row">
+      <div class="label"><b>Guard</b><span>the audience is children</span></div>
+      <select id="picGuard">
+        <option value="family">Family — refuse nudity, gore, horror, weapons, drugs; check every picture</option>
+        <option value="off">Off — paint anything asked</option>
+      </select>
+      <div class="grow"></div>
+    </div>
+    <div class="row">
       <div class="label"><b>Show for</b><span>seconds before the chest clears it (0 = until tapped)</span></div>
       <input type="text" id="picHold" class="narrow" spellcheck="false" placeholder="180">
       <div class="grow"></div>
@@ -525,10 +533,13 @@
        sticks across reboots. Screen sleep cuts the backlight after that long without a touch;
        a touch wakes it, speech keeps it awake, and the chest's own DISPLAY tab offers the
        same choices. <b>Paint a picture</b> is what “Fred, draw me a…” does: the local painter
-       (run <code>tools/install_sdcpp.sh</code> once) takes a few seconds and needs no internet;
-       the OpenAI one paints better, slower, and needs a key. A picture wakes the chest and a tap
-       clears it. Painter, key and hold time are saved with the button below, as are address,
-       port and token.
+       (run <code>tools/install_sdcpp.sh</code> once) paints on the NUC's own graphics chip and
+       needs no internet; the OpenAI one needs a key. The <b>Guard</b> is on because he stands in
+       front of children: a request for nudity, gore, horror, weapons, drugs or hate symbols is
+       refused before painting, and every finished picture is looked at (NudeNet) before it is
+       shown — one that came out undressed is kept under <code>logs/pictures/refused/</code> and
+       never reaches the chest. A picture wakes the chest and a tap clears it. Painter, key,
+       guard and hold time are saved with the button below, as are address, port and token.
        <b>LAN-only — plain HTTP; don't forward this port.</b></p>
   </section>
 
@@ -839,6 +850,7 @@ function fill(s) {
   document.getElementById('picBackend').value = imgs.backend || 'auto';
   document.getElementById('picKey').value = imgs.openai_api_key || '';
   document.getElementById('picHold').value = imgs.hold_s ?? 180;
+  document.getElementById('picGuard').value = imgs.guard || 'family';
   const greet = s.greet || DEFAULTS.greet || {};
   document.getElementById('greetEnabled').checked = greet.enabled !== false;
   document.getElementById('greetCooldown').value = greet.cooldown ?? 90;
@@ -917,6 +929,7 @@ async function save() {
              sync_offset: +document.getElementById('syncOffset').value },
     images: { backend: document.getElementById('picBackend').value,
               openai_api_key: document.getElementById('picKey').value.trim(),
+              guard: document.getElementById('picGuard').value,
               hold_s: +document.getElementById('picHold').value || 0 },
     display: { host: document.getElementById('dispHost').value.trim(),
                port: +document.getElementById('dispPort').value || 8081,
@@ -1216,7 +1229,11 @@ let PIC_POLL = null;
 function describePainter(p) {
   if (!p.backend) return p.wanted === 'off' ? 'off'
     : 'no painter — install the local one or set an OpenAI key';
-  return p.backend === 'local' ? 'local painter' : 'OpenAI';
+  const who = p.backend === 'local' ? 'local painter' + (p.local_model ? ' (' + p.local_model + ')' : '')
+                                    : 'OpenAI';
+  if (p.guard === 'off') return who + ' · guard off';
+  return who + (p.picture_check ? ' · guard on' : ' · guard on, picture check unavailable'
+                                                  + (p.picture_check_error ? ': ' + p.picture_check_error : ''));
 }
 async function refreshPicture() {
   const p = await api('/api/picture');
@@ -1225,6 +1242,8 @@ async function refreshPicture() {
   const last = p.last || {};
   let line = describePainter(p);
   if (p.busy) line += ' · painting “' + (last.prompt || '') + '”…';
+  else if (last.refused) line += ' · “' + last.prompt + '” not shown: it came out showing '
+                                 + last.refused + ' (kept under logs/pictures/refused/)';
   else if (last.error) line += ' · failed: ' + last.error;
   else if (last.prompt) line += ' · “' + last.prompt + '” in ' + last.seconds + ' s';
   else if (p.latest && p.latest.prompt) line += ' · “' + p.latest.prompt + '”';

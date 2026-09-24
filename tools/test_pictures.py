@@ -18,6 +18,13 @@ each is a spoken reason, and a failure mid-paint lands in status().
 
 **The chest re-encode fits 800x480** and is a JPEG a Pi decodes in a blink.
 
+**The audience is children** (2026-09-24, inmoov/picture_guard.py): words
+he does not paint are refused before the brush, with the kind named for the
+brain to relay; a picture that came out undressed (the detector is stubbed
+here) is not shown, not the latest, kept under refused/ for the admin, and
+said as a no rather than a fault; "off" runs neither. And the local
+painter's argv follows the weights: a split set (FLUX) or a single file.
+
 **The daemon's endpoint says no to junk**: not base64, not an image, too
 big — and yes to a real JPEG, with a counter the panel can follow.
 
@@ -150,8 +157,12 @@ def main() -> int:
         out = commands.execute_action(types.SimpleNamespace(images=real, display=FakeDisplay()),
                                       "make_picture", prompt="anything")
         check("off: he says so", "switched off" in out, out)
+        # sd_diffusion_model "" both times: the default split set may well be on
+        # the disk this runs on, and sd_bin falls back to the CPU build when it
+        # exists — "not installed" has to be said, not assumed.
         real = images.ImageMaker({"backend": "local", "sd_bin": "/nonexistent/sd",
-                                  "sd_model": "/nonexistent/m"}, pictures_dir=Path(td))
+                                  "sd_model": "/nonexistent/m", "sd_diffusion_model": ""},
+                                 pictures_dir=Path(td))
         check("local wanted but not installed: not available, and says why",
               not real.available() and "isn't installed" in real.why_not(), real.why_not())
         real = images.ImageMaker({"backend": "openai", "openai_api_key": ""},
@@ -159,6 +170,7 @@ def main() -> int:
         os.environ.pop("OPENAI_API_KEY", None)
         check("openai wanted with no key: says so", "key" in real.why_not(), real.why_not())
         real = images.ImageMaker({"backend": "auto", "sd_bin": "/nonexistent/sd",
+                                  "sd_model": "/nonexistent/m", "sd_diffusion_model": "",
                                   "openai_api_key": "sk-test"}, pictures_dir=Path(td))
         check("auto falls through to openai when a key is set", real.backend() == "openai")
         out = commands.execute_action(types.SimpleNamespace(images=None), "make_picture",
@@ -233,6 +245,143 @@ def main() -> int:
             check("clear takes it out of state.json", dc.read_state().get("picture") is None)
         finally:
             dc.PICTURE_DIR, dc.PICTURE_FILE, dc.STATE_PATH = keep_dir, keep_file, keep_state
+
+        print("the audience is children: the words")
+        from inmoov import picture_guard as pg
+        for text, want in [
+                ("a romance novel hunk, shirtless muscular man", "nudity or revealing clothing"),
+                ("a bare-chested pirate", "nudity or revealing clothing"),
+                ("a Romantic Novel cover", "sexual content"),
+                ("a bloody battle", "blood or gore"),
+                ("a creepy clown", "horror or frightening pictures"),
+                ("a soldier with a rifle", "weapons"),
+                ("a man drinking beer", "drugs, smoking or alcohol"),
+                ("a swastika flag", "hate symbols"),
+                ("a killer whale jumping", ""), ("a shooting star over a lake", ""),
+                ("a knight with a sword fighting a dragon", ""), ("a fruit cocktail", ""),
+                ("a haunted house at halloween", ""), ("a Tasmanian devil", ""),
+                ("a hunk of cheese", ""), ("kids at the beach in swimsuits", ""),
+                ("a cheerful clown", ""), ("a butterfly on a flower", ""), ("", "")]:
+            got = pg.check_prompt(text)
+            check(f"{text!r} -> {want or 'fine'}", got == want, got)
+
+        print("the audience is children: the picture")
+
+        class FakeDetector:
+            hits: list = []
+
+            def detect(self, image):
+                return list(FakeDetector.hits)
+        keep_det, keep_err = pg._detector, pg._detector_error
+        pg._detector, pg._detector_error = FakeDetector(), ""
+        try:
+            check("a clean picture passes", pg.check_picture(b"png") == ("", []))
+            FakeDetector.hits = [{"class": "FACE_MALE", "score": 0.9},
+                                 {"class": "ARMPITS_EXPOSED", "score": 0.9},
+                                 {"class": "BELLY_COVERED", "score": 0.9}]
+            check("faces, armpits and covered anything are not a reason",
+                  pg.check_picture(b"png") == ("", []))
+            FakeDetector.hits = [{"class": "MALE_BREAST_EXPOSED", "score": 0.3}]
+            check("a bare chest is, even at low confidence",
+                  pg.check_picture(b"png") == ("undressed people", ["MALE_BREAST_EXPOSED:0.30"]))
+            FakeDetector.hits = [{"class": "BELLY_EXPOSED", "score": 0.3}]
+            check("...a faint belly is not", pg.check_picture(b"png") == ("", []))
+
+            FakeDetector.hits = []
+            said.clear()
+            FakeDisplay.shown.clear()
+            guarded = FakePainter({"wait_s": 1.0}, announce=said.append,
+                                  pictures_dir=Path(td) / "g")
+            gctx = types.SimpleNamespace(images=guarded, display=FakeDisplay())
+            out = commands.execute_action(gctx, "make_picture", prompt="a shirtless pirate")
+            check("words he does not paint: refused before the brush, with the kind",
+                  out.startswith("Not painted: that would show nudity or revealing clothing")
+                  and "offer a different picture" in out and not guarded.busy(), out)
+            check("...and nothing was painted", not (Path(td) / "g").exists())
+            st = guarded.status()
+            check("status says the guard is on and the picture check has its detector",
+                  st["guard"] == "family" and st["picture_check"] is True, str(st))
+
+            FakeDetector.hits = [{"class": "FEMALE_BREAST_EXPOSED", "score": 0.6}]
+            out = commands.execute_action(gctx, "make_picture", prompt="a handsome lifeguard")
+            guarded.wait(2)
+            time.sleep(0.05)
+            check("a picture that came out undressed: painted, not shown, and the reply says so",
+                  out.startswith("I painted it, but it came out showing undressed people")
+                  and FakeDisplay.shown == [], out)
+            check("...it is not the latest", guarded.latest_path() is None)
+            refused = sorted((Path(td) / "g" / "refused").glob("*.json"))
+            meta = json.loads(refused[-1].read_text()) if refused else {}
+            check("...but kept under refused/ with what was seen, for the admin",
+                  len(refused) == 1 and meta.get("refused") == "undressed people"
+                  and meta.get("seen") == ["FEMALE_BREAST_EXPOSED:0.60"], str(meta))
+            check("...and recorded in status", guarded.status()["last"].get("refused") == "undressed people")
+
+            FakePainter.delay = 1.4
+            out = commands.execute_action(gctx, "make_picture", prompt="a handsome lifeguard")
+            guarded.wait(3)
+            time.sleep(0.1)
+            check("a slow one refused on sight is said out loud, as a no, not a fault",
+                  out.startswith("I'm painting it now")
+                  and said == ["Sorry, that picture came out as something I don't show "
+                               "here. Ask me for a different one."], str(said))
+            FakePainter.delay = 0.0
+            try:
+                guarded.generate("a bloody battle")
+                got = "no exception"
+            except images.PictureRefused as exc:
+                got = str(exc)
+            check("the synchronous path refuses the same way", got == "blood or gore", got)
+
+            FakeDetector.hits = []
+            off = FakePainter({"guard": "off", "wait_s": 1.0}, pictures_dir=Path(td) / "off")
+            out = commands.execute_action(types.SimpleNamespace(images=off, display=FakeDisplay()),
+                                          "make_picture", prompt="a shirtless pirate")
+            check("guard off: neither check runs", out.startswith("Here it is"), out)
+            check("...and status says so", off.status()["guard"] == "off"
+                  and off.status()["picture_check"] is False)
+        finally:
+            pg._detector, pg._detector_error = keep_det, keep_err
+            FakeDisplay.shown.clear()
+
+        print("the local painter's command follows the weights")
+        split = images.ImageMaker({"sd_bin": "/x/sd", "sd_diffusion_model": "/m/flux.gguf",
+                                   "sd_vae": "/m/ae", "sd_clip_l": "/m/clip",
+                                   "sd_t5xxl": "/m/t5", "sd_model": "/m/ignored"},
+                                  pictures_dir=Path(td))
+        cmd = split._local_command("a dragon", Path("/o.png"))
+        check("a split set: --diffusion-model with its encoders and VAE, euler, 4 steps",
+              "--diffusion-model" in cmd and "--model" not in cmd
+              and cmd[cmd.index("--vae") + 1] == "/m/ae" and "--t5xxl" in cmd and "--clip_l" in cmd
+              and cmd[cmd.index("--sampling-method") + 1] == "euler"
+              and cmd[cmd.index("--steps") + 1] == "4" and "--taesd" not in cmd, " ".join(cmd))
+        check("...and it names the model", split.model_name() == "flux")
+        single = images.ImageMaker({"sd_bin": "/x/sd", "sd_diffusion_model": "",
+                                    "sd_model": "/m/turbo.gguf", "steps": 2},
+                                   pictures_dir=Path(td))
+        cmd = single._local_command("a dragon", Path("/o.png"))
+        check("a single file: --model, euler_a, its own steps",
+              cmd[cmd.index("--model") + 1] == "/m/turbo.gguf" and "--diffusion-model" not in cmd
+              and cmd[cmd.index("--sampling-method") + 1] == "euler_a"
+              and cmd[cmd.index("--steps") + 1] == "2", " ".join(cmd))
+        check("the prompt goes through untouched", cmd[cmd.index("--prompt") + 1] == "a dragon")
+
+        class Capture(images.ImageMaker):
+            got = ""
+
+            def backend(self):
+                return "local"
+
+            def _paint_local(self, prompt):
+                Capture.got = prompt
+                return png_bytes()
+        styled = Capture({"style": "storybook illustration, bright colours", "guard": "off"},
+                         pictures_dir=Path(td) / "s")
+        styled.generate("a cat")
+        check("the style setting is added to what the painter is told",
+              Capture.got == "a cat, storybook illustration, bright colours", Capture.got)
+        check("...but the caption is the person's words",
+              styled.latest_meta().get("prompt") == "a cat")
 
         print("the tool is offered to Claude and dispatched")
         tool = next((t for t in commands.CLAUDE_TOOLS if t["name"] == "make_picture"), None)

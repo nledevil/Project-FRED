@@ -1336,11 +1336,15 @@ def api_picture_make():
     prompt = " ".join(str(data.get("prompt") or "").split())
     if not prompt:
         return jsonify({"error": "prompt must not be empty"}), 400
-    from inmoov.images import ImageError                       # noqa: PLC0415
+    from inmoov.images import ImageError, PictureRefused       # noqa: PLC0415
     from inmoov import commands as commands_mod                 # noqa: PLC0415
     try:
         _images.request(prompt, on_done=lambda path, text:
                         commands_mod._show_picture(_assistant.ctx, path, text))
+    except PictureRefused as e:
+        return jsonify({"error": f"not painted: that would show {e}, and the guard "
+                                 "only allows pictures for children (images.guard)",
+                        "refused": str(e), **_images.status()}), 409
     except ImageError as e:
         return jsonify({"error": str(e), **_images.status()}), 409
     return jsonify({"ok": True, **_images.status()})

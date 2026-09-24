@@ -291,11 +291,36 @@ DEFAULT_SETTINGS = {
         #   "openai" — the cloud painter only (needs the key and an uplink).
         #   "off"    — he says he can't.
         "backend": "auto",
-        "sd_bin": "~/fred/sdcpp/stable-diffusion.cpp/build/bin/sd-cli",
-        "sd_model": "~/fred/sdcpp/models/sd_turbo-f16-q8_0.gguf",
-        "sd_taesd": "~/fred/sdcpp/models/taesd.safetensors",   # tiny decoder: 10 s -> 1 s
-        "steps": 2,                   # sd-turbo: 1-4; more is slower, not better
+        # The local painter runs on the Arc iGPU through the Vulkan build (the
+        # plain CPU build is used if that one is missing). Which weights:
+        # a split set (sd_diffusion_model + vae + clip_l + t5xxl: FLUX) wins
+        # over a single file (sd_model: sd-turbo, sdxl-turbo). Benched
+        # 2026-09-24 on the iGPU, 512px — see TODO.md "FRED paints":
+        #   FLUX.1-schnell q4_k_s, 4 steps, euler: the one that draws people
+        #     with the right number of arms. The default.
+        #   sdxl-turbo fp16, 2 steps, euler_a: sd_model=…/sd_xl_turbo_1.0_fp16
+        #     .safetensors, sd_diffusion_model="", sd_taesd=…/taesdxl.safetensors
+        #   sd-turbo q8, 2 steps, euler_a: sd_model=…/sd_turbo-f16-q8_0.gguf,
+        #     sd_diffusion_model="", sd_taesd=…/taesd.safetensors — the old
+        #     default; fast, and the one that painted three-armed children.
+        "sd_bin": "~/fred/sdcpp/stable-diffusion.cpp/build-vulkan/bin/sd-cli",
+        "sd_model": "",
+        "sd_diffusion_model": "~/fred/sdcpp/models/flux1-schnell-q4_k_s.gguf",
+        "sd_vae": "~/fred/sdcpp/models/ae.safetensors",
+        "sd_clip_l": "~/fred/sdcpp/models/clip_l.safetensors",
+        "sd_t5xxl": "~/fred/sdcpp/models/t5xxl-q8_0.gguf",
+        "sd_taesd": "",               # tiny decoder, must match the family; "" = the real VAE
+        "steps": 4,                   # distilled models: 1-4; more is slower, not better
+        "sampler": "",                # "" = euler for a split (flow) model, euler_a for SD
         "size": 512,                  # square, pixels; the chest shows it at 480
+        "style": "",                  # words added to every prompt ("storybook
+                                      # illustration, bright colours"); "" = the
+                                      # brain chooses the style per request
+        # The audience is children: "family" refuses prompts for nudity, sex,
+        # gore, horror, weapons, drugs and hate symbols before painting, and
+        # looks at every finished picture (NudeNet) before showing it.
+        # "off" skips both. See inmoov/picture_guard.py.
+        "guard": "family",
         "openai_api_key": "",         # or the OPENAI_API_KEY environment variable
         "openai_model": "gpt-image-1",
         "hold_s": 180,                # how long the chest shows a picture (0 = until tapped)

@@ -386,24 +386,45 @@ def _make_picture(ctx, prompt: str) -> str:
     display = getattr(ctx, "display", None)
     if display is None or not display.configured():
         return "I can paint, but I don't have a chest screen to show it on."
-    from .images import ImageError                            # noqa: PLC0415
+    from .images import ImageError, PictureRefused            # noqa: PLC0415
     try:
         images.request(prompt, on_done=lambda path, text: _show_picture(ctx, path, text))
+    except PictureRefused as exc:
+        return _refused_reply(str(exc), painted=False)
     except ImageError as exc:
         return f"I can't paint that right now: {exc}."
     if images.wait(images.wait_s()):
         last = images.status().get("last") or {}
+        if last.get("refused"):
+            return _refused_reply(str(last["refused"]), painted=True)
         if last.get("error"):
             return f"I tried to paint that, but it didn't work: {last['error']}."
         return f"Here it is, on my chest: {prompt}."
     # Too slow to wait for. Say so, and have him say when it lands — registered
     # only now, so a painter that finished during the wait is never announced
     # twice (on_finish runs at once if the job is already over).
-    images.on_finish(lambda ok: images.announce(
-        "Your picture is ready. It's on my chest." if ok
-        else "Sorry, that picture didn't come out."))
+    def _landed(ok: bool) -> None:
+        if ok:
+            images.announce("Your picture is ready. It's on my chest.")
+        elif (images.status().get("last") or {}).get("refused"):
+            images.announce("Sorry, that picture came out as something I don't "
+                            "show here. Ask me for a different one.")
+        else:
+            images.announce("Sorry, that picture didn't come out.")
+    images.on_finish(_landed)
     return ("I'm painting it now. Give me a little while and it'll be on my "
             "chest screen.")
+
+
+def _refused_reply(reason: str, painted: bool) -> str:
+    """What the tool tells the brain when the guard said no — a fact for it to
+    relay kindly, not a line to read out. The brain knows the person and
+    the moment; it phrases the no and offers something else."""
+    how = ("I painted it, but it came out showing " if painted
+           else "Not painted: that would show ")
+    return (f"{how}{reason}, and FRED only paints pictures that are fine for "
+            "young children. Tell them kindly it's not one you paint here, and "
+            "offer a different picture instead.")
 
 
 def _play_sound(ctx, name: str) -> str:
@@ -1290,10 +1311,21 @@ CLAUDE_TOOLS = [
         "generate or show a picture of something — 'draw me a dragon', 'paint "
         "a sunset over Chicago', 'show me what a robot cat looks like'. Pass a "
         "short, vivid description of the picture itself, in English, adding "
-        "style words if the person gave any. It takes a few seconds; the "
-        "result tells you whether it is already up or still on the way, so "
-        "answer from that rather than promising. Not for showing his built-in "
-        "animations — that is set_chest_display.",
+        "style words if the person gave any; if they gave none, choose a "
+        "bright, friendly one (storybook illustration, cartoon, watercolour, "
+        "and so on). FRED's audience is children and families at school and "
+        "community events, and the picture goes on a screen at a child's eye "
+        "height, so only ask for pictures that would be fine on a primary-"
+        "school wall: people fully and ordinarily clothed, nothing sexual or "
+        "suggestive, no blood, gore, horror or frightening imagery, no weapons, "
+        "drugs, smoking or alcohol, no hate symbols, no real people. If what "
+        "was asked for is not that, don't call this tool — say kindly that "
+        "it's not a picture you paint here and offer something else. A guard "
+        "behind this tool checks too, and its result tells you if it said "
+        "no. It takes a few seconds; the result tells you whether the picture "
+        "is already up or still on the way, so answer from that rather than "
+        "promising. Not for showing his built-in animations — that is "
+        "set_chest_display.",
      "input_schema": {"type": "object", "properties": {
          "prompt": {"type": "string",
                     "description": "What the picture should show, e.g. 'a green "
