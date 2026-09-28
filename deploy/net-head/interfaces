@@ -7,23 +7,20 @@ source interfaces.d/*
 
 # Ethernet
 # Robot LAN: the switch behind the NUC. The NUC (10.0.0.1) serves DHCP
-# with a MAC reservation for this Pi, so the address is stable.
-#
-# It hands out a gateway too, and as of 2026-08-15 that gateway works: the
-# NUC masquerades 10.0.0.0/24 out its uplink (deploy/hotspot-nuc/fred-nat.nft).
-# So the default route belongs here now, not on wlan0 - which is the only
-# uplink this Pi has when its WiFi is down, which is most of the time.
+# with a MAC reservation for this Pi, so the address is stable, and it
+# masquerades 10.0.0.0/24 out its own uplink (deploy/hotspot-nuc/fred-nat.nft),
+# so the default route lives here — the same as the chest.
 allow-hotplug eth0
 iface eth0 inet static
     address 10.0.0.10
     netmask 255.255.255.0
-    # No gateway on purpose: head's default route is wlan0 (its internet
-    # uplink). The /24 link route still reaches the NUC at 10.0.0.1.
+    gateway 10.0.0.1
+    dns-nameservers 1.1.1.1 8.8.8.8
 
-# WiFi
-allow-hotplug wlan0
-iface wlan0 inet dhcp
-#dns-nameservers 1.1.1.1 8.8.8.8
-pre-up iw dev wlan0 set power_save off
-post-down iw dev wlan0 set power_save on
-wpa-conf /etc/wpa_supplicant/wpa_supplicant.conf
+# WiFi: none, on purpose (2026-09-28). This Pi is fed through a slim
+# right-angle USB-C cable to fit the neck, and it logged ~160 under-voltage
+# events in four days at idle. The radio was ~100 mA of that for nothing —
+# every byte to and from this Pi goes over eth0. The radio is also disabled
+# in the firmware (dtoverlay=disable-wifi in /boot/firmware/config.txt) so it
+# never powers up at boot; re-enable both if the head ever needs its own
+# uplink again.
