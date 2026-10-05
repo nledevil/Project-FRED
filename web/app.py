@@ -33,6 +33,7 @@ from flask import Flask, Response, jsonify, render_template, request  # noqa: E4
 
 from inmoov.servo_controller import ServoController, CONFIG_PATH, load_config  # noqa: E402
 from inmoov.remote_servo import RemoteServoController  # noqa: E402
+from inmoov.servo_boards import ServoBoards, ServoBoardError  # noqa: E402
 from inmoov.camera import Camera  # noqa: E402
 from inmoov.face_tracker import FaceTracker, TUNABLE  # noqa: E402
 from inmoov.wide_spotter import WideSpotter  # noqa: E402
@@ -101,6 +102,11 @@ if _servo_host:
 else:
     _ctrl = ServoController(config=_config,  # auto mock when /dev/i2c-1 absent
                             move_to_rest=not _boot_audit)
+# The arms: a PCA9685 behind an RP2040 on this machine's USB, one per arm.
+# Constructing this moves nothing — a board's outputs stay cut until a joint is
+# commanded. Which board is which arm, and which joint is on which channel, is
+# set on the admin page. See inmoov/servo_boards.py.
+_boards = ServoBoards()
 _led_cfg = _settings.get("led", {})
 _led_indicator = bool(_led_cfg.get("camera_indicator", True))
 _led_host = str(_led_cfg.get("remote_host", "") or "").strip()
@@ -337,6 +343,7 @@ _assistant.ctx.display = _display
 _images = ImageMaker(_settings.get("images", {}), log=_log.event,
                      announce=_assistant.speak)
 _assistant.ctx.images = _images
+_assistant.ctx.arms = _boards
 # The cart asks event mode for its ceiling on every command rather than being
 # told when it changes — one source of truth, and no way for the two to drift.
 _cart.speed_ceiling = lambda: _event.cart_speed
@@ -369,11 +376,13 @@ def _apply_audit(on: bool) -> None:
         _sound.stop()              # cut any clip that is mid-play
         _cart.set_audit(True)      # stops the cart for real on the way in
         _ctrl.set_audit(True)      # hold position, accept no new motion
+        _boards.set_audit(True)
         _sound.set_audit(True)     # render + time speech, but open no device
     else:
         _sound.set_audit(False)
         _cart.set_audit(False)
         _ctrl.set_audit(False)
+        _boards.set_audit(False)   # no rest sweep: the arms are not calibrated yet
         _ctrl.rest()               # re-sync hardware and readout to a known pose
     _audit_mode = on
 
@@ -1750,6 +1759,10 @@ def api_relax():
         stopped = True
     with _lock:
         _ctrl.relax(name)
+    if name is None:
+        # Relax means all of him. Outside _lock, like the arm's kill: letting
+        # go must not wait behind whatever is holding the hardware lock.
+        _boards.relax()
     return jsonify({"relaxed": name or "all", "tracking_stopped": stopped,
                     "track": _tracker.status()})
 
@@ -1834,6 +1847,155 @@ def api_save():
         out["push_error"] = f"{type(exc).__name__}: {exc}"
         return jsonify(out), 502
     return jsonify(out)
+
+
+# ---- arm servo boards -----------------------------------------------------
+@app.get("/api/servo_boards")
+@protected
+def api_servo_boards():
+    """Every servo board on USB and what is assigned to its channels.
+
+    ?scan=1 looks for newly plugged boards first. Not the default: asking an
+    unknown port who it is costs a reply timeout when it is not one of ours.
+    """
+    if request.args.get("scan"):
+        _boards.scan()
+    return jsonify(_boards.describe())
+
+
+def _board_change(fn):
+    """Run one assignment change, persist it, and answer with the new picture."""
+    try:
+        with _lock:
+            fn()
+            _boards.save()
+    except ServoBoardError as e:
+        return jsonify({"error": str(e), **_boards.describe()}), 409
+    return jsonify(_boards.describe())
+
+
+@app.post("/api/servo_boards/<uid>/side")
+@protected
+def api_servo_board_side(uid):
+    """Say which arm a board is ("right" / "left" / "" for neither)."""
+    side = str((request.get_json(silent=True) or {}).get("side") or "")
+    return _board_change(lambda: _boards.set_side(uid, side))
+
+
+@app.post("/api/servo_boards/<uid>/assign")
+@protected
+def api_servo_board_assign(uid):
+    """Put a joint on a channel, or empty the channel (joint = "")."""
+    data = request.get_json(silent=True) or {}
+    try:
+        channel = int(data["channel"])
+    except (KeyError, TypeError, ValueError):
+        return jsonify({"error": "channel must be an integer"}), 400
+    joint = str(data.get("joint") or "")
+    return _board_change(lambda: _boards.assign(uid, channel, joint or None))
+
+
+@app.post("/api/servo_boards/<uid>/identify")
+@protected
+def api_servo_board_identify(uid):
+    """Wiggle whatever is plugged into one channel, then let it go limp."""
+    try:
+        channel = int((request.get_json(silent=True) or {})["channel"])
+    except (KeyError, TypeError, ValueError):
+        return jsonify({"error": "channel must be an integer"}), 400
+    try:
+        with _lock:
+            _boards.identify_channel(uid, channel)
+    except ServoBoardError as e:
+        return jsonify({"error": str(e)}), 409
+    return jsonify({"identified": channel})
+
+
+@app.post("/api/servo_boards/<uid>/limits")
+@protected
+def api_servo_board_limits(uid):
+    """Set a joint's min / max / rest angle. Moves nothing, so the rest angle
+    can be put somewhere sane before the servo is ever switched on."""
+    data = request.get_json(silent=True) or {}
+    joint = str(data.get("joint") or "")
+    fields = {k: data[k] for k in ("min_angle", "max_angle", "rest_angle") if k in data}
+    return _board_change(lambda: _boards.set_limits(uid, joint, **fields))
+
+
+@app.post("/api/servo_boards/<uid>/tune")
+@protected
+def api_servo_board_tune(uid):
+    """Drive one joint from the tuning panel: {"joint", "angle"?, "enable"?}.
+
+    enable switches the servo on (to its rest angle when no angle is given);
+    without it the servo must already be on. Held to min/max unless "raw" is
+    set, which is how the real limits are found — /kill is raw's counterpart.
+    """
+    data = request.get_json(silent=True) or {}
+    joint = str(data.get("joint") or "")
+    try:
+        angle = None if data.get("angle") is None else float(data["angle"])
+    except (TypeError, ValueError):
+        return jsonify({"error": "angle must be a number"}), 400
+    try:
+        with _lock:
+            applied = _boards.tune(uid, joint, angle, enable=bool(data.get("enable")),
+                                   raw=bool(data.get("raw")))
+    except ServoBoardError as e:
+        return jsonify({"error": str(e), **_boards.describe()}), 409
+    if data.get("enable"):
+        return jsonify({"angle": applied, **_boards.describe()})
+    return jsonify({"angle": applied})       # the slider's hot path: keep it small
+
+
+@app.post("/api/servo_boards/<uid>/rest")
+@protected
+def api_servo_board_rest(uid):
+    """Switch on every assigned joint on one board and send it to its rest
+    angle. Joints go one at a time; a kill, relax or stop part-way ends it."""
+    try:
+        with _lock:
+            done = _boards.rest_board(uid)
+    except ServoBoardError as e:
+        return jsonify({"error": str(e), **_boards.describe()}), 409
+    return jsonify({"rested": done, **_boards.describe()})
+
+
+@app.post("/api/servo_boards/<uid>/kill")
+@protected
+def api_servo_board_kill(uid):
+    """Cut the pulse to one joint (or the whole board) NOW.
+
+    Deliberately outside _lock: a kill that waits behind an identify wiggle or
+    a queue of slider moves is not a kill. The board link serialises single
+    exchanges by itself, so the worst wait is one ~10 ms command.
+    """
+    joint = str((request.get_json(silent=True) or {}).get("joint") or "") or None
+    try:
+        _boards.kill(uid, joint)
+    except ServoBoardError as e:
+        return jsonify({"error": str(e), **_boards.describe()}), 409
+    return jsonify(_boards.describe())
+
+
+@app.post("/api/servo_boards/relax")
+@protected
+def api_servo_boards_relax():
+    """Relax every arm servo: cut the pulses and leave the boards ready, the
+    same thing the control panel's Relax does to the head. Unlike Stop it locks
+    nothing — a joint comes back the moment it is enabled or commanded again."""
+    _boards.relax()
+    return jsonify(_boards.describe())
+
+
+@app.post("/api/servo_boards/stop")
+@protected
+def api_servo_boards_stop():
+    """Cut every arm board's outputs (stop=true), or allow motion again."""
+    stop = bool((request.get_json(silent=True) or {}).get("stop", True))
+    with _lock:
+        _boards.disable() if stop else _boards.enable()
+    return jsonify(_boards.describe())
 
 
 @app.post("/api/camera")

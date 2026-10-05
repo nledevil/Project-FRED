@@ -900,6 +900,9 @@ def execute_action(ctx, name: str, **args) -> str:
 
     if name == "relax":
         ctx.controller.relax()
+        arms = getattr(ctx, "arms", None)
+        if arms is not None:
+            arms.relax()               # the arm boards relax with the head
         return "Relaxing my servos."
 
     return "I'm not sure how to do that."

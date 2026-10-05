@@ -1,0 +1,12 @@
+# RP2040 boards plugged into the NUC (the right arm's RP2040-Zero).
+#
+# A MicroPython board shows up as /dev/ttyACM*, which udev gives to root and
+# the dialout group. FRED's user is in neither, and adding the group only takes
+# effect on the next login — every running service would keep failing until it
+# was restarted. plugdev is the group the reSpeaker rule already leans on, and
+# it applies the moment the board enumerates.
+#
+# Matched on Raspberry Pi's vendor id alone: the product id differs between the
+# bootloader (0x0003) and MicroPython (0x0005), and both are wanted.
+SUBSYSTEM=="tty", ATTRS{idVendor}=="2e8a", TAG+="uaccess", GROUP="plugdev", MODE="0660"
+SUBSYSTEM=="usb", ATTR{idVendor}=="2e8a", TAG+="uaccess", GROUP="plugdev", MODE="0660"

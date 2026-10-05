@@ -59,6 +59,15 @@ GATED = [
     "/api/picture", "/api/picture/latest.png", "/api/picture/clear",
     "/api/voice", "/api/command", "/api/log/clear", "/api/move", "/api/rest",
     "/api/relax", "/api/record", "/api/channel", "/api/identify", "/api/save",
+    # The arm boards: all of it moves him or decides what will. The kill is
+    # gated too, unlike the cart's STOP — these servos hold when their signal
+    # is cut, so a kill halts a move rather than dropping an arm, and the page
+    # it lives on is already behind the PIN.
+    "/api/servo_boards", "/api/servo_boards/<uid>/side",
+    "/api/servo_boards/<uid>/assign", "/api/servo_boards/<uid>/identify",
+    "/api/servo_boards/<uid>/limits", "/api/servo_boards/<uid>/tune",
+    "/api/servo_boards/<uid>/rest", "/api/servo_boards/<uid>/kill",
+    "/api/servo_boards/relax", "/api/servo_boards/stop",
     "/api/camera", "/api/sounds/terminator/upload", "/api/sounds/terminator/delete",
     "/api/auth/pin", "/api/auth/pin/clear",
     # The AP password is the outermost credential on the robot now that

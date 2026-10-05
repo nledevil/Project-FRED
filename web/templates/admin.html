@@ -173,6 +173,35 @@
            flex-wrap:wrap; }
   .wjoin input { flex:1 1 160px; }
   .wjoin .err { flex:1 0 100%; color:var(--bad); font-size:12px; }
+
+  /* arm servo boards: one card per RP2040, sixteen channel rows inside */
+  .sboard { border:1px solid var(--border); border-radius:10px; margin-top:14px;
+            overflow:hidden; }
+  .sboard.off { opacity:.75; }
+  .sboard .top { display:flex; align-items:center; gap:10px; padding:10px 12px;
+                 flex-wrap:wrap; background:var(--panel2); }
+  .sboard .top button { flex:none; padding:6px 12px; font-size:13px; }
+  .sboard .uid { color:var(--mut); font-size:12px; font-variant-numeric:tabular-nums; }
+  .sboard .chrow { display:flex; align-items:center; gap:10px; padding:7px 12px;
+                   border-top:1px solid var(--border); }
+  .sboard .chnum { flex:none; width:44px; color:var(--mut); font-weight:700;
+                   font-variant-numeric:tabular-nums; }
+  .sboard .chrow select { flex:1 1 150px; min-width:0; }
+  .sboard .chrow button { flex:none; padding:6px 12px; font-size:13px; }
+  .sboard .chrow.used .chnum { color:var(--fg); }
+  .sboard .tune { padding:12px; border-top:1px solid var(--border); background:var(--panel2);
+                  display:flex; flex-direction:column; gap:12px; }
+  .sboard .trow { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+  .sboard .trow input[type=range] { flex:1 1 160px; min-width:120px; }
+  .sboard .trow button { flex:none; padding:6px 12px; font-size:13px; }
+  .sboard .trow .lim { display:flex; align-items:center; gap:6px; color:var(--mut);
+                       font-size:12.5px; }
+  .sboard .trow .lim input { width:64px; }
+  .sboard .tuneval { min-width:48px; text-align:right; color:var(--accent); font-weight:700;
+                     font-variant-numeric:tabular-nums; }
+  /* The one control here that must be findable without reading. */
+  .sboard button.kill { background:#b3261e; border-color:#e5484d; color:#fff; font-weight:800;
+                        letter-spacing:.04em; padding:12px 22px; font-size:15px; }
 </style>
 <link rel="stylesheet" href="/static/pin.css">
 <script src="/static/pin.js"></script>
@@ -196,6 +225,7 @@
       <a href="#sec-appearance" data-sec="sec-appearance">Appearance</a>
       <a href="#sec-camera" data-sec="sec-camera">Camera</a>
       <a href="#sec-led" data-sec="sec-led">Status LED</a>
+      <a href="#sec-arms" data-sec="sec-arms">Arm servos</a>
       <a href="#sec-wifi" data-sec="sec-wifi">WiFi</a>
       <a href="#sec-display" data-sec="sec-display">Chest display</a>
       <a href="#sec-voice" data-sec="sec-voice">Voice &amp; AI</a>
@@ -411,6 +441,48 @@
     </div>
     <p class="hint">When off, the camera never touches the LED — control it manually
        with the 🔴 LED toggle on the control panel.</p>
+  </section>
+
+  <section class="panel" id="sec-arms">
+    <p class="phead">Arm servos</p>
+    <div class="row" style="margin-bottom:12px">
+      <div class="label"><b>Servo boards</b><span>RP2040-Zero + PCA9685 on this machine's USB</span></div>
+      <div class="grow"></div>
+      <button onclick="relaxArms()">◌ Relax all</button>
+      <button onclick="loadBoards(true)">Rescan</button>
+    </div>
+    <div class="row" style="margin-bottom:0">
+      <div class="label"><b>Stop the arms</b><span>cuts every board's outputs — the arms go limp</span></div>
+      <div class="grow"></div>
+      <label class="switch"><span id="armStopLabel" style="color:var(--mut)">Motion allowed</span>
+        <input type="checkbox" id="armStop" onchange="onArmStop(this.checked)"></label>
+    </div>
+    <div id="boardList"></div>
+    <p class="hint">Each board is recognised by the RP2040's own serial number, so it keeps its
+       assignments whichever USB port it is plugged into. Pick which arm a board is, then pick the
+       joint wired to each of its sixteen channels. <b>Identify</b> wiggles whatever is plugged
+       into that channel a little either side of centre and lets it go again — use it to find a
+       connector before assigning it. Choosing a joint that is already on another channel moves
+       it, keeping its calibration. Changes are live and saved as you make them. A newly assigned
+       joint starts with narrow placeholder limits (45–135°) until it is calibrated.
+       <br><br><b>Tune</b> opens a joint's limits. A servo is off until you press <b>Enable</b>,
+       and it then goes straight to its rest angle at full speed — so set <b>Rest</b> to somewhere
+       the joint can safely be <i>before</i> enabling. Once live, the slider runs from <b>Min</b>
+       to <b>Max</b> and follows them as you change them. To find limits wider than the current
+       ones, tick <b>Go past limits</b>: the slider then covers the servo's whole range, so move
+       in small steps, and if the servo strains or buzzes against its end stop, hit <b>KILL</b>
+       or press <b>Esc</b>. Kill cuts the pulse to that one servo at once and it goes limp, so
+       support the arm. "← current" copies the slider's position into Min, Rest or Max. Rest
+       must stay between Min and Max.
+       <br><br><b>All to rest</b>, on each board, switches on every joint assigned on that board
+       and sends it to its own rest angle — one after another, a moment apart, so the supply is
+       not hit by every servo starting at once. It asks before it does it. Esc, Kill or Relax
+       all part-way through stops the remaining joints from coming on.
+       <br><br><b>Relax all</b> lets go of every arm servo, the same as <b>Relax</b> on the
+       control panel does for the head — and that button, and telling him to relax, now release
+       the arms too. Nothing is locked out afterwards: a joint holds again as soon as it is
+       enabled or moved. <b>Stop the arms</b> is the stronger one — it also refuses all motion
+       until you switch it back.</p>
   </section>
 
   <section class="panel" id="sec-wifi">
@@ -1467,6 +1539,201 @@ function initDropzone() {
 initDropzone();
 loadClips();
 loadTerminals();
+
+// ---- arm servo boards ---------------------------------------------------
+let BOARDS = null;
+function renderBoards(d) {
+  if (!d || !d.boards) return;
+  BOARDS = d;
+  const stop = document.getElementById('armStop');
+  stop.checked = !!d.stopped;
+  document.getElementById('armStopLabel').textContent = d.stopped ? 'Stopped' : 'Motion allowed';
+  const box = document.getElementById('boardList');
+  let html = '';
+  if (d.mock) html += '<p class="clipnote">pyserial is not installed — no boards can be detected.</p>';
+  else if (!d.boards.length && !d.strangers.length)
+    html += '<p class="clipnote">No boards found. Plug one in and press Rescan.</p>';
+  for (const b of d.boards) {
+    const u = JSON.stringify(b.uid);
+    const sides = ['<option value="">Not assigned</option>'].concat(d.sides.map(sd =>
+      `<option value="${sd}"${b.side === sd ? ' selected' : ''}>${sd[0].toUpperCase() + sd.slice(1)} arm</option>`));
+    let chip = b.online ? '<span class="wchip ok">connected</span>' : '<span class="wchip">not connected</span>';
+    if (b.online && !b.pca) chip += '<span class="wchip">no PCA9685</span>';
+    if (b.online && b.enabled) chip += '<span class="wchip ok">outputs on</span>';
+    html += `<div class="sboard${b.online ? '' : ' off'}"><div class="top">
+      <select onchange='setBoardSide(${u}, this.value)'>${sides.join('')}</select>
+      <span class="uid">board ${esc(b.uid)}</span><span class="grow"></span>${chip}
+      <button onclick='restBoard(${u})'${b.online && Object.keys(b.servos).length ? '' : ' disabled'}>⟲ All to rest</button></div>`;
+    b.channels.forEach((joint, ch) => {
+      const where = {};
+      b.channels.forEach((j, c) => { if (j) where[j] = c; });
+      const opts = ['<option value="">— empty —</option>'].concat(Object.entries(d.joints).map(([j, label]) => {
+        const note = (j in where && where[j] !== ch) ? ` (now on ch ${where[j]})` : '';
+        return `<option value="${j}"${joint === j ? ' selected' : ''}>${esc(label)}${note}</option>`;
+      }));
+      const sv = joint ? b.servos[joint] : null;
+      const jq = JSON.stringify(joint || '');
+      html += `<div class="chrow${joint ? ' used' : ''}"><span class="chnum">ch ${ch}</span>
+        <select onchange='assignJoint(${u}, ${ch}, this.value)'>${opts.join('')}</select>
+        ${sv && sv.live ? '<span class="wchip ok">live</span>' : ''}
+        <button onclick='identifyChannel(${u}, ${ch})'${b.online ? '' : ' disabled'}>⚡ Identify</button>
+        ${sv ? `<button onclick='toggleTune(${u}, ${jq})'>Tune</button>` : ''}</div>`;
+      if (sv && TUNE_OPEN === b.uid + ':' + joint) html += tuneHtml(b, joint, sv);
+    });
+    html += '</div>';
+  }
+  for (const st of d.strangers)
+    html += `<p class="clipnote">${esc(st.port.split('/').pop())}: ${esc(st.error)}</p>`;
+  box.innerHTML = html;
+}
+// One joint's tuning panel. Off: set the limits, then Enable sends it to rest.
+// Live: a slider that runs from min to max — or across the servo's whole range
+// while "Go past limits" is ticked, which is how the limits get found — the
+// "use current" buttons, and Kill.
+function tuneHtml(b, joint, sv) {
+  const u = JSON.stringify(b.uid), jq = JSON.stringify(joint);
+  const cur = sv.current == null ? sv.rest_angle : sv.current;
+  const lim = (field, label) => `<span class="lim">${label}
+      <input type="text" inputmode="decimal" value="${sv[field]}"
+             onchange='setLimit(${u}, ${jq}, "${field}", this.value)'>°
+      ${sv.live ? `<button onclick='useCurrent(${u}, ${jq}, "${field}")'>← current</button>` : ''}</span>`;
+  let html = '<div class="tune"><div class="trow">';
+  if (sv.live) {
+    html += `<button class="kill" onclick='killJoint(${u}, ${jq})'>■ KILL</button>
+      <span class="clipnote">or press Esc — cuts the pulse, the servo goes limp</span>`;
+  } else {
+    html += `<button onclick='enableJoint(${u}, ${jq})'${b.online ? '' : ' disabled'}>Enable — goes to rest (${sv.rest_angle}°)</button>
+      <span class="clipnote">off — set the rest angle below first; nothing moves until you enable</span>`;
+  }
+  html += '</div>';
+  if (sv.live) {
+    const nudge = d => `<button onclick='nudgeTune(${u}, ${jq}, ${d})'>${d > 0 ? '+' : '−'}${Math.abs(d)}</button>`;
+    const lo = TUNE_RAW ? 0 : sv.min_angle, hi = TUNE_RAW ? sv.actuation_range : sv.max_angle;
+    html += `<div class="trow">${nudge(-5)}${nudge(-1)}
+      <span class="clipnote">${lo}°</span>
+      <input type="range" id="tuneSlider" min="${lo}" max="${hi}" step="1" value="${cur}"
+             oninput='tuneTo(${u}, ${jq}, this.value)'>
+      <span class="clipnote">${hi}°</span>
+      ${nudge(1)}${nudge(5)}<span class="tuneval" id="tuneVal">${Math.round(cur)}°</span></div>
+      <div class="trow"><label class="switch"><input type="checkbox"${TUNE_RAW ? ' checked' : ''}
+             onchange="TUNE_RAW = this.checked; renderBoards(BOARDS)">
+        Go past limits — slider covers the servo's whole 0–${sv.actuation_range}° to find new ones</label></div>`;
+  }
+  html += `<div class="trow">${lim('min_angle', 'Min')}${lim('rest_angle', 'Rest')}${lim('max_angle', 'Max')}</div></div>`;
+  return html;
+}
+let TUNE_OPEN = null;                 // "uid:joint" of the open tuning panel
+let TUNE_RAW = false;                 // slider ignores min/max (finding limits)
+let TUNE_NEXT = null, TUNE_BUSY = false;
+function toggleTune(uid, joint) {
+  const key = uid + ':' + joint;
+  TUNE_OPEN = TUNE_OPEN === key ? null : key;
+  TUNE_RAW = false;                   // every panel opens held to its limits
+  renderBoards(BOARDS);
+}
+async function enableJoint(uid, joint) {
+  const d = await api(`/api/servo_boards/${uid}/tune`, {joint, enable: true});
+  renderBoards(d);
+  if (d.error) toast(d.error, true); else toast(BOARDS.joints[joint] + ' is live');
+}
+async function killJoint(uid, joint) {
+  TUNE_NEXT = null;                   // drop any slider move not yet sent
+  const d = await api(`/api/servo_boards/${uid}/kill`, {joint});
+  renderBoards(d);
+  if (d.error) toast(d.error, true); else toast('Killed ' + BOARDS.joints[joint]);
+}
+// Slider moves: show the number at once, send only the newest position, one
+// request at a time — a drag must not queue fifty moves behind each other.
+function tuneTo(uid, joint, angle) {
+  document.getElementById('tuneVal').textContent = Math.round(angle) + '°';
+  TUNE_NEXT = {uid, joint, angle: +angle, raw: TUNE_RAW};
+  if (!TUNE_BUSY) pumpTune();
+}
+async function pumpTune() {
+  TUNE_BUSY = true;
+  while (TUNE_NEXT) {
+    const m = TUNE_NEXT; TUNE_NEXT = null;
+    const d = await api(`/api/servo_boards/${m.uid}/tune`, {joint: m.joint, angle: m.angle, raw: m.raw});
+    if (d.error) { TUNE_NEXT = null; toast(d.error, true); renderBoards(d); }
+    else noteCurrent(m.uid, m.joint, d.angle);
+  }
+  TUNE_BUSY = false;
+}
+// Keep the page's copy of where the joint is, so a re-draw (a limit saved, the
+// past-limits box ticked) puts the slider where the servo actually is.
+function noteCurrent(uid, joint, angle) {
+  const b = BOARDS && BOARDS.boards.find(x => x.uid === uid);
+  if (b && b.servos[joint] && angle != null) b.servos[joint].current = angle;
+}
+function nudgeTune(uid, joint, delta) {
+  const sl = document.getElementById('tuneSlider');
+  sl.value = Math.max(+sl.min, Math.min(+sl.max, +sl.value + delta));
+  tuneTo(uid, joint, sl.value);
+}
+function setLimit(uid, joint, field, value) {
+  const label = {min_angle: 'Min', max_angle: 'Max', rest_angle: 'Rest'}[field];
+  boardChange(`/api/servo_boards/${uid}/limits`, {joint, [field]: +value}, `${label} set to ${+value}°`);
+}
+function useCurrent(uid, joint, field) {
+  setLimit(uid, joint, field, document.getElementById('tuneSlider').value);
+}
+// Esc kills every live joint, whichever panel is open and wherever focus is.
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Escape' || !BOARDS) return;
+  for (const b of BOARDS.boards)
+    for (const [joint, sv] of Object.entries(b.servos || {}))
+      if (sv.live) killJoint(b.uid, joint);
+});
+async function loadBoards(scan) {
+  const d = await api('/api/servo_boards' + (scan ? '?scan=1' : ''));
+  if (d.error && !d.boards) { if (scan) toast(d.error, true); return; }
+  renderBoards(d);
+  if (scan) toast(d.boards.filter(b => b.online).length + ' board(s) connected');
+}
+async function boardChange(path, body, okMsg) {
+  const d = await api(path, body);
+  renderBoards(d);                    // re-draw either way: a refused pick must snap back
+  if (d.error) toast(d.error, true); else toast(okMsg);
+}
+function setBoardSide(uid, side) {
+  boardChange(`/api/servo_boards/${uid}/side`, {side}, side ? `Board is the ${side} arm` : 'Board unassigned');
+}
+function assignJoint(uid, channel, joint) {
+  boardChange(`/api/servo_boards/${uid}/assign`, {channel, joint},
+              joint ? `${BOARDS.joints[joint]} → ch ${channel}` : `ch ${channel} emptied`);
+}
+async function identifyChannel(uid, channel) {
+  toast('Wiggling ch ' + channel + '…');
+  const d = await api(`/api/servo_boards/${uid}/identify`, {channel});
+  if (d.error) toast(d.error, true);
+}
+// Every assigned joint on one board: on, and to its rest angle. Asks first —
+// it is the one button here that energises a whole arm at once.
+async function restBoard(uid) {
+  const b = BOARDS.boards.find(x => x.uid === uid);
+  const n = Object.keys(b.servos).length;
+  const which = b.side ? `the ${b.side} arm` : 'this board';
+  if (!confirm(`Switch on all ${n} assigned servos on ${which} and move each to its rest angle?\n\n` +
+               'They move at full speed. Esc or Relax all lets go.')) return;
+  toast('Moving to rest…');
+  const d = await api(`/api/servo_boards/${uid}/rest`, {});
+  renderBoards(d);
+  if (d.error) toast(d.error, true);
+  else toast(d.rested.length === n ? `${n} servos at rest` : `Stopped after ${d.rested.length} of ${n}`,
+             d.rested.length !== n);
+}
+async function relaxArms() {
+  TUNE_NEXT = null;                   // drop any slider move not yet sent
+  const d = await api('/api/servo_boards/relax', {});
+  renderBoards(d);
+  if (d.error) toast(d.error, true); else toast('Arm servos relaxed');
+}
+async function onArmStop(stop) {
+  const d = await api('/api/servo_boards/stop', {stop});
+  renderBoards(d);
+  if (d.error) toast(d.error, true); else toast(stop ? 'Arms stopped' : 'Arm motion allowed');
+}
+loadBoards(false);
 loadAudit();
 loadBrain();
 loadEvent();
