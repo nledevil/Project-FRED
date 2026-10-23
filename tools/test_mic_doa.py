@@ -47,6 +47,73 @@ def near(a, b, tol=1e-6):
     return a is not None and abs(a - b) <= tol
 
 
+class FakeDev:
+    """Just enough of a pyusb device: an address, and reads that work until
+    it is unplugged. Answers status 0 plus zeros, which decodes as silence."""
+
+    def __init__(self, address: int):
+        self.bus, self.address, self.gone = 3, address, False
+
+    def ctrl_transfer(self, _type, _req, _value, _index, length, _timeout):
+        if self.gone:
+            raise OSError(19, "No such device (it may have been disconnected)")
+
+        class _Raw(list):
+            def tolist(self):
+                return list(self)
+        return _Raw([0] * length)
+
+
+def reattach_after_reset() -> None:
+    if M.usb is None:
+        print("  SKIP  pyusb not installed here")
+        return
+    old_after = M._REATTACH_AFTER_S
+    M._REATTACH_AFTER_S = 0.05
+    try:
+        first = FakeDev(address=3)
+        bus = {"dev": first}
+        hooked = []
+        doa = M.MicDoa(poll_hz=100.0, on_reattach=lambda: hooked.append(1))
+        doa._find = lambda: bus["dev"]
+        check("starts on the first handle", doa.start() and doa._dev is first)
+        time.sleep(0.1)
+        before = doa.status()["reads"]
+        check("reads while plugged in", before > 0, str(before))
+
+        first.gone = True                          # yanked...
+        bus["dev"] = None
+        time.sleep(0.2)
+        stuck = doa.status()
+        check("a gone device stops the reads and says why",
+              "No such device" in stuck["error"], stuck["error"])
+        check("...without inventing a re-attach", stuck["reattaches"] == 0
+              and not hooked)
+
+        second = FakeDev(address=5)                # ...and back, elsewhere
+        bus["dev"] = second
+        time.sleep(0.3)
+        after = doa.status()
+        check("the new handle is taken", doa._dev is second)
+        check("reads resume", after["reads"] > stuck["reads"],
+              f"{stuck['reads']} -> {after['reads']}")
+        check("the error clears", after["error"] == "", after["error"])
+        check("it is counted once", after["reattaches"] == 1,
+              str(after["reattaches"]))
+        check("the tuning hook runs once", len(hooked) == 1, str(len(hooked)))
+
+        # A lone failure on a device that never left must not churn handles.
+        same = FakeDev(address=5)
+        bus["dev"] = same
+        second.gone = True
+        time.sleep(0.2)
+        check("same bus and address is left alone", doa._dev is second
+              and doa.status()["reattaches"] == 1)
+        doa.stop()
+    finally:
+        M._REATTACH_AFTER_S = old_after
+
+
 def main() -> int:
     print("an angle folds into -180..+180 around forward")
     for raw, want in [(0, 0), (90, 90), (180, -180), (181, -179),
@@ -195,6 +262,12 @@ def main() -> int:
     doa = M.MicDoa(enabled=False)
     heard(doa, 90)
     check("bearing is None while disabled", doa.bearing() is None)
+
+    print("a reset array is picked back up, at its new address")
+    # The failure this guards: the reSpeaker drops off USB and re-enumerates at
+    # a new address, the old handle answers ENODEV forever, and DOA sits frozen
+    # on its last reading until the panel is restarted. Seen 19 times in a week.
+    reattach_after_reset()
 
     print()
     if FAILURES:

@@ -142,6 +142,11 @@ _CTRL_TIMEOUT_MS = 500             # not the vendor's 100s: this runs in a poll 
 _RETRY_STATUS = 64
 _RETRY_BACKOFF_S = 0.010
 _MAX_ATTEMPTS = 5
+# How long every poll has to fail before the handle is assumed dead and the bus
+# is searched again, and how often after that. A re-plugged or reset array comes
+# back at a new address, and the old handle answers ENODEV forever — before this,
+# one reset left DOA frozen at its last reading until the panel was restarted.
+_REATTACH_AFTER_S = 2.0
 
 # How far off-axis maps to a full-deflection hint. 90 degrees means someone at
 # the robot's shoulder produces the same ±1 the wide spotter produces at the
@@ -217,7 +222,7 @@ class MicDoa:
                  stale_after: float = DEFAULT_STALE_AFTER,
                  poll_hz: float = DEFAULT_POLL_HZ, beam: int = DEFAULT_BEAM,
                  smooth_n: int = DEFAULT_SMOOTH_N,
-                 source: str = SOURCE_PROCESSED, log=None):
+                 source: str = SOURCE_PROCESSED, log=None, on_reattach=None):
         self.enabled = bool(enabled)
         self.mount_offset = float(mount_offset)
         self.span_deg = max(1.0, float(span_deg))
@@ -228,6 +233,9 @@ class MicDoa:
         self.smooth_n = max(1, int(smooth_n))
         self.source = source if source in SOURCES else SOURCE_PROCESSED
         self._log = log
+        # Called (from the poll thread) after a re-plugged array is picked up —
+        # the app re-applies the XVF tuning there, which a reset also wipes.
+        self._on_reattach = on_reattach
         # Only angles that arrived with speech on them: the beam wanders while
         # the room is merely noisy, and filtering that in would smooth toward
         # whatever the extractor fan is doing.
@@ -255,6 +263,7 @@ class MicDoa:
         self._reads = 0
         self._retries = 0            # extra attempts spent waiting on the servicer
         self._giveups = 0            # polls dropped because it stayed busy
+        self._reattaches = 0         # times a reset/re-plugged array was picked up
         self._error = ""
 
     # -- device ------------------------------------------------------------
@@ -373,12 +382,56 @@ class MicDoa:
             return None
         return list(struct.unpack("<" + "f" * (nbytes // 4), bytes(data[:nbytes])))
 
+    def _reattach(self) -> bool:
+        """Swap a dead handle for whatever reSpeaker is on the bus now.
+
+        The same bus and address means the device is still there and merely
+        failing (it has thrown a lone I/O error and carried on), so it is left
+        alone. Anything else is a reset or a re-plug: drop the old handle, take
+        the new one. Nothing found is not an error worth a line — the failing
+        reads have already said what is wrong.
+        """
+        dev = self._find()
+        old = self._dev
+        if dev is None:
+            return False
+        if old is not None and (dev.bus, dev.address) == (old.bus, old.address):
+            return False
+        if old is not None:
+            try:
+                usb.util.dispose_resources(old)
+            except Exception:  # noqa: BLE001 - releasing a gone device is fine
+                pass
+        self._dev = dev
+        with self._lock:
+            self._reattaches += 1
+        if self._log is not None:
+            self._log(f"[mic-doa] reSpeaker re-attached "
+                      f"(bus {dev.bus}, address {dev.address})")
+        if self._on_reattach is not None:
+            try:
+                self._on_reattach()
+            except Exception as exc:  # noqa: BLE001 - tuning must not stop DOA
+                self._note_error(f"re-attach hook: {type(exc).__name__}: {exc}")
+        return True
+
     def _run(self) -> None:
+        failing_since = None           # monotonic; first poll of the current bad run
+        next_search = 0.0
         while not self._stop.is_set():
             beams = self._azimuths()
             sel = self._floats(_SEL_RESID, _SEL_CMDID, _SEL_LEN)
             energy = self._floats(_EN_RESID, _EN_CMDID, _EN_LEN)
-            if beams is not None and sel is not None and energy is not None:
+            if beams is None or sel is None or energy is None:
+                now = time.monotonic()
+                if failing_since is None:
+                    failing_since = now
+                    next_search = now + _REATTACH_AFTER_S
+                elif now >= next_search:
+                    next_search = now + _REATTACH_AFTER_S
+                    self._reattach()
+            else:
+                failing_since = None
                 # The processed DoA is NaN whenever no fixed beam holds speech.
                 # That is the device saying "nobody is talking", and it is a
                 # better gate than any flag because it is the same computation
@@ -503,6 +556,7 @@ class MicDoa:
             heard_angle, heard_at = self._heard_angle, self._heard_at
             reads, error = self._reads, self._error
             retries, giveups = self._retries, self._giveups
+            reattaches = self._reattaches
         age = (time.monotonic() - heard_at) if heard_angle is not None else None
         fresh = age is not None and age <= self.stale_after
         return {
@@ -532,6 +586,9 @@ class MicDoa:
             "reads": reads,
             "retries": retries,
             "giveups": giveups,
+            # Each one is a reset or re-plug that was recovered from; a count
+            # that keeps climbing is the cable or the port, not this code.
+            "reattaches": reattaches,
             "error": error,
             **self.tuning(),
         }

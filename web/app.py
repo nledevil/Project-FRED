@@ -162,11 +162,18 @@ _spot_cfg = _settings.get("spotter", {})
 _doa_cfg = {k: v for k, v in (_settings.get("mic_doa") or {}).items()
             if k in DOA_TUNABLE}         # same filter as "track": a hand-edited
                                          # settings.json must not break startup
-_mic_doa = MicDoa(log=lambda m: print(m, flush=True), **_doa_cfg)
 # Re-apply any configured XVF3800 gain/AGC tuning — the array forgets it across a
 # power cycle. A no-op unless settings.voice.xvf_params is set, so a rig without
 # the array or without a reason to tune it is untouched. See inmoov/xvf_params.py.
-xvf_params.apply_from_settings(_settings, log=lambda m: print(m, flush=True))
+# Done at boot and again whenever DOA picks the array back up after a USB reset,
+# which wipes the tuning just as a power cycle does.
+def _apply_xvf_params():
+    xvf_params.apply_from_settings(_settings, log=lambda m: print(m, flush=True))
+
+
+_mic_doa = MicDoa(log=lambda m: print(m, flush=True),
+                  on_reattach=_apply_xvf_params, **_doa_cfg)
+_apply_xvf_params()
 # Deliberately not read from settings: diagnostic mode never survives a restart.
 # See inmoov/diagnostic.py — the failure it guards is flipping this on in the
 # workshop and unpacking the robot at a school two days later.
