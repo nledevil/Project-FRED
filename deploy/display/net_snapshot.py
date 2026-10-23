@@ -28,8 +28,15 @@ NET_TIMEOUT = 2.0                           # per request; the poller has its ow
 
 
 def _get(url: str, timeout: float = NET_TIMEOUT) -> dict | None:
+    # Our own daemon checks the token on GETs too (everything but /api/ping).
+    # Without it every local read 403s and the cart page says there is no cart
+    # driver on this Pi — which it did from the day the token went on.
+    headers = {}
+    if url.startswith(LOCAL) and os.environ.get("DISPLAY_TOKEN"):
+        headers["X-Display-Token"] = os.environ["DISPLAY_TOKEN"]
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as r:
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=timeout) as r:
             return json.loads(r.read())
     except (urllib.error.URLError, OSError, ValueError):
         return None

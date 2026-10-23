@@ -56,15 +56,34 @@ def resolve_port(spec: str = DEFAULT_PORT) -> str:
     the by-id name is derived from the board's flash ID, so it's stable across
     reboots and unambiguous if anything else USB-serial ever shows up. A spec
     containing a glob is expanded; anything else is taken literally.
+
+    The bare ttyACM fallback skips any tty whose by-id name says it is some
+    other board. The cart Pico lives on this same Pi: with the sensor node
+    unplugged, ``auto`` used to take the cart's tty, and every reopen hung up
+    the cart driver's fd too, so the cart dropped its link every ~3 s.
     """
     if spec and spec != "auto":
         matches = sorted(glob.glob(spec))
         return matches[0] if matches else spec
-    for pattern in ("/dev/serial/by-id/*MicroPython*", "/dev/ttyACM*"):
-        matches = sorted(glob.glob(pattern))
-        if matches:
-            return matches[0]
+    matches = sorted(glob.glob("/dev/serial/by-id/*MicroPython*"))
+    if matches:
+        return matches[0]
+    for path in sorted(glob.glob("/dev/ttyACM*")):
+        if not _named_as_other_board(path):
+            return path
     return ""
+
+
+def _named_as_other_board(path: str) -> bool:
+    """True if a by-id symlink points at this tty and doesn't say MicroPython."""
+    try:
+        target = os.path.realpath(path)
+    except OSError:
+        return False
+    for link in glob.glob("/dev/serial/by-id/*"):
+        if os.path.realpath(link) == target and "micropython" not in link.lower():
+            return True
+    return False
 
 
 def open_serial(path: str, baud: int = 115200) -> int:
