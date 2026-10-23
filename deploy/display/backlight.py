@@ -66,6 +66,14 @@ def force_on() -> bool:
     return set_on(True)
 
 
+def force_off() -> bool:
+    """Turn it off regardless of what this process last wrote — for the "off"
+    preset, which the daemon enters after a panel that may have switched the
+    light itself, so this process's memory of the last write proves nothing."""
+    _last["value"] = None
+    return set_on(False)
+
+
 def is_on() -> bool | None:
     """What sysfs says right now; None when there is no backlight to ask."""
     path = node()

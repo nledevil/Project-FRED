@@ -397,6 +397,8 @@ class Supervisor:
         self._stop.set()
         with self._lock:
             self._kill_child()
+            # Stopped while "off": whatever owns the screen next must be seen.
+            backlight.force_on()
 
     # -- child process -----------------------------------------------------
     def _kill_child(self) -> None:
@@ -499,6 +501,11 @@ class Supervisor:
             if preset["argv"] is None:
                 self._started_at = 0.0
                 _blank_screen()
+                # A black LCD still glows, so "off" cuts the light as well. The
+                # touch controller stays up with the light off, and any tap on
+                # a blank preset opens the menu (opens_menu), whose panel
+                # forces the backlight on at start — that is the wake.
+                backlight.force_off()
             elif not shared:
                 self._spawn(preset)
             # A hidden preset is never the boot pick: the menu is somewhere you
