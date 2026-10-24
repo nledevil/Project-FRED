@@ -1,5 +1,91 @@
 # InMoov TODO
 
+## Hardware: finishing the body (started 2026-10-23)
+
+What is still to build, wire or fit before FRED's body is complete. Physical
+work, done at the robot; tick an item only once it is on him and working, and
+add the date. Software that waits on a part goes under that part's item.
+
+### To do
+
+**Left arm**
+- [ ] Finish adding the left hand's servos
+- [ ] Finish adding the left wrist servo
+- [ ] Finish assembling the left hand
+- [ ] Connect the left hand to the wrist
+- [ ] Finish printing the FRED emblem and fit it to the left shoulder
+
+**Right arm**
+- [ ] Finish adding the bicep armor
+
+**Arm electronics**
+- [ ] Finish routing the servo wires through each arm
+- [ ] Design a place to mount the servo controllers and microcontrollers
+- [ ] Install the servo controllers for both arms
+- [ ] Install the microcontrollers for each arm
+  - Software note: each arm is an RP2040-Zero + PCA9685 on the NUC's USB, all
+    running `firmware/servo_board_node/main.py` and told apart by the RP2040's
+    unique id. A new board shows up in Admin → Arm servos to be given a side;
+    its channels and limits land in `config/servo_boards.json`. Flashing one
+    means stopping `fred-panel` first, because it holds the serial port.
+- [ ] Add a relay to the left servo controller's power
+- [ ] Add a relay to the right servo controller's power
+  - Why: the arm servos are digital and hold their position with no signal,
+    so Relax all, Kill and Stop the arms leave the arm stiff and powered —
+    only cutting V+ releases it (measured 2026-10-04: ~2.5 A with every
+    channel off). Until these exist there is no software relax or e-stop
+    for the arms.
+  - Software note: each relay is switched by a spare GPIO on that arm's
+    RP2040-Zero. The firmware should boot with it off and cut it on relax-all,
+    stop, and when the host goes silent.
+
+**Arm calibration**
+
+Done in Admin → Arm servos; each joint's limits are saved to
+`config/servo_boards.json`. A left joint can only be calibrated once its servo
+is in and the left arm's board is connected.
+
+Right arm:
+- [ ] Shoulder
+- [ ] Shoulder rotate
+- [ ] Arm rotate
+- [ ] Elbow
+- [ ] Wrist rotate
+- [ ] Thumb
+- [ ] Index finger
+- [ ] Middle finger
+- [ ] Ring finger
+- [ ] Pinky finger
+
+Left arm:
+- [ ] Shoulder
+- [ ] Shoulder rotate
+- [ ] Arm rotate
+- [ ] Elbow
+- [ ] Wrist rotate
+- [ ] Thumb
+- [ ] Index finger
+- [ ] Middle finger
+- [ ] Ring finger
+- [ ] Pinky finger
+
+**Sensors**
+- [ ] Finish reconnecting the ultrasonic and motion sensors and their
+      microcontroller
+  - Software note: this should be the stomach sensor node, a MicroPython Pico
+    on the chest Pi's USB. The chest's sensor relay finds it by its
+    MicroPython USB name and has been logging "no sensor node found" while
+    it is off. Once it is plugged in, the chest's log should show it found,
+    and attract mode's motion sleep gets its sensor back.
+
+**Power**
+- [ ] Design a better base for the Anker battery bank
+
+**Head**
+- [ ] Refit the ears
+
+### Done
+
 ## Testing: narrative scripts, no pytest (recorded 2026-09-09)
 
 Settled, so it stops being re-litigated. The tests are standalone scripts in
