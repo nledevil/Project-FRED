@@ -2,34 +2,34 @@
   "port_glob": "/dev/serial/by-id/usb-MicroPython_*",
   "boards": {
     "2330392409261658": {
-      "side": "right",
+      "side": "left",
       "servos": {
         "shoulder": {
-          "min_angle": 44.0,
-          "max_angle": 90.0,
-          "rest_angle": 45.0,
-          "actuation_range": 180,
-          "pulse_min_us": 500,
-          "pulse_max_us": 2500,
-          "invert": false,
-          "channel": 6,
-          "description": "Shoulder up/down (uncalibrated)"
-        },
-        "shoulder_rotate": {
-          "min_angle": 0.0,
-          "max_angle": 180.0,
-          "rest_angle": 0.0,
+          "min_angle": 125.0,
+          "max_angle": 175.0,
+          "rest_angle": 150.0,
           "actuation_range": 180,
           "pulse_min_us": 500,
           "pulse_max_us": 2500,
           "invert": false,
           "channel": 7,
+          "description": "Shoulder up/down (uncalibrated)"
+        },
+        "shoulder_rotate": {
+          "min_angle": 0.0,
+          "max_angle": 160.0,
+          "rest_angle": 0.0,
+          "actuation_range": 180,
+          "pulse_min_us": 500,
+          "pulse_max_us": 2500,
+          "invert": false,
+          "channel": 6,
           "description": "Shoulder rotate (uncalibrated)"
         },
         "bicep_rotate": {
-          "min_angle": 61.0,
+          "min_angle": 0.0,
           "max_angle": 160.0,
-          "rest_angle": 90.0,
+          "rest_angle": 14.0,
           "actuation_range": 180,
           "pulse_min_us": 500,
           "pulse_max_us": 2500,
@@ -38,14 +38,14 @@
           "description": "Bicep rotate (uncalibrated)"
         },
         "elbow": {
-          "min_angle": 46.0,
+          "min_angle": 70.0,
           "max_angle": 144.0,
-          "rest_angle": 144.0,
+          "rest_angle": 78.0,
           "actuation_range": 180,
           "pulse_min_us": 500,
           "pulse_max_us": 2500,
           "invert": false,
-          "channel": 9,
+          "channel": 1,
           "description": "Elbow up/down (uncalibrated)"
         },
         "wrist": {
@@ -56,62 +56,177 @@
           "pulse_min_us": 500,
           "pulse_max_us": 2500,
           "invert": false,
-          "channel": 15,
+          "channel": 9,
           "description": "Wrist rotate (uncalibrated)"
         },
         "thumb": {
-          "min_angle": 22.0,
-          "max_angle": 150.0,
-          "rest_angle": 22.0,
+          "min_angle": 60.0,
+          "max_angle": 170.0,
+          "rest_angle": 165.0,
           "actuation_range": 180,
           "pulse_min_us": 500,
           "pulse_max_us": 2500,
           "invert": false,
-          "channel": 10,
+          "channel": 4,
           "description": "Thumb open/close (uncalibrated)"
         },
         "index": {
-          "min_angle": 34.0,
-          "max_angle": 175.0,
-          "rest_angle": 34.0,
+          "min_angle": 6.0,
+          "max_angle": 180.0,
+          "rest_angle": 125.0,
           "actuation_range": 180,
           "pulse_min_us": 500,
           "pulse_max_us": 2500,
           "invert": false,
-          "channel": 12,
+          "channel": 3,
           "description": "Index finger open/close (uncalibrated)"
         },
         "middle": {
-          "min_angle": 30.0,
-          "max_angle": 175.0,
-          "rest_angle": 30.0,
+          "min_angle": 50.0,
+          "max_angle": 180.0,
+          "rest_angle": 180.0,
           "actuation_range": 180,
           "pulse_min_us": 500,
           "pulse_max_us": 2500,
           "invert": false,
-          "channel": 14,
+          "channel": 0,
           "description": "Middle finger open/close (uncalibrated)"
         },
         "ring": {
-          "min_angle": 40.0,
-          "max_angle": 160.0,
-          "rest_angle": 40.0,
+          "min_angle": 60.0,
+          "max_angle": 180.0,
+          "rest_angle": 125.0,
           "actuation_range": 180,
           "pulse_min_us": 500,
           "pulse_max_us": 2500,
           "invert": false,
-          "channel": 13,
+          "channel": 2,
           "description": "Ring finger open/close (uncalibrated)"
         },
         "pinky": {
-          "min_angle": 50.0,
-          "max_angle": 175.0,
-          "rest_angle": 50.0,
+          "min_angle": 70.0,
+          "max_angle": 180.0,
+          "rest_angle": 175.0,
           "actuation_range": 180,
           "pulse_min_us": 500,
           "pulse_max_us": 2500,
           "invert": false,
-          "channel": 11,
+          "channel": 5,
+          "description": "Pinky finger open/close (uncalibrated)"
+        }
+      }
+    },
+    "1c0493200d2d153c": {
+      "side": "right",
+      "servos": {
+        "bicep_rotate": {
+          "min_angle": 45.0,
+          "max_angle": 135.0,
+          "rest_angle": 90.0,
+          "actuation_range": 180,
+          "pulse_min_us": 500,
+          "pulse_max_us": 2500,
+          "invert": false,
+          "channel": 0,
+          "description": "Bicep rotate (uncalibrated)"
+        },
+        "shoulder": {
+          "min_angle": 66.0,
+          "max_angle": 115.0,
+          "rest_angle": 66.0,
+          "actuation_range": 180,
+          "pulse_min_us": 500,
+          "pulse_max_us": 2500,
+          "invert": false,
+          "channel": 1,
+          "description": "Shoulder up/down (uncalibrated)"
+        },
+        "shoulder_rotate": {
+          "min_angle": 0.0,
+          "max_angle": 160.0,
+          "rest_angle": 0.0,
+          "actuation_range": 180,
+          "pulse_min_us": 500,
+          "pulse_max_us": 2500,
+          "invert": false,
+          "channel": 2,
+          "description": "Shoulder rotate (uncalibrated)"
+        },
+        "elbow": {
+          "min_angle": 45.0,
+          "max_angle": 135.0,
+          "rest_angle": 135.0,
+          "actuation_range": 180,
+          "pulse_min_us": 500,
+          "pulse_max_us": 2500,
+          "invert": false,
+          "channel": 3,
+          "description": "Elbow up/down (uncalibrated)"
+        },
+        "wrist": {
+          "min_angle": 45.0,
+          "max_angle": 180.0,
+          "rest_angle": 160.0,
+          "actuation_range": 180,
+          "pulse_min_us": 500,
+          "pulse_max_us": 2500,
+          "invert": false,
+          "channel": 4,
+          "description": "Wrist rotate (uncalibrated)"
+        },
+        "middle": {
+          "min_angle": 28.0,
+          "max_angle": 160.0,
+          "rest_angle": 28.0,
+          "actuation_range": 180,
+          "pulse_min_us": 500,
+          "pulse_max_us": 2500,
+          "invert": false,
+          "channel": 5,
+          "description": "Middle finger open/close (uncalibrated)"
+        },
+        "index": {
+          "min_angle": 30.0,
+          "max_angle": 170.0,
+          "rest_angle": 35.0,
+          "actuation_range": 180,
+          "pulse_min_us": 500,
+          "pulse_max_us": 2500,
+          "invert": false,
+          "channel": 6,
+          "description": "Index finger open/close (uncalibrated)"
+        },
+        "ring": {
+          "min_angle": 35.0,
+          "max_angle": 160.0,
+          "rest_angle": 45.0,
+          "actuation_range": 180,
+          "pulse_min_us": 500,
+          "pulse_max_us": 2500,
+          "invert": false,
+          "channel": 7,
+          "description": "Ring finger open/close (uncalibrated)"
+        },
+        "thumb": {
+          "min_angle": 0.0,
+          "max_angle": 115.0,
+          "rest_angle": 6.0,
+          "actuation_range": 180,
+          "pulse_min_us": 500,
+          "pulse_max_us": 2500,
+          "invert": false,
+          "channel": 8,
+          "description": "Thumb open/close (uncalibrated)"
+        },
+        "pinky": {
+          "min_angle": 40.0,
+          "max_angle": 155.0,
+          "rest_angle": 70.0,
+          "actuation_range": 180,
+          "pulse_min_us": 500,
+          "pulse_max_us": 2500,
+          "invert": false,
+          "channel": 9,
           "description": "Pinky finger open/close (uncalibrated)"
         }
       }
