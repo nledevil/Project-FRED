@@ -9,41 +9,21 @@ add the date. Software that waits on a part goes under that part's item.
 ### To do
 
 **Left arm**
-- [ ] Finish adding the left hand's servos
-- [ ] Finish adding the left wrist servo
-- [ ] Finish assembling the left hand
-- [ ] Connect the left hand to the wrist
+- [ ] Make minor adjustments to the left fingers and wrist
 - [ ] Finish printing the FRED emblem and fit it to the left shoulder
 
 **Right arm**
 - [ ] Finish adding the bicep armor
 
 **Arm electronics**
-- [ ] Finish routing the servo wires through each arm
-- [ ] Design a place to mount the servo controllers and microcontrollers
-- [ ] Install the servo controllers for both arms
-- [ ] Install the microcontrollers for each arm
-  - Software note: each arm is an RP2040-Zero + PCA9685 on the NUC's USB, all
-    running `firmware/servo_board_node/main.py` and told apart by the RP2040's
-    unique id. A new board shows up in Admin → Arm servos to be given a side;
-    its channels and limits land in `config/servo_boards.json`. Flashing one
-    means stopping `fred-panel` first, because it holds the serial port.
-- [ ] Add a relay to the left servo controller's power
-- [ ] Add a relay to the right servo controller's power
-  - Why: the arm servos are digital and hold their position with no signal,
-    so Relax all, Kill and Stop the arms leave the arm stiff and powered —
-    only cutting V+ releases it (measured 2026-10-04: ~2.5 A with every
-    channel off). Until these exist there is no software relax or e-stop
-    for the arms.
-  - Software note: each relay is switched by a spare GPIO on that arm's
-    RP2040-Zero. The firmware should boot with it off and cut it on relax-all,
-    stop, and when the host goes silent.
+- [ ] Route the servo wires through the right arm
 
 **Arm calibration**
 
 Done in Admin → Arm servos; each joint's limits are saved to
-`config/servo_boards.json`. A left joint can only be calibrated once its servo
-is in and the left arm's board is connected.
+`config/servo_boards.json`. Both arms are on and both boards connected
+(2026-11-11): the left board is `2330392409261658`, the right
+`1c0493200d2d153c`, whose joints were cleared to be set up from scratch.
 
 Right arm:
 - [ ] Shoulder
@@ -70,7 +50,7 @@ Left arm:
 - [ ] Pinky finger
 
 **Sensors**
-- [ ] Finish reconnecting the ultrasonic and motion sensors and their
+- [ ] Reconnect the front sensors (ultrasonic and motion) and their
       microcontroller
   - Software note: this should be the stomach sensor node, a MicroPython Pico
     on the chest Pi's USB. The chest's sensor relay finds it by its
@@ -78,13 +58,61 @@ Left arm:
     it is off. Once it is plugged in, the chest's log should show it found,
     and attract mode's motion sleep gets its sensor back.
 
+**Base**
+- [ ] Redesign the pole base mount to take out the play that lets FRED rock
+      side to side
+
 **Power**
 - [ ] Design a better base for the Anker battery bank
 
 **Head**
 - [ ] Refit the ears
 
+**Head and chest Pis**
+- [ ] Make the Pis' root filesystems read-only, so a power cut cannot corrupt
+      the SD cards
+  - Why: FRED is switched off at the plug, and the head logs under-voltage
+    events; either can land mid-write, and a corrupt card is the likeliest
+    way a Pi fails to boot at an event. Both run DietPi 10.6 on Debian 13.
+  - Software note: read-only root with a RAM overlay, plus a small writable
+    place for what is saved at runtime — the chest's `state.json`
+    (animation, theme, screen sleep) and the paint pictures, and anything the
+    head keeps. Test by pulling the plug mid-use, more than once.
+
+### Phase 2
+
+Secondary priority: after everything above is done.
+
+- [ ] Add a relay to the left servo controller's power
+- [ ] Add a relay to the right servo controller's power
+  - Why: the arm servos are digital and hold their position with no signal,
+    so Relax all, Kill and Stop the arms leave the arm stiff and powered —
+    only cutting V+ releases it (measured 2026-10-04: ~2.5 A with every
+    channel off). Until these exist there is no software relax or e-stop
+    for the arms.
+  - Software note: each relay is switched by a spare GPIO on that arm's
+    RP2040-Zero. The firmware should boot with it off and cut it on relax-all,
+    stop, and when the host goes silent.
+
 ### Done
+
+- [x] Left hand: servos added, all five fingers assembled and attached, hand
+      assembled and connected to the wrist (2026-11-11)
+- [x] Left wrist servo added (2026-11-11)
+- [x] Left arm potentiometers assembled and working, elbow and shoulder
+      (2026-11-11)
+- [x] Both arms assembled and attached to FRED (2026-11-11)
+- [x] Servo wires routed through the left arm (2026-11-11)
+- [x] Servo controllers set up for both arms (2026-11-11)
+- [x] Microcontrollers set up for both arms (2026-11-11)
+- [x] Both arms' servo controllers and microcontrollers mounted in the back,
+      with power routed to them (2026-11-11)
+  - Software note: each arm is an RP2040-Zero + PCA9685 on the NUC's USB, all
+    running `firmware/servo_board_node/main.py` and told apart by the RP2040's
+    unique id. A new board shows up in Admin → Arm servos to be given a side;
+    its channels and limits land in `config/servo_boards.json`. Flashing one
+    means stopping `fred-panel` first, because it holds the serial port. The
+    right board was flashed new on 2026-11-07 (MicroPython v1.29.0).
 
 ## Testing: narrative scripts, no pytest (recorded 2026-09-09)
 
