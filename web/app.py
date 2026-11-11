@@ -12,6 +12,7 @@ Works with no hardware (MOCK mode) and drives real servos once I2C is live.
 """
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import re
@@ -20,6 +21,8 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
+from functools import wraps
 from pathlib import Path
 
 # make the project root importable when run as `python web/app.py`
@@ -29,22 +32,51 @@ sys.path.insert(0, str(ROOT))
 from flask import Flask, Response, jsonify, render_template, request  # noqa: E402
 
 from inmoov.servo_controller import ServoController, CONFIG_PATH, load_config  # noqa: E402
+from inmoov.remote_servo import RemoteServoController  # noqa: E402
+from inmoov.servo_boards import ServoBoards, ServoBoardError  # noqa: E402
 from inmoov.camera import Camera  # noqa: E402
 from inmoov.camera360 import Camera360  # noqa: E402
 from inmoov.surround import SurroundVision, TUNABLE as SURROUND_TUNABLE  # noqa: E402
-from inmoov.cart import Cart  # noqa: E402
 from inmoov.face_tracker import FaceTracker, TUNABLE  # noqa: E402
-from inmoov.assistant import Assistant  # noqa: E402
+from inmoov.wide_spotter import WideSpotter  # noqa: E402
+from inmoov.assistant import Assistant, EARCON_AFTER  # noqa: E402
+from inmoov.brain import BACKENDS  # noqa: E402
+from inmoov import hotspot as hotspot_mod  # noqa: E402
+from inmoov import transcriber as transcriber_mod  # noqa: E402
+from inmoov import weather as weather_mod  # noqa: E402
+from inmoov.images import ImageMaker, BACKENDS as IMAGE_BACKENDS  # noqa: E402
+from inmoov import uplink as uplink_mod    # noqa: E402
+from inmoov import heardlog                # noqa: E402
+from inmoov import wakestats               # noqa: E402
+from inmoov import uttercap                # noqa: E402
+from inmoov import phrases as phrases_mod  # noqa: E402
 from inmoov import sysinfo  # noqa: E402
 from inmoov.convlog import ConversationLog  # noqa: E402
 from inmoov.led import Led  # noqa: E402
+from inmoov.remote_led import RemoteLed  # noqa: E402
 from inmoov.sound import Sound  # noqa: E402
 from inmoov.sensors import SensorHub, SerialSensorReader  # noqa: E402
+from inmoov import cart as cart_mod  # noqa: E402
+from inmoov.cart import CartClient, CartError  # noqa: E402
 from inmoov.display import DisplayClient, DisplayError, VoicePusher  # noqa: E402
 from inmoov.greeter import Greeter  # noqa: E402
+from inmoov import commands as cmd_mod  # noqa: E402
+from inmoov.event import EventMode  # noqa: E402
 from inmoov.settings import load_settings, save_settings  # noqa: E402
+from inmoov import auth  # noqa: E402
+from inmoov import whoami as whoami_mod  # noqa: E402
+from inmoov.mic_doa import MicDoa, TUNABLE as DOA_TUNABLE  # noqa: E402
+from inmoov import xvf_params              # noqa: E402
+from inmoov.diagnostic import DiagnosticMode, Refused as DiagRefused  # noqa: E402
 
 app = Flask(__name__)
+# Key order is meaning here: the phrase deck's tabs display in the order the
+# operator arranged them, and jsonify alphabetising everything silently broke
+# that ("About me" does not lead a deck that starts with "Crowd").
+try:
+    app.json.sort_keys = False
+except AttributeError:                       # Flask < 2.2
+    app.config["JSON_SORT_KEYS"] = False
 app.config["MAX_CONTENT_LENGTH"] = 32 * 1024 * 1024   # cap clip uploads at 32 MB
 
 # Terminator-mode audio clips live here; uploads are converted to .wav.
@@ -54,26 +86,60 @@ _UPLOAD_EXTS = {".wav", ".mp3", ".m4a", ".mp4", ".aac", ".ogg", ".oga",
 
 _config = load_config()
 _settings = load_settings()                  # admin-editable UI/camera preferences
-# Hardware handoff: when released, another process (MyRobotLab) owns the shared
-# I2C/audio/camera. If we boot into that state, don't grab the servos (skip the
-# rest sweep); the objects are suspended just after construction, below.
-_boot_released = bool(_settings.get("hardware", {}).get("released", False))
-_ctrl = ServoController(config=_config,      # auto mock when /dev/i2c-1 absent
-                        move_to_rest=not _boot_released)
+# Audit (dry run) mode, persisted. Read here — before the servo controller is
+# built — because booting into an audit must skip the rest sweep: the whole
+# promise is that nothing moves.
+_boot_audit = bool(_settings.get("audit", {}).get("enabled", False))
+_servo_cfg = _settings.get("servo", {})
+_servo_host = str(_servo_cfg.get("remote_host", "") or "").strip()
+if _servo_host:
+    # Servos live on another machine (the head Pi holds the I2C bus; the brain
+    # runs here). Same interface, so nothing downstream knows the difference.
+    _ctrl = RemoteServoController(_servo_host,
+                                  port=int(_servo_cfg.get("remote_port", 8082)),
+                                  token=str(_servo_cfg.get("remote_token", "") or ""),
+                                  config=_config)
+    if not _boot_audit:
+        _ctrl.rest()                 # the local controller does this in its ctor
+else:
+    _ctrl = ServoController(config=_config,  # auto mock when /dev/i2c-1 absent
+                            move_to_rest=not _boot_audit)
+# The arms: a PCA9685 behind an RP2040 on this machine's USB, one per arm.
+# Constructing this moves nothing — a board's outputs stay cut until a joint is
+# commanded. Which board is which arm, and which joint is on which channel, is
+# set on the admin page. See inmoov/servo_boards.py.
+_boards = ServoBoards()
 _led_cfg = _settings.get("led", {})
-_status_led = Led(pin=16,                     # BCM16 status LED (no-op if no GPIO)
-                  camera_indicator=bool(_led_cfg.get("camera_indicator", True)))
+_led_indicator = bool(_led_cfg.get("camera_indicator", True))
+_led_host = str(_led_cfg.get("remote_host", "") or "").strip()
+if _led_host:
+    # Same reasoning as the servos above: the LED is soldered to a Pi header and
+    # x86 has no GPIO, so the pin is driven over the network. Same interface, so
+    # nothing downstream (camera.py's notify_camera, /api/led) knows.
+    _status_led = RemoteLed(_led_host,
+                            port=int(_led_cfg.get("remote_port", 8083)),
+                            token=str(_led_cfg.get("remote_token", "") or ""),
+                            camera_indicator=_led_indicator)
+else:
+    _status_led = Led(pin=16,                 # BCM16 status LED (no-op if no GPIO)
+                      camera_indicator=_led_indicator)
 _cam_cfg = _settings.get("camera", {})
 _camera = Camera(indicator=_status_led,      # lazily starts on first stream viewer; lights the LED
                  rotate_180=bool(_cam_cfg.get("flip", False)),
                  af_mode=int(_cam_cfg.get("af_mode", 0)),
-                 lens_position=float(_cam_cfg.get("lens_position", 2.0)))
+                 lens_position=float(_cam_cfg.get("lens_position", 2.0)),
+                 backend=str(_cam_cfg.get("backend", "auto") or "auto"),
+                 source=_cam_cfg.get("source") or None)
 _snd_cfg = _settings.get("sound", {})
 _voice_cfg = _settings.get("voice", {})
 _sound = Sound(device=_snd_cfg.get("device", "default"),  # aplay-based, no-op if no audio
                enabled=bool(_snd_cfg.get("enabled", True)),
                lead_in=float(_snd_cfg.get("lead_in", 0.0)),  # pad opening words on slow-to-wake devices
-               sync_offset=float(_snd_cfg.get("sync_offset", 0.0)))  # lip-sync trim
+               sync_offset=float(_snd_cfg.get("sync_offset", 0.0)),  # lip-sync trim
+               # Shorter pad for sentences 2..n of one reply — every sentence is
+               # its own aplay and so reopens the device. See Sound.__init__.
+               gap_lead_in=float(_snd_cfg.get("gap_lead_in", 0.12)),
+               audit=_boot_audit)           # dry run: render + time speech, play nothing
 # Load the piper voice now, off the request path: the first synthesis pays a
 # ~1.7s model load, and we'd rather spend it at boot than on FRED's first reply.
 threading.Thread(target=_sound.warm, name="tts-warm", daemon=True).start()
@@ -82,16 +148,17 @@ _track_cfg = {k: v for k, v in (_settings.get("track") or {}).items()
               if k in TUNABLE}             # drop stale/unknown keys: a hand-edited
                                            # settings.json must not break startup
 # Remote smart-sensor nodes (a Pico in the stomach) push readings/events here,
-# relayed by the chest Pi over the Bluetooth PAN. Events land in the transcript.
+# relayed by the chest Pi over the robot LAN. Events land in the transcript.
 # Built first because two things downstream consume it: the tracker takes a
 # left/right bearing off the ultrasonics, and the assistant hands the whole hub
 # to Claude as a tool so FRED can answer "is anyone there?" from real hardware.
 _sensor_cfg = _settings.get("sensors", {})
 _sensors = SensorHub(on_event=None, log=_log,
                      offline_after=float(_sensor_cfg.get("offline_after", 10.0)))
+
 # The Insta360 X5 on the cart mast (UVC webcam mode) + the surround-awareness
-# layer over it. Independent of the head camera and of the MyRobotLab handoff —
-# it's a plain USB device the handoff doesn't cover. Mocks itself without one.
+# layer over it. Independent of the head camera — a plain USB device. Mocks
+# itself without one. Built before the tracker, which takes bearings from it.
 _c360_cfg = _settings.get("camera360", {})
 _camera360 = Camera360(source=str(_c360_cfg.get("source", "auto")),
                        device=str(_c360_cfg.get("device", "/dev/video8")),
@@ -103,46 +170,120 @@ _surround_cfg = _settings.get("surround", {})
 _surround = SurroundVision(_camera360, event_cb=_log.event,
                            **{k: v for k, v in _surround_cfg.items()
                               if k in SURROUND_TUNABLE})
-# The cart base (Project-FRED-Cart Pico over USB serial), its speed governed
-# live by what the 360 camera sees in the direction of travel.
-_cart_cfg = _settings.get("cart", {})
-_cart = Cart(port=str(_cart_cfg.get("port", "/dev/ttyACM1")),
-             baud=int(_cart_cfg.get("baud", 115200)),
-             guard_cb=_surround.nav_assess, log=_log,
-             max_speed=int(_cart_cfg.get("max_speed", 150)),
-             max_steer=int(_cart_cfg.get("max_steer", 300)),
-             enabled=bool(_cart_cfg.get("enabled", False)))
-_cart.ai_drive = bool(_cart_cfg.get("ai_drive", False))   # Claude's drive_cart gate
+
+# Wide-angle spotter: the PanaCast on the chest touchscreen, looking out at
+# ~180 degrees. Built before the tracker because the tracker consumes it.
+_spot_cfg = _settings.get("spotter", {})
+# Third bearing source: which way a voice came from. Built before the tracker
+# for the same reason the spotter is — _bearing_hint closes over it.
+_doa_cfg = {k: v for k, v in (_settings.get("mic_doa") or {}).items()
+            if k in DOA_TUNABLE}         # same filter as "track": a hand-edited
+                                         # settings.json must not break startup
+# Re-apply any configured XVF3800 gain/AGC tuning — the array forgets it across a
+# power cycle. A no-op unless settings.voice.xvf_params is set, so a rig without
+# the array or without a reason to tune it is untouched. See inmoov/xvf_params.py.
+# Done at boot and again whenever DOA picks the array back up after a USB reset,
+# which wipes the tuning just as a power cycle does.
+def _apply_xvf_params():
+    xvf_params.apply_from_settings(_settings, log=lambda m: print(m, flush=True))
 
 
-def _tracker_bearing():
-    """Best available "someone is over there" hint for the face tracker.
+_mic_doa = MicDoa(log=lambda m: print(m, flush=True),
+                  on_reattach=_apply_xvf_params, **_doa_cfg)
+_apply_xvf_params()
+# Deliberately not read from settings: diagnostic mode never survives a restart.
+# See inmoov/diagnostic.py — the failure it guards is flipping this on in the
+# workshop and unpacking the robot at a school two days later.
+_diagnostic = DiagnosticMode(log=lambda m: print(m, flush=True))
+_spotter = WideSpotter(log=lambda m: print(m, flush=True),
+                       device=_spot_cfg.get("device", "PanaCast"),
+                       detector=str(_spot_cfg.get("detector", "yunet")),
+                       detect_hz=float(_spot_cfg.get("detect_hz", 4.0)),
+                       detect_width=int(_spot_cfg.get("detect_width", 1920)),
+                       view_hz=float(_spot_cfg.get("view_hz", 10.0)),
+                       view_width=int(_spot_cfg.get("view_width", 1280)))
 
-    The 360 camera, when it's watching, actually *sees* people and beats two
-    ultrasonics at their own game; otherwise fall through to the chest sensors.
-    0.0 is a valid bearing (dead ahead), so test against None, not truthiness.
+
+def _bearing_hint():
+    """Where is somebody, when the head camera has nothing?
+
+    The 360 camera answers first while it is watching: it sees people all the
+    way round, behind him included, which nothing below can.
+
+    The PanaCast answers first: it is an actual face detector across ~180
+    degrees, so it can tell a person from the furniture and give a real bearing.
+
+    The mic array answers next. A voice is a person — which is more than the
+    range-finders below can tell you — and it carries in the dark and from
+    behind the head, where no camera here reaches. It is second rather than
+    first because a face detector is far more accurate about *where*, and
+    because it only has an opinion while somebody is actually talking.
+
+    The chest ultrasonics remain the fallback for when the others are off, blind
+    or starting up — they see a wide arc too, they just cannot tell you what
+    they are looking at. All three return None for "no opinion", which the
+    tracker distinguishes from "straight ahead".
     """
     if _surround.is_running():
-        b = _surround.bearing()
-        if b is not None:
-            return b
-    return _sensors.bearing(
-        left=_sensor_cfg.get("bearing_left", "dist_left"),
-        right=_sensor_cfg.get("bearing_right", "dist_right"))
+        hint = _surround.bearing()
+        if hint is not None:                # 0.0 is dead ahead, not "no opinion"
+            return hint
+    if _spot_cfg.get("enabled", True):
+        hint = _spotter.bearing()
+        if hint is not None:
+            return hint
+    hint = _mic_doa.bearing()               # None unless a voice was heard recently
+    if hint is not None:
+        return hint
+    return _sensors.bearing(left=_sensor_cfg.get("bearing_left", "dist_left"),
+                            right=_sensor_cfg.get("bearing_right", "dist_right"))
 
 
 _tracker = FaceTracker(_camera, _ctrl,       # face-follow: eyes + neck + head tilt
                        event_cb=_log.event,  # logs face-detected / lost / tracking on-off
-                       # Coarse "someone is over there" for when the camera has
-                       # nothing — surround vision first, ultrasonics as backup.
-                       bearing_cb=_tracker_bearing,
+                       bearing_cb=_bearing_hint,
                        **_track_cfg)         # bench tuning persisted from /api/track
+# Whisper's second opinion on the sentence after his name, if voice.transcriber
+# asks for it. Loads on its own thread from here, like the local brain warms,
+# so the first sentence after boot does not pay for the model.
+_transcriber = transcriber_mod.make(_voice_cfg)
+if _transcriber is not None:
+    _transcriber.start()
+_weather = weather_mod.make((_settings.get("brain") or {}).get("weather"))
 _assistant = Assistant(_ctrl, _status_led, _tracker, _sound,  # voice: wake word + Claude + lip-sync
+                       transcriber=_transcriber,
+                       weather=_weather,
                        device=_snd_cfg.get("device", "plughw:0,0"), log=_log,
                        mic_gain=float(_voice_cfg.get("gain", 1.0)),
+                       # Which channel of the mic to transcribe, for an array
+                       # that presents more than one. See settings.voice.
+                       mic_channels=int(_voice_cfg.get("mic_channels", 1)),
+                       mic_channel=int(_voice_cfg.get("mic_channel", 0)),
+                       diagnostic=_diagnostic,   # off until the panel says otherwise
                        model=_voice_cfg.get("model") or None,
                        sensors=_sensors, camera360=_camera360,
-                       surround=_surround, cart=_cart)
+                       surround=_surround,
+                       brain_cfg=_settings.get("brain", {}),   # cloud/local routing
+                       asr_model=_voice_cfg.get("asr_model"),
+                       # Listen through his own replies so he can be interrupted.
+                       barge_in=bool(_voice_cfg.get("barge_in", True)),
+                       # Stop mid-reply when the visitor walks off.
+                       stop_when_alone=bool(_voice_cfg.get("stop_when_alone", True)),
+                       # Say "Hmm..." when a model keeps him silent this long (V1).
+                       earcon_after=float(_voice_cfg.get("earcon_after", EARCON_AFTER)),
+                       earcon=bool(_voice_cfg.get("earcon", True)),
+                       earcon_text=str(_voice_cfg.get("earcon_text") or ""))
+# The earcon into the TTS cache now, for the same reason the voice is warmed
+# above: the first slow answer of the day should not also pay a render.
+threading.Thread(target=_assistant.warm_earcon, name="earcon-warm", daemon=True).start()
+# Opt-in utterance capture (off by default): the listener feeds it, this points
+# it at the configured directory and turns it on only if settings say so. Only
+# what passes the wake gate is ever written — see inmoov/uttercap.py.
+_cap_cfg = _voice_cfg.get("capture", {})
+uttercap.configure(enabled=bool(_cap_cfg.get("enabled", False)),
+                   directory=str(ROOT / str(_cap_cfg.get("dir", "logs/utterances"))),
+                   seconds=float(_cap_cfg.get("seconds", 12)),
+                   max_files=int(_cap_cfg.get("max_files", 300)))
 # Auto-greet: the first thing FRED does unprompted. Wired after the assistant
 # because it needs one, and attached to the hub afterwards because the hub was
 # needed to build the assistant — the dependency is genuinely circular.
@@ -150,13 +291,33 @@ _greet_cfg = _settings.get("greet", {})
 _greeter = Greeter(_assistant, log=_log,
                    enabled=bool(_greet_cfg.get("enabled", True)),
                    cooldown=float(_greet_cfg.get("cooldown", 90.0)),
-                   blocked=lambda: _handoff_released)
-_sensors.set_on_event(_greeter.on_event)
+                   sightings_to_greet=int(_greet_cfg.get("sightings_to_greet", 3)))
+# V5: let the wide camera trigger greetings too. It sees 180°, where the
+# ultrasonic cone doesn't, so someone entering from the side was tracked-toward
+# but never greeted. The spotter reports each detect cycle; the greeter's N-gate
+# and cooldown turn a run of sightings into one greeting.
+_spotter.set_cycle_observer(_greeter.on_sighting)
+def _on_sensor_event(node, event):
+    """Fan the sensor node's events out to everything that cares.
+
+    Two consumers now: the greeter speaks up when somebody arrives, and the
+    assistant shuts up when they leave. Each is wrapped so a fault in one
+    cannot stop the other hearing about it.
+    """
+    for name, hook in (("greeter", _greeter.on_event),
+                       ("assistant", _assistant.on_sensor_event)):
+        try:
+            hook(node, event)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[sensors] {name} hook failed: {exc}")
+
+
+_sensors.set_on_event(_on_sensor_event)
 _serial_sensors = SerialSensorReader(
     _sensors, port=_sensor_cfg.get("serial_port", "/dev/ttyACM0"),
     baud=int(_sensor_cfg.get("serial_baud", 115200)), log=_log)
 # The chest display Pi (a second Pi on the 7" DSI panel) — no host set = feature
-# off. Nothing here touches the head's hardware, so it ignores the handoff.
+# off.
 _display_cfg = _settings.get("display", {})
 _display = DisplayClient(host=str(_display_cfg.get("host", "") or ""),
                          port=int(_display_cfg.get("port", 8081)),
@@ -166,52 +327,175 @@ _display = DisplayClient(host=str(_display_cfg.get("host", "") or ""),
 # design: it polls, and a dead chest Pi can never stall a reply.
 _voice_pusher = VoicePusher(_display, _assistant)
 _voice_pusher.start()
+# The hoverboard drive base. Its Pico is on the chest Pi, so it rides on the same
+# connection as the display — one chest Pi, one address. Disabled by default:
+# a robot that can move itself should not start able to, and the safety layer
+# that stops it lives on the chest Pi, not here (see inmoov/cart.py).
+_cart_cfg = _settings.get("cart", {})
+_event_cfg = _settings.get("event", {})
+# One switch three features ask about. Read at call time, never copied,
+# so flipping it mid-event reaches the brain, the cart and the camera
+# without restarting any of them. See inmoov/event.py.
+_event = EventMode(enabled=bool(_event_cfg.get("enabled")),
+                   max_words=int(_event_cfg.get("max_words", 25)),
+                   cart_speed=int(_event_cfg.get("cart_speed", 120)))
+wakestats.set_event(_event.enabled)          # tag the wake tally from the first boot state
+_assistant.listener.set_event_strict(_event.enabled)   # V4: match the wake-gate strictness to boot event state
+_cart = CartClient(host=str(_display_cfg.get("host", "") or ""),
+                   port=int(_display_cfg.get("port", 8081)),
+                   token=str(_display_cfg.get("token", "") or ""))
+
+
+def _cart_enabled() -> bool:
+    """Both configured and switched on. Checked per request, so the admin
+    toggle takes effect without a restart."""
+    return bool(_cart_cfg.get("enabled")) and _cart.configured()
+
+
+# Hand the cart to the action layer so "come here" and Claude's drive tool can
+# reach it. cart_cfg goes too: speeds are policy, not something commands.py
+# should hardcode.
+_assistant.ctx.cart = _cart
+_assistant.ctx.cart_cfg = _cart_cfg
+# The head camera, so Claude's look tool can see through FRED's eyes. Same
+# object the /camera/* routes and the face tracker use — snapshot() starts the
+# sensor if it is idle, so a look works even with nobody watching the stream.
+_assistant.ctx.camera = _camera
+# The wide PanaCast too, for looks that need the whole room rather than what he
+# is facing. Only usable while the spotter is already running — commands.py
+# never starts it, because that costs about four cores.
+_assistant.ctx.spotter = _spotter
+_assistant.ctx.event = _event
+# The chest screen, so Claude can put something on it as part of an answer.
+# Same object the admin dropdown drives, so the two never disagree about what
+# is showing.
+_assistant.ctx.display = _display
+# FRED paints. The painter announces a slow picture through the assistant's
+# own voice, so "it's ready" comes out of the same speaker as everything else.
+_images = ImageMaker(_settings.get("images", {}), log=_log.event,
+                     announce=_assistant.speak)
+_assistant.ctx.images = _images
+_assistant.ctx.arms = _boards
+# The cart asks event mode for its ceiling on every command rather than being
+# told when it changes — one source of truth, and no way for the two to drift.
+_cart.speed_ceiling = lambda: _event.cart_speed
+# And what the 360 camera sees in the direction of travel slows or stops it,
+# whoever is driving — but only while surround vision is watching.
+_cart.guard = lambda speed: (_surround.nav_assess(speed) if _surround.is_running()
+                             else None)
 _lock = threading.Lock()                     # serialize hardware access
 
-# Whether the shared hardware is currently released to another owner (MyRobotLab).
-# Seeded from persisted settings; the objects are actually suspended just below.
-_handoff_released = _boot_released
+# Audit (dry run) mode. This blocks NOTHING at the API layer:
+# every control still works and still reports what it would have done. The
+# suppression happens one level down, inside the controller/sound/cart objects,
+# which is what lets the panel stay fully interactive while the robot sits still.
+_audit_mode = _boot_audit
 
 
-def _apply_handoff(release: bool) -> None:
-    """Release the shared hardware (I2C servos, audio card, camera) to another
-    owner — MyRobotLab — or take it back. Only ONE stack may drive the hardware at
-    a time. Idempotent; safe to call at boot (nothing is running yet)."""
-    global _handoff_released
-    if release:
-        _assistant.stop()          # stop the wake-word listener → frees the mic (arecord)
-        _tracker.stop()            # stop face tracking → drops its camera hold
-        _camera.suspend()          # force-stop the sensor, report unavailable
-        _sound.suspend()           # stop playback, block new
-        _ctrl.suspend()            # relax servos + release the I2C/PCA9685 bus
-        _status_led.off()          # drop the status LED so nothing stays lit
+def _apply_audit(on: bool) -> None:
+    """Enter or leave audit mode. Idempotent; safe to call at boot.
+
+    Order matters on the way in: stop what is already in motion before the
+    objects stop accepting motion, so nothing is left mid-clip or rolling on a
+    watchdog nobody is feeding any more. The servos are NOT relaxed — they hold
+    their pose, because letting the head sag is exactly the motion we're here to
+    prevent.
+
+    On the way out the servos go to rest. During an audit the readouts track
+    commanded angles while the hardware sat still, so the two have diverged;
+    rest is the one pose both are known to agree on, and it's the same sweep the
+    app does at boot.
+    """
+    global _audit_mode
+    on = bool(on)
+    if on:
+        _sound.stop()              # cut any clip that is mid-play
+        _cart.set_audit(True)      # stops the cart for real on the way in
+        _ctrl.set_audit(True)      # hold position, accept no new motion
+        _boards.set_audit(True)
+        _sound.set_audit(True)     # render + time speech, but open no device
     else:
-        _ctrl.resume()             # re-open I2C, re-apply ranges, return to rest
-        _sound.resume()
-        _camera.resume()           # sensor restarts lazily on the next viewer
-        # The voice listener and face tracker are left OFF — re-arm them from
-        # their own toggles, as after any boot.
-    _handoff_released = release
+        _sound.set_audit(False)
+        _cart.set_audit(False)
+        _ctrl.set_audit(False)
+        _boards.set_audit(False)   # no rest sweep: the arms are not calibrated yet
+        _ctrl.rest()               # re-sync hardware and readout to a known pose
+    _audit_mode = on
 
 
-def _handoff_state() -> dict:
-    return {"released": _handoff_released,
-            "servo_suspended": _ctrl.is_suspended(),
-            "sound_suspended": _sound.is_suspended(),
-            "camera_suspended": _camera.is_suspended()}
+def _audit_state() -> dict:
+    return {"audit": _audit_mode,
+            "servo_audit": _ctrl.is_audit(),
+            "sound_audit": _sound.is_audit(),
+            "cart_audit": _cart.is_audit()}
 
 
-def _blocked_by_handoff():
-    """A 409 response when the hardware is released to MyRobotLab, else None. Used
-    to reject endpoints that would otherwise grab the shared hardware back."""
-    if _handoff_released:
-        return jsonify({"error": "hardware is released to MyRobotLab — turn the "
-                                 "handoff off in the admin panel first",
-                        "handoff": _handoff_state()}), 409
-    return None
+SESSION_COOKIE = "fred_pin"
+
+
+def _session_key() -> str:
+    """The HMAC key session cookies are signed with, minted once into settings
+    and persisted so a brain restart no longer re-keypads every phone."""
+    return auth.session_secret(_settings, save_settings)
+
+
+# Mint-and-persist the secret at boot, before the first request, so the write
+# happens once at a quiet moment rather than racing the first two logins.
+_session_key()
+
+
+@app.before_request
+def _guard_host():
+    """Reject a request whose Host is not one this robot answers to — the DNS-
+    rebinding guard for the LAN-trust exemption (see auth.host_allowed). Runs
+    before everything, but IP-literal and tailnet Hosts pass, so the Pis, the
+    admin, and every legitimate name are untouched."""
+    if not auth.host_allowed(request.host or "", _settings):
+        return "unrecognised Host", 421
+
+
+def _authed() -> bool:
+    """May this request touch the settings, or anything that moves him?
+
+    Three ways to be allowed, in the order they are cheapest to answer: no PIN
+    has been set (nothing is gated until one is), the caller is one of the
+    robot's own machines on the wired LAN, or it holds a live session.
+    """
+    if not auth.is_set(_settings):
+        return True
+    if auth.is_trusted(request.remote_addr or "", _settings):
+        return True
+    return auth.token_valid(request.cookies.get(SESSION_COOKIE, ""), _session_key())
+
+
+def _needs_pin():
+    """A 401 when this request has not unlocked, else None.
+
+    A guard that reads as one line at the top of the handler, with the reason
+    coming back as JSON the panel can act on.
+    """
+    if _authed():
+        return None
+    return jsonify({"error": "locked; enter the panel PIN", "locked": True}), 401
+
+
+def protected(fn):
+    """Require the PIN for this route. Ordering matters — see api_cart_stop for
+    the one thing that must never carry this."""
+    @wraps(fn)
+    def wrapper(*a, **kw):
+        if (locked := _needs_pin()):
+            return locked
+        return fn(*a, **kw)
+    return wrapper
+
 
 
 def _state() -> dict:
+    # Ask the servo link to freshen first, so the panel's MOCK/LIVE badge is the
+    # head's answer and not a stale guess from before it was reachable. No-op on
+    # a local controller, and on a healthy remote one.
+    _ctrl.refresh_state()
     servos = {}
     for name, s in _config["servos"].items():
         servos[name] = {
@@ -226,12 +510,17 @@ def _state() -> dict:
     channels = _config.get("i2c", {}).get("channels", 16)
     camera = _camera.settings() if _camera.available() else None
     sound = _sound.settings() if _sound.available() else None
-    return {"mock": _ctrl.mock, "channels": channels, "camera": camera,
+    return {"mock": _ctrl.mock, "servo_link": _ctrl.status(),
+            "channels": channels, "camera": camera,
             "sound": sound, "led": _status_led.status(), "track": _tracker.status(),
+            "spotter": _spotter.status(), "mic_doa": _mic_doa.status(),
+            "diagnostic": _diagnostic.status(),
             "voice": _assistant.status(), "servos": servos, "settings": _settings,
-            "handoff": _handoff_state(), "sensors": _sensors.state(),
-            "greet": _greeter.state(), "camera360": _camera360.status(),
-            "surround": _surround.status(), "cart": _cart.status()}
+            "audit": _audit_state(),
+            "brain": _assistant.brain.status(),
+            "event": _event.status(),
+            "sensors": _sensors.state(), "greet": _greeter.state(),
+            "camera360": _camera360.status(), "surround": _surround.status()}
 
 
 @app.get("/")
@@ -241,6 +530,10 @@ def index():
 
 @app.get("/admin")
 def admin():
+    """Not @protected, deliberately: gating the *page* would answer a browser
+    with raw JSON. The markup is a shell — every value in it arrives from
+    /api/settings, which is gated, so an unlocked visitor gets an empty form and
+    the keypad, which is the behaviour we wanted anyway."""
     return render_template("admin.html")
 
 
@@ -249,12 +542,138 @@ _HEX_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 _HOST_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9.\-]*[A-Za-z0-9])?$")
 
 
+@app.get("/api/auth")
+def api_auth_state():
+    """Whether a PIN exists, and whether this caller is past it.
+
+    Deliberately open: the panel has to be able to ask "should I show a keypad?"
+    before it has anything to show one with. It leaks only that the robot has a
+    PIN, which anyone can discover by trying a gated endpoint anyway.
+    """
+    return jsonify({
+        "pin_set": auth.is_set(_settings),
+        "unlocked": _authed(),
+        "trusted": auth.is_trusted(request.remote_addr or "", _settings),
+        "locked_for": round(auth.locked_for(request.remote_addr or ""), 1),
+    })
+
+
+@app.post("/api/auth/login")
+def api_auth_login():
+    """Trade a correct PIN for a session cookie.
+
+    The wait is checked before the digest, so a locked-out caller costs nothing
+    to refuse and cannot use the timing to learn anything.
+    """
+    addr = request.remote_addr or ""
+    if (wait := auth.locked_for(addr)) > 0:
+        return jsonify({"error": f"too many wrong tries; wait {wait:.0f}s",
+                        "locked_for": round(wait, 1)}), 429
+    if not auth.is_set(_settings):
+        return jsonify({"error": "no PIN is set on this panel"}), 400
+    pin = (request.get_json(force=True) or {}).get("pin", "")
+    if not auth.check_pin(_settings, pin):
+        wait = auth.note_failure(addr)
+        return jsonify({"error": "wrong PIN", "locked_for": round(wait, 1)}), 403
+    auth.note_success(addr)
+    resp = jsonify({"unlocked": True})
+    resp.set_cookie(SESSION_COOKIE, auth.mint_token(_session_key()), httponly=True,
+                    samesite="Lax", max_age=auth.SESSION_S)
+    return resp
+
+
+@app.post("/api/auth/logout")
+def api_auth_logout():
+    auth.revoke_token(request.cookies.get(SESSION_COOKIE, ""))
+    resp = jsonify({"unlocked": False})
+    resp.delete_cookie(SESSION_COOKIE)
+    return resp
+
+
+@app.post("/api/auth/pin")
+@protected
+def api_auth_set_pin():
+    """Set or change the PIN. Protected, so only someone already in may do it —
+    and when no PIN is set, everyone is already in, which is how the first one
+    gets chosen.
+
+    Changing it closes every open session, including the caller's own. Anything
+    else would leave whoever knew the old PIN still holding the panel.
+    """
+    data = request.get_json(force=True) or {}
+    new = auth.normalise(data.get("pin", ""))
+    if not new:
+        return jsonify({"error": f"the PIN must be {auth.PIN_LENGTH} digits"}), 400
+    # A change needs the old one even from an unlocked session: the session may
+    # be a laptop someone walked away from, and the LAN is trusted wholesale.
+    if auth.is_set(_settings) and not auth.check_pin(_settings, data.get("current", "")):
+        return jsonify({"error": "the current PIN is wrong"}), 403
+    _settings.setdefault("auth", {})["pin"] = auth.make_material(new)
+    save_settings(_settings)
+    auth.rotate_secret(_settings, save_settings)
+    pushed, why = _push_pin_to_chest()
+    resp = jsonify({"pin_set": True, "chest_synced": pushed, "chest_error": why})
+    resp.delete_cookie(SESSION_COOKIE)
+    return resp
+
+
+@app.post("/api/auth/pin/clear")
+@protected
+def api_auth_clear_pin():
+    """Remove the PIN, reopening the panel. Needs the current one."""
+    data = request.get_json(force=True) or {}
+    if auth.is_set(_settings) and not auth.check_pin(_settings, data.get("current", "")):
+        return jsonify({"error": "the current PIN is wrong"}), 403
+    _settings.setdefault("auth", {}).pop("pin", None)
+    save_settings(_settings)
+    auth.rotate_secret(_settings, save_settings)
+    _push_pin_to_chest()
+    resp = jsonify({"pin_set": False})
+    resp.delete_cookie(SESSION_COOKIE)
+    return resp
+
+
+@app.get("/api/auth/material")
+def api_auth_material():
+    """The salt and digest, for the chest touchscreen to check a PIN itself.
+
+    **Robot LAN only, never a session.** A digest handed to the access point is
+    ten thousand offline guesses, which is an afternoon — the whole reason the
+    PIN is worth anything is that this never leaves the wired network.
+
+    The chest asks for this rather than being pushed it because its menu must
+    keep working with the brain switched off: it caches the answer and falls
+    back to that cache. See deploy/display/pin_gate.py.
+    """
+    if not auth.is_trusted(request.remote_addr or "", _settings):
+        return jsonify({"error": "robot LAN only"}), 403
+    return jsonify({"pin_set": auth.is_set(_settings),
+                    "pin": auth.material(_settings)})
+
+
+def _push_pin_to_chest() -> tuple[bool, str]:
+    """Tell the chest the PIN changed, so its screen does not lag behind.
+
+    Best effort by design: the chest pulls this itself when its menu opens, so a
+    failure here costs freshness rather than correctness. The admin page reports
+    it anyway — "I changed the PIN and the touchscreen still wants the old one"
+    should be answerable without guessing.
+    """
+    try:
+        return (bool(_display.push_pin(auth.material(_settings)
+                                       if auth.is_set(_settings) else {})), "")
+    except (DisplayError, OSError) as exc:
+        return False, str(exc)
+
+
 @app.get("/api/settings")
+@protected
 def api_get_settings():
     return jsonify(_settings)
 
 
 @app.post("/api/settings")
+@protected
 def api_set_settings():
     """Validate + persist admin settings, and apply the camera ones live.
 
@@ -289,9 +708,7 @@ def api_set_settings():
             _assistant.listener.gain = gain                   # live, no restart needed
         if "enabled" in voice:
             cur["enabled"] = bool(voice["enabled"])
-            # Persist the preference, but don't grab the mic back while the
-            # hardware is handed off to MyRobotLab — it takes effect on resume.
-            if cur["enabled"] and _assistant.available() and not _handoff_released:
+            if cur["enabled"] and _assistant.available():
                 _assistant.start()
             elif not cur["enabled"]:
                 _assistant.stop()
@@ -347,6 +764,26 @@ def api_set_settings():
         _display.configure(host=cur.get("host"), port=cur.get("port"),
                            token=cur.get("token"))
 
+    imgs = data.get("images")
+    if isinstance(imgs, dict):
+        cur = _settings.setdefault("images", {})
+        if "backend" in imgs:
+            backend = str(imgs["backend"]).strip().lower()
+            if backend not in IMAGE_BACKENDS:
+                return jsonify({"error": "images.backend must be one of "
+                                         + ", ".join(IMAGE_BACKENDS)}), 400
+            cur["backend"] = backend
+        if "openai_api_key" in imgs:
+            cur["openai_api_key"] = str(imgs["openai_api_key"]).strip()
+        for key, lo, hi in (("hold_s", 0, 3600), ("steps", 1, 8), ("size", 256, 1024)):
+            if key in imgs:
+                try:
+                    val = int(imgs[key])
+                except (TypeError, ValueError):
+                    return jsonify({"error": f"images.{key} must be a whole number"}), 400
+                cur[key] = max(lo, min(hi, val))
+        _images.configure(cur)                 # live: the next picture uses it
+
     greet = data.get("greet")
     if isinstance(greet, dict):
         cur = _settings.setdefault("greet", {})
@@ -393,26 +830,137 @@ def api_set_settings():
     return jsonify(_settings)
 
 
-@app.get("/api/handoff")
-def api_handoff_status():
-    return jsonify(_handoff_state())
+@app.get("/api/brain")
+def api_brain_status():
+    """Which LLM backend answers open questions, and what's actually reachable."""
+    return jsonify(_assistant.brain.status())
 
 
-@app.post("/api/handoff")
-def api_handoff():
-    """Release the shared hardware to MyRobotLab, or take it back.
+@app.post("/api/poweroff")
+@protected
+def api_poweroff():
+    """Power this machine down. Used by the chest touchscreen when packing up.
 
-    Body: ``{"release": true|false}``. When released, the InMoov app drops the
-    I2C/PCA9685 servos, the USB audio card, and the Pi camera so MRL (port 8888)
-    can drive them; when taken back, the servos return to rest and audio/camera
-    work again. The choice persists so an event set-up survives a reboot."""
+    Deferred by a couple of seconds rather than called inline, because the reply
+    has to reach the panel first: a shutdown that races the HTTP response looks
+    to the toucher like the button did nothing, and the second press lands on a
+    machine that is already going down.
+
+    Only power off — never reboot. The one thing this is for is the end of an
+    event, and a robot that comes back up in a packed crate is worse than one
+    that does not."""
+    def _go():
+        time.sleep(2.0)
+        subprocess.run(["sudo", "-n", "systemctl", "poweroff"], check=False)
+
+    _log.event("power off requested from the touchscreen")
+    threading.Thread(target=_go, name="poweroff", daemon=True).start()
+    return jsonify({"ok": True, "machine": "nuc"})
+
+
+@app.get("/api/event")
+def api_event_status():
+    """Is FRED at an event, and what would that cap."""
+    return jsonify(_event.status())
+
+
+@app.post("/api/event")
+@protected
+def api_event():
+    """Turn event mode on or off: ``{"enabled": bool}``. Persists.
+
+    Protected because it relaxes as well as tightens — switching it off puts the
+    cart's speed ceiling back up, and that is not a thing a passer-by should be
+    able to do to a 350 lb machine in a room full of children."""
     data = request.get_json(force=True) or {}
-    if "release" in data:
-        with _lock:
-            _apply_handoff(bool(data["release"]))
-        _settings.setdefault("hardware", {})["released"] = _handoff_released
+    if "enabled" in data:
+        _event.set(bool(data["enabled"]))
+        wakestats.set_event(_event.enabled)   # so the wake tally knows it was a fair
+        _assistant.listener.set_event_strict(_event.enabled)   # V4: tighten the wake gate at a fair
+        _settings.setdefault("event", {})["enabled"] = _event.enabled
         save_settings(_settings)
-    return jsonify(_handoff_state())
+        _log.event(f"event mode {'on' if _event.enabled else 'off'}")
+        if _event.enabled:
+            # Put the turn-taking signal up rather than only defending it. The
+            # guard in commands.py stops Claude switching *away* from a voice
+            # display, which does nothing if the chest was already showing a
+            # decorative one when the switch was thrown — and at that point the
+            # queue has no way to tell whether he is listening to them.
+            try:
+                if _display.configured() and \
+                        _display.state().get("animation") not in cmd_mod.VOICE_STATE_DISPLAYS:
+                    _display.select("voice-hud")
+                    _log.event("chest switched to the voice indicator for the event")
+            except Exception as exc:  # noqa: BLE001 - never fail the toggle over this
+                _log.event(f"could not switch the chest display: {exc}")
+    return jsonify(_event.status())
+
+
+@app.post("/api/brain")
+@protected
+def api_brain():
+    """Switch the LLM backend: ``{"backend": "auto"|"claude"|"local"}``.
+
+    Also takes ``{"vision": bool}`` and ``{"web_search": bool}``.
+
+    'auto' prefers Claude and falls back to the local model when the network is
+    down — which is the case FRED is taken to events for. Persists."""
+    data = request.get_json(force=True) or {}
+    if "vision" in data:
+        # Whether FRED may look through a camera to answer. Persisted like the
+        # backend, so "no photographs today" survives a reboot.
+        _assistant.brain.set_vision(bool(data["vision"]))
+        _settings.setdefault("brain", {})["vision"] = _assistant.brain.vision
+        save_settings(_settings)
+    if "face_recall" in data:
+        # Whether he may notice a returning visitor. Nothing it holds is ever
+        # written down — see inmoov/face_id.py — but it is still a face being
+        # recognised, so it gets a switch and the switch is honoured at once.
+        _assistant.brain.set_face_recall(bool(data["face_recall"]))
+        _settings.setdefault("brain", {})["face_recall"] = _assistant.brain.face_recall
+        save_settings(_settings)
+    if "web_search" in data:
+        # Whether FRED may look things up on the internet. Claude-only and
+        # billed per search, so it is a switch rather than a constant.
+        _assistant.brain.set_web_search(bool(data["web_search"]))
+        _settings.setdefault("brain", {})["web_search"] = _assistant.brain.web_search
+        save_settings(_settings)
+    if "backend" in data:
+        want = str(data["backend"])
+        if want not in BACKENDS:
+            return jsonify({"error": f"backend must be one of {list(BACKENDS)}"}), 400
+        _assistant.brain.set_backend(want)
+        _settings.setdefault("brain", {})["backend"] = _assistant.brain.backend
+        save_settings(_settings)
+        # Pull the model into RAM off the request path, so the first question
+        # after a switch to local isn't slow.
+        threading.Thread(target=_assistant.brain.warm_local,
+                         name="local-warm", daemon=True).start()
+    return jsonify(_assistant.brain.status())
+
+
+@app.get("/api/audit")
+def api_audit_status():
+    return jsonify(_audit_state())
+
+
+@app.post("/api/audit")
+@protected
+def api_audit():
+    """Enter or leave audit (dry run) mode.
+
+    Body: ``{"audit": true|false}``. When on, the panel stays fully usable —
+    servo sliders, the chat box, the wake word, face tracking — but no audio
+    leaves the speaker, no pulse reaches a servo, and the cart will not drive.
+    Commanded angles are still tracked and reported, so the readouts show what
+    FRED would have done. The choice persists across reboots."""
+    data = request.get_json(force=True) or {}
+    if "audit" in data:
+        with _lock:
+            _apply_audit(bool(data["audit"]))
+        _settings.setdefault("audit", {})["enabled"] = _audit_mode
+        save_settings(_settings)
+    return jsonify(_audit_state())
 
 
 @app.get("/api/sensors")
@@ -431,7 +979,7 @@ def api_sensors_ingest():
 
     A node may name its own ``transport`` so the panel shows the real path: the
     stomach node reaches us as ``serial-relay`` (USB into the chest Pi, forwarded
-    over the Bluetooth PAN by display_control.py), which is worth telling apart
+    over the robot LAN by display_control.py), which is worth telling apart
     from a node posting directly over WiFi."""
     token = str(_sensor_cfg.get("token", "") or "")
     data = request.get_json(force=True, silent=True) or {}
@@ -464,6 +1012,282 @@ def api_display_status():
     return jsonify(body)
 
 
+@app.get("/api/cart")
+def api_cart_status():
+    """Drive base state for the panel: telemetry, PS2 priority, reachability.
+
+    Like the display, an unreachable cart is a reportable condition rather than
+    an error — the robot standing still does not depend on its wheels."""
+    if not _cart_enabled():
+        return jsonify({"configured": False, "online": False,
+                        "enabled": bool(_cart_cfg.get("enabled"))})
+    body = {"configured": True, "enabled": True,
+            "limits": {"steer": cart_mod.STEER_LIMIT, "speed": cart_mod.SPEED_LIMIT}}
+    try:
+        body.update(_cart.state())
+        body["online"] = True
+    except CartError as e:
+        body.update({"online": False, "error": str(e)})
+    return jsonify(body)
+
+
+@app.post("/api/cart/drive")
+@protected
+def api_cart_drive():
+    """One drive command from the joystick. Body: ``{"steer": 0, "speed": 150}``.
+
+    Authority expires: the chest Pi stops the cart unless this is called again
+    inside its watchdog window, so the panel posts continuously while the stick
+    is held and simply stops posting when it is released. Letting go, closing
+    the tab, or losing WiFi are all the same event to the cart, and all of them
+    stop it — which is why there is no "release" call to forget to send."""
+    if not _cart_enabled():
+        return jsonify({"error": "cart is disabled"}), 409
+    data = request.get_json(force=True) or {}
+    try:
+        return jsonify(_cart.drive(data.get("steer", 0), data.get("speed", 0)))
+    except CartError as e:
+        return jsonify({"error": str(e)}), 502
+
+
+@app.get("/api/whoami")
+def api_whoami():
+    """Names, addresses, versions, and what the brain is inferring on.
+
+    Open, like /api/state and /api/health: it is identity, not control, and it
+    carries nothing that is not already discoverable by anyone who can reach
+    this port. The one genuinely useful fact is the inference device — the
+    answer to "is the local brain on the GPU or has it silently been on the CPU
+    since boot", which otherwise needs a journal grep over SSH.
+    """
+    return jsonify(whoami_mod.state(brain=_assistant.brain,
+                                    hotspot=hotspot_mod.state()))
+
+
+# The browser terminals answer on two sets of ports, and which one a given
+# browser can reach depends on how it got here. Tailscale Serve publishes the
+# loopback ttyds on 8081-8083 and only tailnet members can see those; the second
+# set of ttyds (fred-terminal*-local.service) binds every interface on 7691-7693
+# and takes a password. Machine -> (through Serve, direct).
+TERMINAL_PORTS = {"nuc": (8081, 7691), "head": (8082, 7692), "chest": (8083, 7693)}
+
+# Tailscale's own ranges: 100.64/10 is the CGNAT block it allocates from, and
+# fd7a:115c:a1e0::/48 the matching v6 one. An address in either arrived over the
+# tailnet, whatever hostname the browser used to get here.
+_TAILNET = (ipaddress.ip_network("100.64.0.0/10"),
+            ipaddress.ip_network("fd7a:115c:a1e0::/48"))
+
+
+def _on_tailnet(addr: str) -> bool:
+    try:
+        ip = ipaddress.ip_address((addr or "").strip())
+    except ValueError:
+        return False                    # cannot tell: assume not, and hand out
+    return any(ip in net for net in _TAILNET)   # the door that works everywhere
+
+
+def _host_only(host: str) -> str:
+    """``host`` with any :port removed, brackets on a v6 literal kept."""
+    if host.startswith("["):                    # [fd7a:115c:a1e0::1]:8080
+        return host.split("]", 1)[0] + "]"
+    return host.rsplit(":", 1)[0] if ":" in host else host
+
+
+@app.get("/api/terminals")
+def api_terminals():
+    """Where THIS browser should open the ttyd terminals.
+
+    Open, like /api/whoami: it is a set of URLs on ports anyone who can reach
+    this one can already find with a port scan, and both doors authenticate for
+    themselves.
+
+    The host is whatever the browser typed, so the answer stays right on every
+    name the panel answers to — fred, fred.tail58016f.ts.net, 10.0.0.1,
+    192.168.50.1 — without this file needing to know any of them. Only the port
+    changes, and it changes on the *client's* address rather than on that host:
+    a tailnet device coming in through the subnet route is SNATed to the NUC's
+    LAN address and looks local, which is correct, because from there the direct
+    ports are reachable and shorter.
+    """
+    tailnet = _on_tailnet(request.remote_addr or "")
+    host = _host_only(request.host or "") or "localhost"
+    return jsonify({
+        "tailnet": tailnet,
+        "urls": {name: f"http://{host}:{ports[0 if tailnet else 1]}"
+                 for name, ports in TERMINAL_PORTS.items()},
+    })
+
+
+@app.get("/api/hotspot")
+def api_hotspot_status():
+    """The 'fred' access point: is it up, and who has joined."""
+    return jsonify(hotspot_mod.state())
+
+
+@app.post("/api/hotspot")
+@protected
+def api_hotspot_set():
+    """Switch the access point on or off. Body: {"enabled": bool}.
+
+    Reported back as the state *after* the change rather than the request, so a
+    panel that asked for "on" and got a failure shows off, not a hopeful on."""
+    data = request.get_json(force=True) or {}
+    out = hotspot_mod.set_enabled(bool(data.get("enabled")))
+    return jsonify(out), (500 if out.get("error") else 200)
+
+
+@app.post("/api/hotspot/config")
+@protected
+def api_hotspot_config():
+    """Set the AP's network name and password. Body: {"ssid", "passphrase"}.
+
+    Gated like everything else that changes settings, and worth being gated: the
+    AP password is the outermost credential on this robot now that the access
+    point comes up at boot with a route to the internet behind it.
+
+    The reply never contains the passphrase. It was just typed in; echoing it
+    back would put a second copy on the wire for nobody's benefit.
+    """
+    data = request.get_json(force=True) or {}
+    out = hotspot_mod.configure(str(data.get("ssid", "")),
+                                str(data.get("passphrase", "")))
+    return jsonify(out), (400 if out.get("error") else 200)
+
+
+@app.get("/api/phrases")
+def api_phrases():
+    """The deck of one-tap things to say, by tab. Reading it is open, like the
+    transcript; changing it is gated below, like everything else that edits."""
+    return jsonify({"deck": phrases_mod.load()})
+
+
+@app.post("/api/phrases/add")
+@protected
+def api_phrases_add():
+    data = request.get_json(force=True) or {}
+    out = phrases_mod.add(str(data.get("tab", "")), str(data.get("text", "")))
+    return jsonify(out), (400 if out.get("error") else 200)
+
+
+@app.post("/api/phrases/remove")
+@protected
+def api_phrases_remove():
+    data = request.get_json(force=True) or {}
+    out = phrases_mod.remove(str(data.get("tab", "")), str(data.get("text", "")))
+    return jsonify(out), (400 if out.get("error") else 200)
+
+
+@app.get("/api/heard")
+@protected
+def api_heard():
+    """What FRED has been asked, and where each utterance went.
+
+    ?missed=1 keeps only what the command matcher did not recognise — the
+    review set after an event, where a misheard word ("servers" for "servos")
+    shows up as an LLM round trip that should have been a reflex. ?voice=1
+    drops what was typed, since typed text says nothing about the microphone.
+    Gated: this is a record of what people said to him.
+    """
+    return jsonify({"heard": heardlog.log().tail(
+        limit=min(int(request.args.get("limit", 200)), 1000),
+        only_missed=request.args.get("missed") == "1",
+        only_voice=request.args.get("voice") == "1")})
+
+
+@app.get("/api/heard.jsonl")
+@protected
+def api_heard_download():
+    """The whole log, one JSON object a line — the tuning set, to take away."""
+    return app.response_class(heardlog.log().raw(), mimetype="application/jsonl",
+                              headers={"Content-Disposition":
+                                       "attachment; filename=heard.jsonl"})
+
+
+@app.get("/api/uplink")
+def api_uplink_status():
+    """The WiFi FRED *joins* — the school's, the workshop's — not the one he
+    hosts. That is /api/hotspot, and the two are different radios."""
+    return jsonify(uplink_mod.state())
+
+
+@app.get("/api/uplink/scan")
+@protected
+def api_uplink_scan():
+    """Networks in range. Takes a couple of seconds: a radio has to sweep.
+
+    Gated, because a scan is a small physical action on a card that is also
+    carrying the robot's internet, and because the list of networks around a
+    school is not something to hand out to anyone who can reach the panel.
+    """
+    return jsonify({"networks": uplink_mod.scan()})
+
+
+@app.post("/api/uplink/join")
+@protected
+def api_uplink_join():
+    """Join a network. Body: {"ssid", "password"}.
+
+    Adds rather than replaces: the workshop's network stays saved, so the robot
+    finds his way home without anyone typing anything. The reply never contains
+    the password.
+    """
+    data = request.get_json(force=True) or {}
+    out = uplink_mod.join(str(data.get("ssid", "")), str(data.get("password", "")))
+    return jsonify(out), (200 if out.get("ok") else 400)
+
+
+@app.post("/api/uplink/forget")
+@protected
+def api_uplink_forget():
+    """Drop a saved network. Refuses the last one — a robot that has forgotten
+    every network needs a keyboard and a screen at the venue to get back."""
+    data = request.get_json(force=True) or {}
+    out = uplink_mod.forget(str(data.get("ssid", "")))
+    return jsonify(out), (200 if out.get("ok") else 400)
+
+
+@app.post("/api/cart/controller")
+@protected
+def api_cart_controller():
+    """Who may drive the cart: off | takeover | only.
+
+    A standing decision about the robot rather than a per-session one, so the
+    chest persists it. Answered even when the cart is disabled — knowing the
+    setting is useful before you switch the base on."""
+    if not _cart_enabled():
+        return jsonify({"error": "cart is disabled"}), 409
+    mode = (request.get_json(force=True) or {}).get("mode", "")
+    try:
+        return jsonify(_cart.set_controller_mode(mode))
+    except CartError as e:
+        return jsonify({"error": str(e)}), 502
+
+
+@app.post("/api/cart/stop")
+def api_cart_stop():
+    """Stop the cart. ``{"estop": true}`` latches until explicitly cleared.
+
+    Answers 200 even when the cart is disabled or unreachable: a stop button
+    that reports failure invites a second, more panicked press, and the honest
+    news is that an unreachable cart is already stopping itself.
+
+    **Carries no @protected, and must not.** Driving is gated; stopping never
+    is. Someone watching a 350 lb base head for a wall should not be typing a
+    PIN, and there is no harm a stranger can do with this endpoint that is worse
+    than the harm of the owner being unable to reach it."""
+    data = request.get_json(force=True) or {}
+    if not _cart_enabled():
+        return jsonify({"ok": True, "stopped": True, "note": "cart is disabled"})
+    try:
+        if data.get("clear_estop"):
+            return jsonify(_cart.clear_estop())
+        return jsonify(_cart.stop(estop=bool(data.get("estop"))))
+    except CartError as e:
+        return jsonify({"ok": True, "stopped": True, "unreachable": str(e),
+                        "note": "the chest Pi stops the cart on its own within "
+                                "half a second of losing contact"})
+
+
 @app.get("/api/display/animations")
 def api_display_animations():
     """Preset list for the admin dropdown, fetched from the chest Pi itself."""
@@ -474,6 +1298,7 @@ def api_display_animations():
 
 
 @app.post("/api/display")
+@protected
 def api_display_select():
     """Switch the chest animation. Body: ``{"animation": "reactor-copper"}``.
 
@@ -495,6 +1320,7 @@ def api_display_select():
 
 
 @app.post("/api/display/metrics")
+@protected
 def api_display_metrics():
     """Show/hide the sensor readout on the chest panel. Body: ``{"enabled": true}``.
 
@@ -511,7 +1337,90 @@ def api_display_metrics():
     return jsonify({"configured": True, "online": True, **state})
 
 
+@app.post("/api/display/sleep")
+@protected
+def api_display_sleep():
+    """How long the chest screen sits untouched before it sleeps.
+    Body: ``{"after_s": 600}``; 0 means never.
+
+    Like the metrics flag, the chest Pi owns the number — its panel is what
+    sees the touches — and mirrors it back in ``/api/state`` as
+    ``sleep_after_s``, so nothing is kept here. Gated: turning a robot's face
+    off at a show is a passer-by's prank, not a setting."""
+    data = request.get_json(force=True) or {}
+    try:
+        after = int(data.get("after_s"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "after_s must be a whole number of seconds (0 = never)"}), 400
+    if after < 0:
+        return jsonify({"error": "after_s must be 0 or more"}), 400
+    try:
+        state = _display.set_sleep(after)
+    except DisplayError as e:
+        return jsonify({"error": str(e)}), 502
+    return jsonify({"configured": True, "online": True, **state})
+
+
+@app.get("/api/picture")
+@protected
+def api_picture_status():
+    """What the painter is, whether it is busy, and the last picture's story.
+
+    Gated with the rest of the admin: the last prompt is something a visitor
+    said to him, which is the same class of thing as the transcript."""
+    return jsonify({**_images.status(), "latest": _images.latest_meta(),
+                    "chest": _display.configured()})
+
+
+@app.post("/api/picture")
+@protected
+def api_picture_make():
+    """Paint ``{"prompt": "..."}`` and show it on the chest — the admin page's
+    way of asking, so the feature can be tried without a microphone. Answers
+    at once; poll GET /api/picture for the result."""
+    data = request.get_json(force=True) or {}
+    prompt = " ".join(str(data.get("prompt") or "").split())
+    if not prompt:
+        return jsonify({"error": "prompt must not be empty"}), 400
+    from inmoov.images import ImageError, PictureRefused       # noqa: PLC0415
+    from inmoov import commands as commands_mod                 # noqa: PLC0415
+    try:
+        _images.request(prompt, on_done=lambda path, text:
+                        commands_mod._show_picture(_assistant.ctx, path, text))
+    except PictureRefused as e:
+        return jsonify({"error": f"not painted: that would show {e}, and the guard "
+                                 "only allows pictures for children (images.guard)",
+                        "refused": str(e), **_images.status()}), 409
+    except ImageError as e:
+        return jsonify({"error": str(e), **_images.status()}), 409
+    return jsonify({"ok": True, **_images.status()})
+
+
+@app.get("/api/picture/latest.png")
+@protected
+def api_picture_latest():
+    """The last picture he painted, for the admin page's thumbnail."""
+    path = _images.latest_path()
+    if path is None:
+        return jsonify({"error": "no picture yet"}), 404
+    resp = Response(path.read_bytes(), mimetype="image/png")
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
+@app.post("/api/picture/clear")
+@protected
+def api_picture_clear():
+    """Take the picture off the chest screen now."""
+    try:
+        _display.clear_picture()
+    except DisplayError as e:
+        return jsonify({"error": str(e)}), 502
+    return jsonify({"ok": True})
+
+
 @app.post("/api/led")
+@protected
 def api_led():
     """Manually turn the BCM16 red status LED on/off.
 
@@ -533,6 +1442,7 @@ def api_track_status():
 
 
 @app.post("/api/track")
+@protected
 def api_track():
     """Start/stop face tracking and/or live-tune it.
 
@@ -540,8 +1450,6 @@ def api_track():
     invert_x/_y/_neck/_tilt, deadzone, neck_gain, tilt_gain, sat_margin,
     eye_recenter, fps, seek_gain) are applied whether or not ``on`` is present,
     so you can tune while it runs."""
-    if (blocked := _blocked_by_handoff()):
-        return blocked
     if not _tracker.available():
         return jsonify({"error": "face tracking unavailable (needs OpenCV + camera)"}), 503
     data = request.get_json(force=True) or {}
@@ -566,6 +1474,7 @@ def api_camera360_status():
 
 
 @app.post("/api/camera360")
+@protected
 def api_camera360():
     """Adjust the 360 camera. ``{"front_yaw": deg}`` re-zeros where
     cart-forward sits in the image (mount calibration; applied live).
@@ -640,6 +1549,7 @@ def api_surround_status():
 
 
 @app.post("/api/surround")
+@protected
 def api_surround():
     """Start/stop surround vision and/or live-tune it — same contract as
     ``/api/track``: ``{"on": bool, <tuning>...}``, tuning persists on change."""
@@ -662,58 +1572,81 @@ def api_surround():
     return jsonify(_surround.status())
 
 
-# --- cart base (Project-FRED-Cart) -------------------------------------------
+@app.post("/api/camera/wide/reset")
+@protected
+def api_wide_reset():
+    """Power-cycle the wide camera's USB port, then try to start it again.
 
-@app.get("/api/cart")
-def api_cart_status():
-    return jsonify(_cart.status())
+    For the failure where the camera enumerates, opens, and then delivers no
+    frame — see WideSpotter.recover. Gated because it cuts power to a USB port,
+    which is a physical act even if it is reached over HTTP.
+    """
+    return jsonify(_spotter.recover())
 
 
-@app.post("/api/cart")
-def api_cart():
-    """Drive the cart. Body: ``{"stop": true}`` or ``{"steer": n, "speed": n,
-    "ttl": s}``. Commands expire after ``ttl`` (default 1 s) unless renewed —
-    hold-to-drive from the panel means re-POSTing while held. The vision
-    governor caps ``speed`` regardless of what's asked."""
+@app.get("/api/diagnostic")
+def api_diagnostic_status():
+    return jsonify(_diagnostic.status())
+
+
+@app.post("/api/diagnostic")
+@protected
+def api_diagnostic():
+    """Turn diagnostic mode on or off. Body: ``{"on": bool, "unrestricted": bool}``.
+
+    PIN-gated, and that gate is the actual security boundary: once this is on,
+    anyone who can say "Fred" can use it. Everything else — the two tiers, the
+    idle timeout, the audit trail — is about bounding a switch left on by
+    mistake rather than about keeping anyone out. See inmoov/diagnostic.py.
+    """
     data = request.get_json(force=True) or {}
-    if data.get("stop"):
-        return jsonify(_cart.stop())
-    if not _cart.enabled:
-        return jsonify({"error": "cart is disabled — enable it in settings first"}), 409
     try:
-        steer = int(data.get("steer", 0))
-        speed = int(data.get("speed", 0))
-        ttl = float(data.get("ttl", 1.0))
-    except (TypeError, ValueError):
-        return jsonify({"error": "steer/speed must be integers"}), 400
-    return jsonify(_cart.drive(steer, speed, ttl=ttl))
+        st = _diagnostic.set(bool(data.get("on", True)),
+                             unrestricted=data.get("unrestricted"),
+                             at_event=bool(_event.enabled))
+    except DiagRefused as why:
+        return jsonify({"error": str(why), **_diagnostic.status()}), 409
+    return jsonify(st)
 
 
-@app.post("/api/cart/config")
-def api_cart_config():
-    """Cart operator settings: ``enabled``, ``ai_drive``, ``max_speed``,
-    ``max_steer``, ``port``. Persisted; enable/disable takes effect live
-    (disabling stops the cart and closes the port)."""
+@app.get("/api/mic")
+def api_mic_status():
+    return jsonify(_mic_doa.status())
+
+
+@app.post("/api/mic")
+@protected
+def api_mic():
+    """Start/stop the DOA reader, tune it, or calibrate which way is forward.
+
+    Body: ``{"on": true|false, "capture_forward": true, <tuning>...}``. Tuning
+    keys (enabled, mount_offset, span_deg, invert, stale_after, poll_hz) apply
+    whether or not ``on`` is present, so the panel can trim it while it runs.
+
+    ``capture_forward`` is the calibration: it reads whatever angle the array is
+    currently steering at and calls that straight ahead. It runs *after* the
+    tuning in this handler, so a request can reset the span and re-measure the
+    offset in one go, and it is persisted like any other change.
+    """
     data = request.get_json(force=True) or {}
-    cfg = _settings.setdefault("cart", {})
-    if "enabled" in data:
-        cfg["enabled"] = _cart.enabled = bool(data["enabled"])
-        if not _cart.enabled:
-            _cart.shutdown()
-    if "ai_drive" in data:
-        cfg["ai_drive"] = _cart.ai_drive = bool(data["ai_drive"])
-    if "max_speed" in data or "max_steer" in data:
-        try:
-            _cart.set_limits(max_speed=data.get("max_speed"),
-                             max_steer=data.get("max_steer"))
-        except (TypeError, ValueError):
-            return jsonify({"error": "max_speed/max_steer must be integers"}), 400
-        cfg["max_speed"], cfg["max_steer"] = _cart.max_speed, _cart.max_steer
-    if "port" in data:
-        _cart.set_port(str(data["port"]))
-        cfg["port"] = str(data["port"])
-    save_settings(_settings)
-    return jsonify(_cart.status())
+    before = _mic_doa.tuning()
+    _mic_doa.configure(**data)                   # ignores non-tuning / None keys
+
+    captured = None
+    if data.get("capture_forward"):
+        captured = _mic_doa.capture_forward()
+        if not captured.get("ok"):
+            # Not an error state for the endpoint: nothing was heard, which the
+            # page needs to show as guidance rather than as a failure.
+            return jsonify({**_mic_doa.status(), "captured": captured})
+
+    after = _mic_doa.tuning()
+    if after != before:                          # persist only real changes
+        _settings["mic_doa"] = after
+        save_settings(_settings)
+    if "on" in data:
+        _mic_doa.start() if data["on"] else _mic_doa.stop()
+    return jsonify({**_mic_doa.status(), "captured": captured})
 
 
 @app.get("/api/voice")
@@ -722,11 +1655,35 @@ def api_voice_status():
 
 
 @app.post("/api/voice")
+@protected
 def api_voice():
-    """Start/stop the 'Hey FRED' wake-word listener. Body: {"on": bool}."""
-    if (blocked := _blocked_by_handoff()):
-        return blocked                           # starting it would re-grab the mic
+    """Start/stop the "Fred" wake-word listener. Body: {"on": bool}.
+
+    Also takes ``{"interrupt": true}`` to cut off the reply in progress, and
+    ``{"barge_in": bool}`` to control whether talking over him does the same.
+    """
     data = request.get_json(force=True) or {}
+    if data.get("interrupt"):
+        # Stop him mid-sentence, the same way talking over him does. Handy from
+        # the panel when he is answering the wrong question at an event.
+        _assistant.interrupt()
+    if "at_boot" in data:
+        # Whether he starts listening by himself after a reboot. Distinct from
+        # "on", which is about right now — the chest panel offers both because
+        # leaving him deliberately deaf and having him wake up deaf are
+        # different intentions.
+        _settings.setdefault("voice", {})["enabled"] = bool(data["at_boot"])
+        save_settings(_settings)
+    if "stop_when_alone" in data:
+        _assistant.stop_when_alone = bool(data["stop_when_alone"])
+        _settings.setdefault("voice", {})["stop_when_alone"] = _assistant.stop_when_alone
+        save_settings(_settings)
+    if "barge_in" in data:
+        # Whether he listens through his own replies. Off in a noisy room where
+        # background speech would keep cutting him off.
+        _assistant.listener.barge_in = bool(data["barge_in"])
+        _settings.setdefault("voice", {})["barge_in"] = _assistant.listener.barge_in
+        save_settings(_settings)
     if "on" in data:
         if data["on"]:
             if not _assistant.available():
@@ -738,11 +1695,10 @@ def api_voice():
 
 
 @app.post("/api/command")
+@protected
 def api_command():
     """Send FRED a text command/question (types what you'd say). Runs the hybrid
     brain — local match or Claude — executes any action, and speaks the reply."""
-    if (blocked := _blocked_by_handoff()):
-        return blocked
     text = (request.get_json(force=True) or {}).get("text", "")
     if not str(text).strip():
         return jsonify({"error": "text required"}), 400
@@ -752,13 +1708,33 @@ def api_command():
 
 @app.post("/api/say")
 def api_say():
-    """Speak arbitrary text aloud with lip-sync (no brain) — for testing audio."""
-    if (blocked := _blocked_by_handoff()):
-        return blocked
-    text = (request.get_json(force=True) or {}).get("text", "")
-    if not str(text).strip():
+    """Speak text aloud with lip-sync (no brain) — the deck, and the test box.
+
+    Deliberately not @protected, but not open either: free-form text needs the
+    PIN, and only lines already on the phrase deck pass without one. The
+    threat is specific — a stranger on the access point putting words in a
+    robot's mouth in front of children, tagged in the transcript as FRED — and
+    it was the one attractive thing the open route offered that volume and the
+    display, both gated on weaker rationale, did not. The deck stays open
+    because its lines were chosen by the operator, and gating the deck would
+    break the one-tap event flow it exists for. test_auth.py lists this route
+    as OPEN because the decorator test cannot see a conditional gate; the
+    condition is asserted separately there instead.
+    """
+    text = str((request.get_json(force=True) or {}).get("text", "")).strip()
+    if not text:
         return jsonify({"error": "text required"}), 400
+    if not _authed():
+        deck = {line.strip() for tab in phrases_mod.load().values() for line in tab}
+        if text not in deck:
+            # 401, not 403: pin.js raises the keypad on 401 and retries, so the
+            # operator's typed test line still works — one keypad, then speech.
+            return jsonify({"error": "PIN required for free-form speech"}), 401
     ok = _assistant.speak(str(text))
+    if ok:
+        # It came out of his speaker; the transcript should say so. "say" is
+        # the tag for lines that bypassed the brain — the deck, the test box.
+        _log.fred(text, source="say")
     return jsonify({"spoke": ok})
 
 
@@ -775,6 +1751,7 @@ def api_log():
 
 
 @app.post("/api/log/clear")
+@protected
 def api_log_clear():
     _log.clear()
     return jsonify({"cleared": True})
@@ -788,7 +1765,11 @@ def api_positions():
     pos = {name: _ctrl.get_angle(name) for name in _config["servos"]}
     return jsonify({"pos": pos, "speaking": _assistant.is_speaking(),
                     "mouth": _assistant.mouth_seq(),   # bumps per clip -> refetch /api/mouth
-                    "led": _status_led.is_on})
+                    "led": _status_led.is_on,
+                    # Rides along on the hot poll so the panel's audit banner stays
+                    # truthful even when the mode is flipped from the admin page,
+                    # another browser, or curl. It's one bool.
+                    "audit": _audit_mode})
 
 
 @app.get("/api/mouth")
@@ -801,7 +1782,18 @@ def api_mouth():
 
 @app.get("/api/state")
 def api_state():
-    return jsonify(_state())
+    """The whole robot, one poll. Open — the panels and the chest live on it.
+
+    Open does not mean the *settings* travel whole: served raw they carry the
+    PIN digest and the device tokens, which hands an AP guest ten thousand
+    offline guesses and defeats /api/auth/material's whole design. The robot's
+    own machines still get the full dict — the chest's snapshot page reads it —
+    and everyone else gets the redacted copy. See auth.redact_settings.
+    """
+    d = _state()
+    if not auth.is_trusted(request.remote_addr or "", _settings):
+        d["settings"] = auth.redact_settings(d["settings"])
+    return jsonify(d)
 
 
 def _vcgencmd(*args) -> str:
@@ -868,9 +1860,8 @@ def api_health():
 
 
 @app.post("/api/move")
+@protected
 def api_move():
-    if (blocked := _blocked_by_handoff()):
-        return blocked
     data = request.get_json(force=True)
     name = data["name"]
     angle = float(data["angle"])
@@ -881,25 +1872,48 @@ def api_move():
 
 
 @app.post("/api/rest")
+@protected
 def api_rest():
-    if (blocked := _blocked_by_handoff()):
-        return blocked
     with _lock:
         _ctrl.rest()
     return jsonify(_state())
 
 
 @app.post("/api/relax")
+@protected
 def api_relax():
-    if (blocked := _blocked_by_handoff()):
-        return blocked
+    """Cut the pulses so the servos stop holding torque.
+
+    Face tracking is stopped first when it drives any servo being relaxed.
+    Without that the relax lands and is immediately undone: the tracker's loop
+    calls set_angle on the eyes, neck and head tilt every frame, so the pulse
+    is back within 1/fps and the servos never go slack — which reads, to
+    whoever pressed the button, as the button doing nothing.
+
+    The jaw is deliberately not covered: the assistant only drives it while
+    FRED is mid-sentence, and cutting a sentence short is worse than a jaw
+    that goes slack a second later when the speech ends.
+    """
     name = (request.get_json(silent=True) or {}).get("name")
+    # Outside _lock on purpose: stop() joins the tracker thread, and that thread
+    # is in and out of the controller on its own. Holding the route lock across
+    # a join is how you turn a 2 s timeout into a stuck panel.
+    stopped = False
+    if _tracker.is_tracking() and (name is None or name in _tracker.driven()):
+        _tracker.stop()
+        stopped = True
     with _lock:
         _ctrl.relax(name)
-    return jsonify({"relaxed": name or "all"})
+    if name is None:
+        # Relax means all of him. Outside _lock, like the arm's kill: letting
+        # go must not wait behind whatever is holding the hardware lock.
+        _boards.relax()
+    return jsonify({"relaxed": name or "all", "tracking_stopped": stopped,
+                    "track": _tracker.status()})
 
 
 @app.post("/api/record")
+@protected
 def api_record():
     """Record the given angle as a servo's min/max/rest limit (in memory)."""
     data = request.get_json(force=True)
@@ -914,14 +1928,13 @@ def api_record():
 
 
 @app.post("/api/channel")
+@protected
 def api_channel():
     """Reassign which PCA9685 port drives a servo (in memory; persist via /api/save)."""
     data = request.get_json(force=True)
     name = data["name"]
     if name not in _config["servos"]:
         return jsonify({"error": f"unknown servo {name}"}), 404
-    if (blocked := _blocked_by_handoff()):
-        return blocked
     try:
         channel = int(data["channel"])
     except (KeyError, TypeError, ValueError):
@@ -938,10 +1951,9 @@ def api_channel():
 
 
 @app.post("/api/identify")
+@protected
 def api_identify():
     """Wiggle one servo so the operator can see which physical port it's on."""
-    if (blocked := _blocked_by_handoff()):
-        return blocked
     data = request.get_json(force=True)
     name = data["name"]
     if name not in _config["servos"]:
@@ -952,19 +1964,189 @@ def api_identify():
 
 
 @app.post("/api/save")
+@protected
 def api_save():
-    """Persist the current (possibly re-recorded) config to disk."""
+    """Persist the current (possibly re-recorded) config to disk, and push it to
+    the head Pi when the servos live there.
+
+    Writing this file used to be the whole job, and on a Pi-hosted panel it was.
+    With the servos remote it is only half: the head owns the hardware and its
+    own servos.json wins on every RemoteServoController refresh, so a
+    calibration saved only here never reaches a servo — Rest and the soft limits
+    silently keep the values the head booted with.
+    """
     with open(CONFIG_PATH, "w") as f:
         json.dump(_config, f, indent=2)
         f.write("\n")
-    return jsonify({"saved": str(CONFIG_PATH)})
+    out = {"saved": str(CONFIG_PATH)}
+
+    push = getattr(_ctrl, "push_config", None)   # absent on the local controller
+    if push is None:
+        return jsonify(out)
+    try:
+        out["pushed"] = push(_config)
+    except Exception as exc:                     # noqa: BLE001 - report, don't crash
+        # The file on this machine is written, but the calibration is NOT live.
+        # Saying 200 here would recreate exactly the silent failure this push
+        # was added to remove, so the status has to carry the bad news.
+        out["push_error"] = f"{type(exc).__name__}: {exc}"
+        return jsonify(out), 502
+    return jsonify(out)
+
+
+# ---- arm servo boards -----------------------------------------------------
+@app.get("/api/servo_boards")
+@protected
+def api_servo_boards():
+    """Every servo board on USB and what is assigned to its channels.
+
+    ?scan=1 looks for newly plugged boards first. Not the default: asking an
+    unknown port who it is costs a reply timeout when it is not one of ours.
+    """
+    if request.args.get("scan"):
+        _boards.scan()
+    return jsonify(_boards.describe())
+
+
+def _board_change(fn):
+    """Run one assignment change, persist it, and answer with the new picture."""
+    try:
+        with _lock:
+            fn()
+            _boards.save()
+    except ServoBoardError as e:
+        return jsonify({"error": str(e), **_boards.describe()}), 409
+    return jsonify(_boards.describe())
+
+
+@app.post("/api/servo_boards/<uid>/side")
+@protected
+def api_servo_board_side(uid):
+    """Say which arm a board is ("right" / "left" / "" for neither)."""
+    side = str((request.get_json(silent=True) or {}).get("side") or "")
+    return _board_change(lambda: _boards.set_side(uid, side))
+
+
+@app.post("/api/servo_boards/<uid>/assign")
+@protected
+def api_servo_board_assign(uid):
+    """Put a joint on a channel, or empty the channel (joint = "")."""
+    data = request.get_json(silent=True) or {}
+    try:
+        channel = int(data["channel"])
+    except (KeyError, TypeError, ValueError):
+        return jsonify({"error": "channel must be an integer"}), 400
+    joint = str(data.get("joint") or "")
+    return _board_change(lambda: _boards.assign(uid, channel, joint or None))
+
+
+@app.post("/api/servo_boards/<uid>/identify")
+@protected
+def api_servo_board_identify(uid):
+    """Wiggle whatever is plugged into one channel, then let it go limp."""
+    try:
+        channel = int((request.get_json(silent=True) or {})["channel"])
+    except (KeyError, TypeError, ValueError):
+        return jsonify({"error": "channel must be an integer"}), 400
+    try:
+        with _lock:
+            _boards.identify_channel(uid, channel)
+    except ServoBoardError as e:
+        return jsonify({"error": str(e)}), 409
+    return jsonify({"identified": channel})
+
+
+@app.post("/api/servo_boards/<uid>/limits")
+@protected
+def api_servo_board_limits(uid):
+    """Set a joint's min / max / rest angle. Moves nothing, so the rest angle
+    can be put somewhere sane before the servo is ever switched on."""
+    data = request.get_json(silent=True) or {}
+    joint = str(data.get("joint") or "")
+    fields = {k: data[k] for k in ("min_angle", "max_angle", "rest_angle") if k in data}
+    return _board_change(lambda: _boards.set_limits(uid, joint, **fields))
+
+
+@app.post("/api/servo_boards/<uid>/tune")
+@protected
+def api_servo_board_tune(uid):
+    """Drive one joint from the tuning panel: {"joint", "angle"?, "enable"?}.
+
+    enable switches the servo on (to its rest angle when no angle is given);
+    without it the servo must already be on. Held to min/max unless "raw" is
+    set, which is how the real limits are found — /kill is raw's counterpart.
+    """
+    data = request.get_json(silent=True) or {}
+    joint = str(data.get("joint") or "")
+    try:
+        angle = None if data.get("angle") is None else float(data["angle"])
+    except (TypeError, ValueError):
+        return jsonify({"error": "angle must be a number"}), 400
+    try:
+        with _lock:
+            applied = _boards.tune(uid, joint, angle, enable=bool(data.get("enable")),
+                                   raw=bool(data.get("raw")))
+    except ServoBoardError as e:
+        return jsonify({"error": str(e), **_boards.describe()}), 409
+    if data.get("enable"):
+        return jsonify({"angle": applied, **_boards.describe()})
+    return jsonify({"angle": applied})       # the slider's hot path: keep it small
+
+
+@app.post("/api/servo_boards/<uid>/rest")
+@protected
+def api_servo_board_rest(uid):
+    """Switch on every assigned joint on one board and send it to its rest
+    angle. Joints go one at a time; a kill, relax or stop part-way ends it."""
+    try:
+        with _lock:
+            done = _boards.rest_board(uid)
+    except ServoBoardError as e:
+        return jsonify({"error": str(e), **_boards.describe()}), 409
+    return jsonify({"rested": done, **_boards.describe()})
+
+
+@app.post("/api/servo_boards/<uid>/kill")
+@protected
+def api_servo_board_kill(uid):
+    """Cut the pulse to one joint (or the whole board) NOW.
+
+    Deliberately outside _lock: a kill that waits behind an identify wiggle or
+    a queue of slider moves is not a kill. The board link serialises single
+    exchanges by itself, so the worst wait is one ~10 ms command.
+    """
+    joint = str((request.get_json(silent=True) or {}).get("joint") or "") or None
+    try:
+        _boards.kill(uid, joint)
+    except ServoBoardError as e:
+        return jsonify({"error": str(e), **_boards.describe()}), 409
+    return jsonify(_boards.describe())
+
+
+@app.post("/api/servo_boards/relax")
+@protected
+def api_servo_boards_relax():
+    """Relax every arm servo: cut the pulses and leave the boards ready, the
+    same thing the control panel's Relax does to the head. Unlike Stop it locks
+    nothing — a joint comes back the moment it is enabled or commanded again."""
+    _boards.relax()
+    return jsonify(_boards.describe())
+
+
+@app.post("/api/servo_boards/stop")
+@protected
+def api_servo_boards_stop():
+    """Cut every arm board's outputs (stop=true), or allow motion again."""
+    stop = bool((request.get_json(silent=True) or {}).get("stop", True))
+    with _lock:
+        _boards.disable() if stop else _boards.enable()
+    return jsonify(_boards.describe())
 
 
 @app.post("/api/camera")
+@protected
 def api_camera():
     """Adjust live camera settings: focus (af_mode/lens_position) and 180 flip."""
-    if (blocked := _blocked_by_handoff()):
-        return blocked
     if not _camera.available():
         return jsonify({"error": "no camera"}), 503
     data = request.get_json(force=True)
@@ -992,8 +2174,6 @@ def api_sounds():
 @app.post("/api/sound/play")
 def api_sound_play():
     """Play a named sound (``sounds/<name>.wav``), non-blocking."""
-    if (blocked := _blocked_by_handoff()):
-        return blocked
     if not _sound.available():
         return jsonify({"error": "no audio"}), 503
     name = (request.get_json(force=True) or {}).get("name")
@@ -1012,6 +2192,49 @@ def api_sound_stop():
     return jsonify({"stopped": True})
 
 
+@app.get("/api/sound/volume")
+def api_sound_volume_get():
+    """How loud he is, read from the card's mixer.
+
+    Open, like the rest of the live status: a volume you cannot read is a panel
+    that has to guess, and the chest shows this before anyone has typed a PIN.
+    ``volume: null`` means this rig has no settable mixer — the panels hide the
+    control rather than showing a slider that does nothing.
+    """
+    return jsonify({"volume": _sound.volume(),
+                    "control": _sound._volume_ctls,
+                    "stored": _settings.get("sound", {}).get("volume")})
+
+
+@app.post("/api/sound/volume")
+@protected
+def api_sound_volume_set():
+    """Set the playback level, 0-100, and remember it. Body: {"volume": int}.
+
+    Gated, unlike /api/sound/play. Playing a sound is what the deck is for and
+    is deliberately open; turning him to 0 is a mute nobody standing at the
+    robot could explain, and turning him to 100 in a hall is its own kind of
+    disruption. Same class of decision as /api/display.
+    """
+    data = request.get_json(force=True) or {}
+    if "volume" not in data:
+        return jsonify({"error": "volume required"}), 400
+    try:
+        want = float(data["volume"])
+    except (TypeError, ValueError):
+        return jsonify({"error": "volume must be numeric"}), 400
+    if not 0.0 <= want <= 100.0:
+        return jsonify({"error": "volume must be between 0 and 100"}), 400
+    if not _sound.set_volume(want):
+        return jsonify({"error": "no mixer on this audio device"}), 503
+    # Store what we asked for, not what came back: the card quantises to its own
+    # steps (85% is 6161 of 7248 here), and persisting the rounded reading would
+    # walk the number a little further down on every save.
+    _settings.setdefault("sound", {})["volume"] = int(round(want))
+    save_settings(_settings)
+    return jsonify({"volume": _sound.volume()})
+
+
 # ---- terminator clips: upload / list / preview / delete --------------------
 def _safe_clip_stem(name: str) -> str:
     """A filesystem-safe stem from an uploaded filename (no path, no traversal)."""
@@ -1028,6 +2251,7 @@ def api_term_list():
 
 
 @app.post("/api/sounds/terminator/upload")
+@protected
 def api_term_upload():
     """Accept an audio upload, convert to 22 kHz mono WAV, save under
     sounds/terminator/. Plays at random when terminator mode engages."""
@@ -1075,8 +2299,6 @@ def _term_clip_path(name: str) -> Path | None:
 @app.post("/api/sounds/terminator/play")
 def api_term_play():
     """Preview a specific terminator clip through the speaker."""
-    if (blocked := _blocked_by_handoff()):
-        return blocked
     p = _term_clip_path((request.get_json(force=True) or {}).get("name", ""))
     if p is None:
         return jsonify({"error": "clip not found"}), 404
@@ -1085,6 +2307,7 @@ def api_term_play():
 
 
 @app.post("/api/sounds/terminator/delete")
+@protected
 def api_term_delete():
     """Delete a terminator clip."""
     p = _term_clip_path((request.get_json(force=True) or {}).get("name", ""))
@@ -1121,23 +2344,103 @@ def camera_snapshot():
     return Response(frame, mimetype="image/jpeg")
 
 
+# The wide camera's feed comes out of the spotter rather than from a second
+# VideoCapture, because a V4L2 node streams to one opener and the spotter has
+# it. See inmoov/wide_spotter.py. The head camera's LED is deliberately NOT
+# touched here: that red eye means "the camera in his head is on", and lighting
+# it for a camera bolted to the chest would be a lie told by a privacy light.
+@app.get("/camera/wide/stream")
+def wide_stream():
+    """Live MJPEG from the PanaCast — the ~180 degree view from the chest."""
+    if not _spotter.is_running():
+        return jsonify({"error": _spotter.last_error
+                        or "wide camera is not running"}), 503
+
+    def gen():
+        for frame in _spotter.frames():
+            yield (b"--frame\r\n"
+                   b"Content-Type: image/jpeg\r\n"
+                   b"Content-Length: " + str(len(frame)).encode() + b"\r\n\r\n"
+                   + frame + b"\r\n")
+
+    return Response(gen(), mimetype="multipart/x-mixed-replace; boundary=frame")
+
+
+@app.get("/camera/wide/snapshot")
+def wide_snapshot():
+    """Single still JPEG from the wide camera."""
+    frame = _spotter.snapshot()
+    if not frame:
+        return jsonify({"error": _spotter.last_error or "no frame"}), 503
+    return Response(frame, mimetype="image/jpeg")
+
+
 if __name__ == "__main__":
-    if _handoff_released:
-        _apply_handoff(True)                     # boot straight into the released
-        print("Hardware handoff: RELEASED to MyRobotLab (I2C/audio/camera held off).")
+    if _audit_mode:
+        # Sound already got it in its constructor; this arms the servos and cart.
+        _apply_audit(True)
+        print("AUDIT MODE: dry run — no audio out, no servo motion, cart held.")
     print(f"Serving InMoov control panel — mode: {'MOCK' if _ctrl.mock else 'LIVE'}")
+    if _spot_cfg.get("enabled", True):
+        # Runs whether or not tracking is on: the bearing it produces is what
+        # tells the tracker there is somebody to turn toward in the first place.
+        if _spotter.start():
+            s = _spotter.status()
+            print(f"Wide spotter: PanaCast {s['size']} @ {s['detect_hz']} Hz")
+        else:
+            print(f"Wide spotter: unavailable — {_spotter.last_error}")
+
+            def _spotter_boot_retry():
+                # A camera slow to enumerate at boot used to stay off until
+                # somebody pressed the button: start() was one-shot. Retry with
+                # backoff until the first success, then get out of the way —
+                # once running, the spotter's own reopen loop covers every
+                # later loss, and recover() must not race a second starter.
+                for delay in (5, 10, 20, 30, 30, 30, 60, 60):
+                    if threading.main_thread().is_alive() is False:
+                        return
+                    time.sleep(delay)
+                    if _spotter.is_running():
+                        return
+                    if _spotter.start():
+                        st = _spotter.status()
+                        print(f"Wide spotter: up after retry — PanaCast "
+                              f"{st['size']} @ {st['detect_hz']} Hz")
+                        return
+                print(f"Wide spotter: gave up after retries — {_spotter.last_error}")
+
+            threading.Thread(target=_spotter_boot_retry, name="spotter-retry",
+                             daemon=True).start()
+    if _doa_cfg.get("enabled", True):
+        # Same reasoning as the spotter above: this produces the bearing that
+        # tells the tracker there is somebody to turn toward, so it runs whether
+        # or not tracking is currently on.
+        if _mic_doa.start():
+            fw = _mic_doa.firmware()
+            print(f"Mic DOA: reSpeaker firmware {fw or '?'} @ "
+                  f"{_mic_doa.poll_hz:g} Hz, forward = {_mic_doa.mount_offset:g}deg")
+        else:
+            print(f"Mic DOA: unavailable — {_mic_doa.status()['error']}")
+    # Load the local model AND read its prompt prefix now, off the conversation
+    # path. Skipping this doesn't save the work, it just bills it to whoever asks
+    # FRED the first question — as a ~10 s silence before he answers.
+    if _assistant.brain.backend in ("auto", "local"):
+        threading.Thread(target=_assistant.brain.warm_local,
+                         name="local-warm", daemon=True).start()
+    # Before the chime, not after: the chime is the first thing anyone hears, so
+    # a level restored afterwards would be one clip too late every single boot.
+    # Absent = leave the card alone. Nobody has set a level here, and stamping a
+    # default over whatever alsactl restored would be us picking a volume for a
+    # robot whose owner never asked us to.
+    if _snd_cfg.get("volume") is not None:
+        _sound.set_volume(_snd_cfg["volume"])
     boot = _snd_cfg.get("boot_sound", "")
-    if boot and _sound.available() and not _handoff_released:
+    if boot and _sound.available():
         _sound.play(boot)                        # non-blocking chime on startup
-    if (_settings.get("voice", {}).get("enabled") and _assistant.available()
-            and not _handoff_released):
-        _assistant.start(greet=True)             # "Hey FRED" listener on at boot
-    # The 360 stack ignores the handoff: it's a plain USB camera MyRobotLab
-    # doesn't take, and the cart is its own serial device.
+    if _settings.get("voice", {}).get("enabled") and _assistant.available():
+        _assistant.start(greet=True)             # "Fred" wake-word listener on at boot
     if _surround_cfg.get("enabled") and _surround.available():
         _surround.start()                        # 360 person/motion awareness on at boot
-    if _cart.enabled:
-        _cart.start()                            # opens the Pico link + keepalive/governor
     if _sensor_cfg.get("serial_enabled"):
         _serial_sensors.start()                  # read a USB-serial sensor node (no-WiFi fallback)
     app.run(host="0.0.0.0", port=8080, threaded=True)

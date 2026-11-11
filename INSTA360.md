@@ -5,7 +5,7 @@ full-circle view of his surroundings. Three things consume it:
 
 | Consumer | What it gets |
 |---|---|
-| **The brain (Claude)** | `look_around` — real dewarped photos of any direction, so "what can you see?" is answered from actual images; `scan_surroundings` — a spoken summary of where people are. |
+| **The brain (Claude)** | `look_around_360` — real dewarped photos of any direction, behind him included; `scan_surroundings` — a spoken summary of where people are. |
 | **Face tracking** | A person-bearing that replaces the ultrasonic left/right hint whenever surround vision is watching: the head turns *toward a person seen anywhere in 360°*, not just toward "the nearer side". |
 | **Cart navigation** | A safety governor: any drive command (panel, host, or AI) is scaled down or stopped when a person is in the direction of travel. |
 
@@ -53,7 +53,7 @@ run to the mast is annoying).
    wherever the camera's front lens points, which won't be cart-forward.
    Stand something recognisable directly ahead of the cart, open
    `/camera360/view?yaw=0`, and adjust **Admin → Forward offset** until that
-   object is centred. Every consumer (sectors, bearings, look_around, the
+   object is centred. Every consumer (sectors, bearings, look_around_360, the
    governor) shares this one number.
 5. **Power.** The X5 runs indefinitely on USB power in webcam mode but it is
    a real load — feed the Pi from a supply with headroom, and expect the
@@ -67,11 +67,11 @@ run to the mast is annoying).
    from the side/behind: the neck should turn toward you *before* the head
    camera can see you (the surround bearing outranks the ultrasonic hint
    automatically whenever surround is running).
-8. **Cart governor.** Enable the cart (Admin), command a slow forward move
-   from `POST /api/cart`, and step into the path: speed should scale down
-   inside `slow_m` (2.5 m) and stop inside `stop_m` (1 m). A person seen only
-   as motion (no range) caps speed at half. Then decide whether to flip on
-   **AI driving** — off by default; Claude's `stop_cart` works regardless.
+8. **Cart governor.** With Watch on, drive slowly forward from the panel's
+   joystick and step into the path: speed should scale down inside `slow_m`
+   (2.5 m) and stop inside `stop_m` (1 m). A person seen only as motion (no
+   range) caps speed at half. It applies to every drive path, Claude's `drive`
+   tool included, and only while surround vision is watching.
 
 ## What runs where
 
@@ -80,14 +80,14 @@ X5 (USB-C, webcam mode) ──UVC──> camera360.py ──frames──> surrou
                                     │                                   ├─> cart.py governor
                                     │                                   └─> /api/surround (panel radar)
                                     ├─> /camera360/pano, /camera360/view (panel)
-                                    └─> look_around tool (Claude sees JPEGs)
+                                    └─> look_around_360 tool (Claude sees JPEGs)
 ```
 
 - `inmoov/camera360.py` — capture, equirect → rectilinear dewarp, MJPEG.
 - `inmoov/surround.py` — motion sectors → targeted Haar detection → presence
   tracks, bearings, the spoken summary, and `nav_assess` for the governor.
-- `inmoov/cart.py` — serial link to the cart Pico (see the Project-FRED-Cart
-  repo), 10 Hz keepalive under the Pico's 2 s failsafe, command TTL, governor.
+- `inmoov/cart.py` — master's `CartClient` (the cart's Pico is on the chest
+  Pi); its `guard` hook is where `nav_assess` scales every drive command.
 - `demo360.py` — the no-hardware bench test of that whole chain. Run it after
   any change; run it on the Pi to sanity-check the environment (it needs
   `python3-opencv` + `opencv-data`, both already required by face tracking).

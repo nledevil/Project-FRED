@@ -18,16 +18,101 @@ DEFAULT_SETTINGS = {
         "flip": False,                # apply the 180 flip on page/app load
         "af_mode": 0,                 # 0 = manual, 2 = continuous AF (matches libcamera AfMode)
         "lens_position": 2.0,         # dioptres, used when af_mode is manual (~0.5 m)
+        # Where frames come from. "auto" picks a local Pi camera if there is one,
+        # else a stream URL if `source` is one, else a local USB camera. Set it
+        # explicitly when a machine has more than one option — the NUC has both a
+        # USB camera of its own and the head Pi's stream to choose between.
+        #   "picamera2" - Pi CSI camera (source ignored)
+        #   "mjpeg"     - another machine's MJPEG stream; source = its URL
+        #   "v4l2"      - local USB/UVC camera; source = index or /dev/videoN
+        "backend": "auto",
+        "source": "",                 # e.g. "http://10.0.0.10:8081/stream.mjpg" or 0
+    },
+    "servo": {
+        # Where the servos are. Empty host = drive the local PCA9685 over I2C,
+        # which is what runs on the head Pi itself. Set a host and the servos are
+        # driven over the network instead, via deploy/servo_server.py on the Pi
+        # that actually owns the I2C bus — that is how the NUC moves FRED now
+        # that the brain and the wiring live on different machines.
+        "remote_host": "",            # e.g. "10.0.0.10" (the head Pi)
+        "remote_port": 8082,
+        "remote_token": "",           # must match SERVO_TOKEN on the server ("" = no auth)
     },
     "led": {
         "camera_indicator": True,     # light the BCM16 red LED while the camera streams
+        # Where the LED is. Empty host = drive this machine's own BCM16, which is
+        # what runs on the head Pi itself. Set a host and it is driven over the
+        # network via deploy/led_server.py — x86 has no GPIO, so this is how the
+        # NUC lights an LED that is soldered to a Raspberry Pi header.
+        "remote_host": "",            # e.g. "10.0.0.10" (the head Pi)
+        "remote_port": 8083,
+        "remote_token": "",           # must match LED_TOKEN on the server ("" = no auth)
     },
-    "hardware": {
-        # When True, the app boots with the shared hardware RELEASED to another
-        # owner (MyRobotLab): I2C/PCA9685 servos, the USB audio card, and the Pi
-        # camera are all handed off. Toggle live from the admin panel; the choice
-        # persists so an event set-up survives a reboot. See /api/handoff.
-        "released": False,
+    "spotter": {
+        # The wide-angle face spotter (Jabra PanaCast on the chest touchscreen).
+        # Gives the face tracker a real bearing across ~180 degrees for people
+        # the head camera cannot see; falls back to the chest ultrasonics when
+        # off or blind. See inmoov/wide_spotter.py.
+        "enabled": True,
+        # A card name, matched against /sys/class/video4linux, or a bare V4L2
+        # index if you really want one. The name is the right answer: an index
+        # is not a stable way to identify a camera, and this one moved on its
+        # own — changing the audio hardware renumbered the video nodes, a config
+        # pinned to 0 pointed at a node that no longer existed, and the panel
+        # just showed the camera greyed out. The PanaCast offers two nodes and
+        # only the first streams; the resolver picks by the device's own index,
+        # which is the kernel's answer to "which is the real one".
+        "device": "PanaCast",
+        "detect_hz": 4.0,             # decode+detect rate — acquisition is a human-scale event
+        "detect_width": 1920,         # downscale before detection (~10 ms/frame)
+        # Face detector: "yunet" (a small CNN in OpenCV 5, finds profiles and
+        # rejects patterned-wall false positives) or "haar" (the old cascade).
+        # YuNet is the right default here — the spotter watches for people not
+        # yet facing him, and its bearing is coarse. Missing model -> auto Haar.
+        "detector": "yunet",
+    },
+    "mic_doa": {
+        # Direction of arrival off the mic array (reSpeaker Flex / XVF3800): a
+        # third bearing source for the face tracker, so he turns toward a voice
+        # he cannot see. Ranks between the wide spotter and the ultrasonics —
+        # a voice is a person, which is more than a range-finder knows, but less
+        # accurate than an actual face detector. See inmoov/mic_doa.py.
+        "enabled": True,
+        # Which raw angle is "straight ahead". Depends on how the board is
+        # mounted, so it is measured rather than guessed: stand in front of him,
+        # talk, and press Capture forward on the admin panel.
+        "mount_offset": 0.0,
+        "span_deg": 90.0,             # degrees off-axis that mean a full-deflection hint
+        "invert": False,              # if he turns away from the voice instead of toward
+        "stale_after": 4.0,           # seconds a heard voice stays worth acting on;
+                                      # longer than the spotter's, because speech is
+                                      # bursty and a face is not
+        "poll_hz": 10.0,
+        # Where the direction comes from. "processed" is the device's own
+        # answer — speech energy weighed across its fixed beams, NaN when nobody
+        # is talking — and is what you want. "beam" reads one raw beam from
+        # AEC_AZIMUTH_VALUES instead, gated on speech energy; useful for
+        # diagnosis, and a trap otherwise, because the free-running beam (2)
+        # looks like the tracking one and is actually chasing room noise.
+        "source": "processed",
+        "beam": 2,                    # only consulted when source is "beam"
+        # Speech samples to take a circular median of before believing a
+        # direction. Half a second of lag at 10 Hz, in exchange for one stray
+        # frame not counting as the person having moved. 1 = off.
+        "smooth_n": 5,
+    },
+    "audit": {
+        # Audit (dry run) mode: FRED stays fully interactive through the web
+        # panel — the brain answers, the transcript fills, speech is synthesised
+        # and the on-screen face lip-syncs to it — but nothing physical happens.
+        # No audio reaches the speaker, no pulse reaches a servo, and the cart
+        # will not drive. The servo readouts keep tracking the commanded angles,
+        # so the panel shows exactly what he *would* have done.
+        #
+        # Distinct from "sound.enabled" (a plain mute, which also kills the
+        # lip-sync). Persists across reboots
+        # so a bench session can't be undone by a power cycle. See /api/audit.
+        "enabled": False,
     },
     "sensors": {
         # Remote smart-sensor nodes (a Pico W in the stomach reading ultrasonic +
@@ -52,19 +137,205 @@ DEFAULT_SETTINGS = {
         "animation": "reactor",       # last preset picked, so the head's UI shows
                                       # the right selection before it can reach the Pi
     },
+    "cart": {
+        # The hoverboard drive base. Its Pico plugs into the chest Pi, so this
+        # rides on the `display` connection above rather than repeating the
+        # host/token — one chest Pi, one address to keep correct.
+        #
+        # Speeds are in the hoverboard firmware's own units (see the cart repo):
+        # ~0.64 wheel RPM per unit, and the firmware caps host commands at 300
+        # speed / 250 steer regardless of what is asked for here.
+        "enabled": False,             # master switch; off until the cart is wired up
+        "speed": 150,                 # forward/back speed for spoken commands (~73 RPM)
+        "turn": 150,                  # steer magnitude for spoken turns
+        "step_seconds": 1.5,          # how long one spoken "forward"/"back" runs;
+                                      # capped at 5s by inmoov/cart.py regardless
+    },
+    "brain": {
+        # Which LLM answers the open questions the command matcher didn't catch.
+        #   "auto"   — Claude when reachable, the local model when it isn't. FRED
+        #              goes to events without reliable WiFi, so this is the point.
+        #   "claude" — cloud only; open questions fail with no internet.
+        #   "local"  — never touches the network.
+        # The local model runs on Ollama (127.0.0.1:11434) against the Intel Arc
+        # iGPU via Vulkan. See inmoov/local_brain.py for why this model and not a
+        # reasoning one. Live switch from the admin panel; persists.
+        "backend": "auto",
+        # Let Claude look things up when the answer depends on something current.
+        # Claude-only: the tool runs on Anthropic's side, so the local model never
+        # gets it. Billed per search, hence a switch. The location is what he
+        # assumes when nobody names a place ("what's the weather?") — set it to
+        # wherever he actually is.
+        # Notice a returning visitor within one conversation ("you asked me
+        # about servos earlier"). Held in memory only and forgotten on the same
+        # idle timeout as the transcript — nothing about a face is ever written
+        # to disk, which is the condition this was built under. See face_id.py.
+        "face_recall": True,
+        # Whether face recall may hold the camera open by itself. Off by design:
+        # Camera.acquire() does not light the viewer indicator, so this would
+        # mean a camera running with no outward sign of it at an event full of
+        # children. With it off he only recognises people while the camera is
+        # already streaming for some other reason — which means, in practice,
+        # while face tracking is on.
+        "face_hold_camera": False,
+        "web_search": True,
+        "web_search_location": {"city": "", "region": "", "country": "US",
+                                "timezone": ""},
+        # Where he is, for the weather — the National Weather Service, not a
+        # web search, which read back a days-old 92 on a 67-degree morning.
+        # lat/lon of the grid he stands in and the name he says for it.
+        "weather": {"lat": 41.6986, "lon": -88.0684, "name": "Bolingbrook"},
+        "local_model": "qwen2.5:3b",
+        "local_host": "http://127.0.0.1:11434",
+        # Whether FRED may look through his eye camera to answer a question.
+        # Cloud-only: the local model is text-only, so this does nothing on the
+        # "local" backend. A look costs ~1000 image tokens (about $0.0016 at
+        # Haiku's input price) plus a camera start, so it is rate-limited rather
+        # than free — vision_min_seconds is the shortest gap between two looks.
+        "vision": True,
+        "vision_min_seconds": 12.0,
+    },
+    "event": {
+        # Flipped when FRED is in front of the public. One switch rather than
+        # three, because "he is at an event" is one fact and capping his answer
+        # length, his driving speed and his spending are all consequences of it.
+        # See inmoov/event.py. Live from the panel; persists.
+        "enabled": False,
+        "max_words": 25,          # spoken answers; the mic is deaf while he talks
+        "cart_speed": 120,        # of cart.py's 300, on a machine weighing 350 lb
+    },
     "voice": {
-        "enabled": False,             # start the "Hey FRED" wake-word listener at boot
+        "enabled": False,             # start the "Fred" wake-word listener at boot
         "gain": 1.0,                  # software mic boost (analog capture is already
                                       # maxed); 1.0 = off, ~2-3 for quiet/distant speech
+        # How the capture device presents itself. 1/0 is an ordinary mono mic and
+        # is what a USB speakerphone wants. A mic array offers several channels at
+        # once and both of these matter: ALSA's plughw does not *pick* a channel
+        # when asked for mono, it averages them all, so the beamformed output
+        # arrives mixed back in with the raw capsules and a sixth as loud. Measured
+        # on the reSpeaker Flex (XVF3800), which presents 6 at 16 kHz. With the
+        # device's AEC_ASROUTONOFF at 1 (as shipped) those are beamformer
+        # outputs, not microphones — ch0 is the loud AGC'd one worth reading.
+        #   PowerConf / any plain mic:  channels 1, channel 0
+        #   reSpeaker Flex C16K6Ch:     channels 6, channel 0
+        "mic_channels": 1,
+        "mic_channel": 0,
+        # Which Vosk model transcribes what he hears. A directory name under
+        # models/. The small one is 68 MB and fast; the larger ones are more
+        # accurate on the case that actually fails — children, at distance, in a
+        # noisy hall — at a real CPU cost on a machine already giving ~4 cores
+        # to the wide camera. Measure with tools/bench_asr.py before switching.
+        "asr_model": "vosk-model-en-us-0.22-lgraph",
+        # A second opinion on the sentence after his name. "vosk" uses Vosk's
+        # own words; "whisper" hands the endpointed utterance to faster-whisper
+        # on a worker thread and uses its words when it answers in time — Vosk
+        # keeps the wake word and barge-in either way (see inmoov/transcriber.py
+        # and tools/bench_transcribers.py for the numbers). Needs
+        # `venv/bin/pip install faster-whisper`; the model downloads once.
+        # whisper_device "cpu" is faster-whisper on whisper_threads threads;
+        # "npu" or "gpu" is the same model through OpenVINO on the NUC's Intel
+        # silicon, from the model directory whisper_ov_model (under models/,
+        # or absolute) — ten times faster, and the CPU threads come back.
+        # Needs the Intel drivers and the render group; transcriber.py says how.
+        "transcriber": "vosk",
+        "whisper_model": "base.en",
+        "whisper_threads": 4,
+        "whisper_device": "cpu",
+        "whisper_ov_model": "whisper-small.en-int8-ov",
+        # Opt-in capture of the utterances he was actually spoken to, to feed the
+        # ASR-model decision that bench_asr.py is waiting on — the child-in-a-hall
+        # case cannot be synthesised. OFF by default; only what passes the wake
+        # gate is ever written (the room is never kept), each WAV named by the
+        # heard.jsonl timestamp so it pairs with its row, the directory bounded by
+        # file count. See inmoov/uttercap.py.
+        "capture": {
+            "enabled": False,
+            "dir": "logs/utterances",
+            "seconds": 12,           # rolling window kept per utterance
+            "max_files": 300,        # oldest dropped past this
+        },
+        # On-array gain/AGC re-applied at every boot (the XVF3800 forgets across
+        # a power cycle). Empty = leave the device at its own defaults, which is
+        # the shipped behaviour; tune with tools/xvf_tune.py and paste the values
+        # here to make them stick. Names: AEC_ASROUTGAIN, PP_AGCDESIREDLEVEL,
+        # PP_AGCMAXGAIN, PP_AGCONOFF, AEC_ASROUTONOFF. See inmoov/xvf_params.py.
+        "xvf_params": {},
         "model": "claude-haiku-4-5-20251001",   # Claude model behind FRED's replies.
+        # Listen through his own replies, so saying his name over him cuts the
+        # answer short. The speakerphone cancels his voice out of its own capture,
+        # so this hears the room rather than him — but it does hear the *room*,
+        # which is why it takes his name and not just any speech. Turn it off
+        # where even that misfires.
+        "barge_in": True,
+        # Cut a reply short when the visitor walks away rather than finishing a
+        # long answer to an empty spot while the queue waits. Needs the stomach
+        # node's distance sensors; with no sensors he simply keeps talking.
+        "stop_when_alone": True,
+        # The thinking line (V1): what he says the moment a language model
+        # takes the turn, so the silence while it works is never mistaken for
+        # not having heard. ``earcon_after`` is seconds of silence before it —
+        # 0 is at once, which is what a room full of children wants; the first
+        # version waited 1.5 s and the "Hmm" arrived with the answer.
+        "earcon": True,
+        "earcon_after": 0.0,
+        "earcon_text": "Hmm, let me think.",
                                       # Haiku answers in ~0.7s vs Opus's ~1.7s; for one- or
                                       # two-sentence spoken replies that trade is worth it.
+    },
+    "images": {
+        # FRED paints: "draw me a dragon" becomes a picture on the chest screen.
+        # See inmoov/images.py. Which painter:
+        #   "auto"   — the local one when tools/install_sdcpp.sh has been run,
+        #              else the OpenAI Images API when a key is set, else none.
+        #   "local"  — stable-diffusion.cpp on the NUC's cores; no internet.
+        #   "openai" — the cloud painter only (needs the key and an uplink).
+        #   "off"    — he says he can't.
+        "backend": "auto",
+        # The local painter runs on the Arc iGPU through the Vulkan build (the
+        # plain CPU build is used if that one is missing). Which weights:
+        # a split set (sd_diffusion_model + vae + clip_l + t5xxl: FLUX) wins
+        # over a single file (sd_model: sd-turbo, sdxl-turbo). Benched
+        # 2026-09-24 on the iGPU, 512px — see TODO.md "FRED paints":
+        #   FLUX.1-schnell q4_k_s, 4 steps, euler: the one that draws people
+        #     with the right number of arms. The default.
+        #   sdxl-turbo fp16, 2 steps, euler_a: sd_model=…/sd_xl_turbo_1.0_fp16
+        #     .safetensors, sd_diffusion_model="", sd_taesd=…/taesdxl.safetensors
+        #   sd-turbo q8, 2 steps, euler_a: sd_model=…/sd_turbo-f16-q8_0.gguf,
+        #     sd_diffusion_model="", sd_taesd=…/taesd.safetensors — the old
+        #     default; fast, and the one that painted three-armed children.
+        "sd_bin": "~/fred/sdcpp/stable-diffusion.cpp/build-vulkan/bin/sd-cli",
+        "sd_model": "",
+        "sd_diffusion_model": "~/fred/sdcpp/models/flux1-schnell-q4_k_s.gguf",
+        "sd_vae": "~/fred/sdcpp/models/ae.safetensors",
+        "sd_clip_l": "~/fred/sdcpp/models/clip_l.safetensors",
+        "sd_t5xxl": "~/fred/sdcpp/models/t5xxl-q8_0.gguf",
+        "sd_taesd": "",               # tiny decoder, must match the family; "" = the real VAE
+        "steps": 4,                   # distilled models: 1-4; more is slower, not better
+        "sampler": "",                # "" = euler for a split (flow) model, euler_a for SD
+        "size": 512,                  # square, pixels; the chest shows it at 480
+        "style": "",                  # words added to every prompt ("storybook
+                                      # illustration, bright colours"); "" = the
+                                      # brain chooses the style per request
+        # The audience is children: "family" refuses prompts for nudity, sex,
+        # gore, horror, weapons, drugs and hate symbols before painting, and
+        # looks at every finished picture (NudeNet) before showing it.
+        # "off" skips both. See inmoov/picture_guard.py.
+        "guard": "family",
+        "openai_api_key": "",         # or the OPENAI_API_KEY environment variable
+        "openai_model": "gpt-image-1",
+        "hold_s": 180,                # how long the chest shows a picture (0 = until tapped)
+        "wait_s": 8.0,                # how long the spoken reply waits for a fast
+                                      # painter before saying "it's on the way"
     },
     "greet": {
         "enabled": True,              # say hello when someone walks up (approach event)
         "cooldown": 90.0,             # seconds before the same arrival can greet again;
                                       # stops a person lingering at the edge of the cone
                                       # from being greeted over and over
+        # V5: consecutive wide-camera detections that count as an approach, so he
+        # greets people the 180° camera sees, not just the ultrasonic cone. Higher
+        # = surer it's a real person before he speaks up. Fires once per presence.
+        "sightings_to_greet": 3,
     },
     "camera360": {
         # The Insta360 X5 on the cart mast, consumed as a UVC webcam (put the
@@ -86,17 +357,6 @@ DEFAULT_SETTINGS = {
         # once touched via POST /api/surround, same pattern as "track".
         "enabled": False,             # start watching at boot
     },
-    "cart": {
-        # The FRED-Cart hoverboard base (Project-FRED-Cart repo): a Pico on USB
-        # serial taking "<steer> <speed>" lines. The Pico's own failsafes stay
-        # underneath everything here (2 s host silence = stop; PS2 outranks us).
-        "enabled": False,             # master switch — no serial is ever opened when off
-        "port": "/dev/ttyACM1",       # the sensor node usually claims ACM0
-        "baud": 115200,
-        "max_speed": 150,             # walking pace; firmware full scale is 1000
-        "max_steer": 300,
-        "ai_drive": False,            # allow Claude's drive_cart tool (stop always works)
-    },
     "track": {
         # Face-tracking tunables (gains, invert flags, deadzone...). Deliberately
         # empty: the defaults live in FaceTracker's signature, so there is one
@@ -113,6 +373,13 @@ DEFAULT_SETTINGS = {
         "lead_in": 0.0,               # seconds of silence prepended to each clip; raise
                                       # (~0.4-0.6) for a device that clips the opening words
                                       # while its output stream spins up. 0 = off.
+        "gap_lead_in": 0.12,          # seconds of silence prepended to the *second and
+                                      # later* clips of one reply. Each sentence is its
+                                      # own aplay and so reopens the device; without
+                                      # this they lose their opening syllable. Much
+                                      # smaller than lead_in — it covers a reopen, not
+                                      # a cold start, and it is silence between the
+                                      # sentences of one answer. 0 = off.
         "sync_offset": 0.0,           # seconds; lip-sync trim. lead_in is compensated
                                       # exactly, so this only covers residual device
                                       # latency. Positive = jaw waits longer (mouth was

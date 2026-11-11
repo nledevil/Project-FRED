@@ -2,61 +2,113 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>FRED · InMoov Control</title>
+<link rel="stylesheet" href="/static/ui.css">
 <style>
-  :root { --bg:#0c0c0e; --panel:#161619; --border:#2a2b31; --fg:#e8e9ec;
-          --head:#f3f4f6; --mut:#868b95; --accent:#2d7ff9; --ok:#22c55e; --warn:#f59e0b; }
-  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
-  body { margin:0; background:var(--bg); color:var(--fg);
-         font:15px/1.45 system-ui,-apple-system,sans-serif; padding:20px; }
-  .app { max-width:1360px; margin:0 auto; }
-  .topbar { display:flex; align-items:baseline; gap:12px; margin:2px 4px 18px; }
-  .topbar h1 { font-size:16px; font-weight:700; letter-spacing:.02em; margin:0; }
-  .topbar .sub { color:var(--mut); font-size:13px; }
-  .health { margin-left:auto; font-size:12px; font-weight:600; padding:5px 11px;
-            border-radius:999px; border:1px solid var(--border); color:var(--mut);
-            font-variant-numeric:tabular-nums; white-space:nowrap; cursor:default; }
-  .health.ok   { background:#04310f; border-color:#0a5; color:var(--ok); }
-  .health.warn { background:#3a2a00; border-color:#7a5a10; color:var(--warn); }
-  .health.bad  { background:#3a0d0d; border-color:#a33; color:#f87171; }
-  .admin-link { font-size:15px; text-decoration:none; color:var(--mut); line-height:1;
-                padding:5px 9px; border:1px solid var(--border); border-radius:999px; }
-  .admin-link:hover { color:var(--fg); background:rgba(255,255,255,.04); }
-
-  .app { max-width:1500px; }
-  /* One-screen layout: live camera (big) top-left, animated head below it,
-     servo controls down the right side. */
-  .wrap { display:grid; gap:16px; align-items:start;
-          grid-template-columns:minmax(0,1.55fr) minmax(0,380px);
-          grid-template-areas:"cam controls" "surround controls" "face controls"; }
-  .cam { grid-area:cam; } .face { grid-area:face; } .controls { grid-area:controls; }
-  .surround { grid-area:surround; }
-  @media (max-width:900px){ .wrap { grid-template-columns:1fr;
-          grid-template-areas:"cam" "surround" "face" "controls"; } }
+  /* Page layout only — what things look like lives in /static/ui.css. */
+  .app { max-width:1560px; margin:0 auto; }
 
   /* 360 surround: the pano strip is 2:1, so keep it short and wide */
   .surround .pano-view { position:relative; background:#000; border-radius:9px;
           overflow:hidden; }
   .surround img { width:100%; display:block; }
   /* our display rules would otherwise beat the [hidden] attribute */
-  .surround img[hidden], .surround .cartrow[hidden] { display:none; }
+  .surround img[hidden] { display:none; }
   .surround .pano-msg { position:absolute; inset:0; display:flex; align-items:center;
           justify-content:center; color:var(--mut); font-size:14px; }
   .surround .who { color:var(--mut); font-size:13px; margin:10px 2px 0; min-height:1.2em; }
-  .surround .cartrow { display:flex; align-items:center; gap:10px; margin-top:10px;
-          font-size:13px; color:var(--mut); }
-  .surround .cartrow .stop { background:#5a1717; border:1px solid #a33;
-          color:#ffd9d9; font-weight:700; border-radius:9px; padding:6px 14px;
-          cursor:pointer; }
+  /* Audit banner: deliberately loud. Mistaking a dry run for a live robot (or
+     the reverse) is the one confusion this mode can cause. */
+  .auditbar { display:flex; align-items:center; gap:10px; margin:0 4px 14px;
+              padding:9px 14px; border-radius:10px; font-size:13px;
+              background:#3a2a00; border:1px solid #7a5a10; color:var(--warn); }
+  /* Must come after the display:flex above: an author `display` rule outranks
+     the UA stylesheet's [hidden]{display:none}, so without this the banner is
+     permanently visible. Same trap as .cart .warn[hidden] below. */
+  .auditbar[hidden] { display:none; }
+  .auditbar b { letter-spacing:.06em; }
+  .auditbar .det { color:#c8ab63; }
+  .auditbar button { margin-left:auto; color:var(--warn); font-weight:600;
+                     background:transparent; border:1px solid #7a5a10;
+                     border-radius:999px; padding:4px 12px; font-size:12px;
+                     cursor:pointer; white-space:nowrap; }
+  .auditbar button:hover { background:#4a3600; }
+  .audit-tog { margin-left:auto; }
+  .audit-tog.on { color:var(--warn); font-weight:600; }
+  .audit-tog ~ .toggle { margin-left:0; }   /* only the first toggle claims the gap */
 
-  .panel { background:var(--panel); border:1px solid var(--border); border-radius:14px; padding:18px; }
-  .phead { display:flex; align-items:center; gap:10px; text-transform:uppercase;
-           letter-spacing:.09em; font-size:12.5px; font-weight:700; color:#d7dae0; margin-bottom:16px; }
+  /* ---- the layout -------------------------------------------------------
+     Placement is by NAMED AREA on every panel, never by DOM order: theater
+     mode physically moves panels out and re-appends them at the end of .wrap,
+     and named areas are what make that round trip invisible.
+
+     Three shapes, chosen by what the screen has room for:
+       wide desktop  — camera | conversation | servos, three columns, because
+                       the transcript is how FRED is actually used and it
+                       deserves a column, not a box under the sliders
+       desktop       — camera left, conversation + servos stacked right
+       tablet        — one column, ordered by how often each panel is touched
+       phone         — one panel at a time behind a thumb-reach tab bar */
+  .wrap { display:grid; gap:14px; align-items:stretch;
+          grid-template-columns:minmax(0,1fr);
+          grid-template-areas:"cam" "surround" "talk" "cart" "controls" "face"; }
+  .cam { grid-area:cam; } .talk { grid-area:talk; } .controls { grid-area:controls; }
+  .face { grid-area:face; } .cart { grid-area:cart; } .surround { grid-area:surround; }
+
+  @media (min-width:1100px) {
+    .wrap { grid-template-columns:minmax(0,1.6fr) minmax(360px,1fr);
+            grid-template-areas:"cam talk" "surround talk" "cart talk" "face controls"; }
+  }
+  @media (min-width:1500px) {
+    .wrap { grid-template-columns:minmax(0,1.5fr) minmax(340px,430px) minmax(320px,400px);
+            grid-template-areas:"cam  talk controls"
+                               "surround talk controls"
+                               "cart talk controls"
+                               "face talk controls"; }
+  }
+
+  /* ---- phone: a tab bar, not a scroll ----------------------------------
+     One panel at a time, switched from a fixed bar at the bottom where a
+     thumb already is. The estop keeps its own tab the moment the cart
+     exists, so stopping the base is never behind a scroll. */
+  #tabbar { display:none; }
+  @media (max-width:699px) {
+    .wrap { display:block; }
+    .wrap > .panel { display:none; margin-bottom:12px; }
+    body[data-view=cam]    .wrap > .cam:not([hidden])      { display:block; }
+    body[data-view=cam]    .wrap > .surround               { display:block; }
+    body[data-view=talk]   .wrap > .talk:not([hidden])     { display:flex; }
+    body[data-view=servos] .wrap > .controls:not([hidden]) { display:block; }
+    body[data-view=face]   .wrap > .face:not([hidden])     { display:flex; }
+    body[data-view=cart]   .wrap > .cart:not([hidden])     { display:block; }
+    /* the conversation fills the screen so the input box rides just above
+       the tab bar instead of somewhere down a scroll */
+    body[data-view=talk] .wrap > .talk {
+      min-height:calc(100dvh - 74px - 64px - env(safe-area-inset-bottom,0px)); }
+    body { padding-bottom:calc(66px + env(safe-area-inset-bottom,0px)); }
+
+    #tabbar { position:fixed; left:0; right:0; bottom:0; z-index:80;
+      display:flex; gap:2px; background:rgba(15,15,18,.94);
+      -webkit-backdrop-filter:blur(10px); backdrop-filter:blur(10px);
+      border-top:1px solid var(--border);
+      padding:6px max(8px, env(safe-area-inset-left))
+              calc(6px + env(safe-area-inset-bottom,0px))
+              max(8px, env(safe-area-inset-right)); }
+    #tabbar button { flex:1; border:0; background:transparent; border-radius:10px;
+      display:flex; flex-direction:column; align-items:center; gap:2px;
+      font-size:10.5px; font-weight:600; color:var(--mut); padding:5px 2px;
+      min-height:48px; letter-spacing:.04em; }
+    #tabbar button .ico { font-size:19px; line-height:1; }
+    #tabbar button.on { color:var(--fg); background:rgba(45,127,249,.16); }
+    #tabbar button[hidden] { display:none; }
+    body.theater #tabbar { display:none; }
+  }
 
   /* face preview */
   .face { background:#0a0a0b; display:flex; align-items:center; justify-content:center;
           min-height:300px; perspective:1050px; padding:20px; }
+  @media (max-width:699px) { .face { min-height:230px; } }
   #head { position:relative; width:min(97%,860px); line-height:0; filter:drop-shadow(0 18px 36px #000c);
           transform-origin:50% 50%; transition:transform .12s ease; }
   #head svg { width:100%; height:auto; display:block; }
@@ -69,17 +121,12 @@
   #head #cam-led { opacity:0; transition:opacity .18s ease; }
   body.led-on #head #cam-led { opacity:1; filter:drop-shadow(0 0 5px #ff1a1a); }
 
-  .badge { margin-left:auto; font-size:11px; font-weight:700; padding:3px 9px;
-           border-radius:999px; letter-spacing:.05em; }
-  .badge.mock { background:#3a2a00; color:var(--warn); }
-  .badge.live { background:#04310f; color:var(--ok); }
-
   /* slider control */
   .ctl { margin-bottom:22px; }
   .ctl-head { display:flex; justify-content:space-between; align-items:baseline; margin-bottom:8px; }
   .ctl-label { text-transform:uppercase; letter-spacing:.06em; font-size:13px; font-weight:600; color:#cfd3d9; }
   .ctl-val { color:var(--accent); font-weight:700; font-size:14px; font-variant-numeric:tabular-nums; }
-  input[type=range] { width:100%; height:26px; accent-color:var(--accent); cursor:pointer; margin:0; }
+  .ctl input[type=range], #servos input[type=range] { width:100%; }
   .ctl-foot { display:flex; justify-content:space-between; align-items:center; margin-top:5px;
               color:var(--mut); font-size:12px; font-variant-numeric:tabular-nums; }
   .ctl-ch { color:#5f636c; font-size:11px; letter-spacing:.02em; }
@@ -93,64 +140,136 @@
   .map.hidden { display:none; }
   .map .ch-pick { display:flex; align-items:center; gap:7px; color:var(--mut);
                   font-size:12px; text-transform:uppercase; letter-spacing:.05em; }
-  .map select { font:inherit; font-weight:600; color:var(--fg); background:var(--panel);
-                border:1px solid var(--border); border-radius:8px; padding:6px 9px; cursor:pointer; }
   .map button { padding:7px 11px; font-size:12px; }
 
-  button { font:inherit; font-weight:600; color:var(--fg); background:transparent;
-           border:1px solid var(--border); border-radius:9px; padding:9px 16px; cursor:pointer; }
-  button:hover { background:rgba(255,255,255,.04); }
-  button:active { transform:translateY(1px); }
-  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
-  button.hidden { display:none; }
-  .actions { display:flex; gap:10px; flex-wrap:wrap; align-items:center;
-             margin-top:20px; padding-top:16px; border-top:1px solid var(--border); }
-  .toggle { display:flex; align-items:center; gap:8px; margin-left:auto; color:var(--mut);
-            font-size:13px; cursor:pointer; }
-  .toggle input { accent-color:var(--accent); }
-  .hint { color:var(--mut); font-size:13px; line-height:1.5; margin:14px 0 0; }
+  /* drive base — hold-to-drive pad. Sized for a thumb, because the realistic
+     way anyone drives this is one-handed on a phone while walking beside it. */
+  .cart .padwrap { display:flex; gap:16px; align-items:stretch; flex-wrap:wrap; }
+  .cart .pad { position:relative; flex:1 1 220px; min-width:200px; aspect-ratio:1;
+      background:#0a0a0b; border:1px solid var(--border); border-radius:14px;
+      touch-action:none; cursor:grab; overflow:hidden; }
+  .cart .pad.live { border-color:var(--accent); cursor:grabbing; }
+  .cart .pad.off { opacity:.45; pointer-events:none; }
+  .cart .pad .cross { position:absolute; inset:0;
+      background:linear-gradient(to right, transparent calc(50% - 1px),
+                 #23242a calc(50% - 1px), #23242a calc(50% + 1px), transparent calc(50% + 1px)),
+                 linear-gradient(to bottom, transparent calc(50% - 1px),
+                 #23242a calc(50% - 1px), #23242a calc(50% + 1px), transparent calc(50% + 1px)); }
+  .cart .pad .knob { position:absolute; width:46px; height:46px; margin:-23px 0 0 -23px;
+      border-radius:50%; background:var(--accent); border:2px solid #fff2;
+      left:50%; top:50%; transition:left .12s, top .12s; pointer-events:none; }
+  .cart .pad.live .knob { transition:none; }
+  .cart .pad .padhint { position:absolute; left:0; right:0; bottom:10px; text-align:center;
+      color:var(--mut); font-size:11.5px; letter-spacing:.04em; pointer-events:none; }
+  .cart .side { flex:1 1 200px; display:flex; flex-direction:column; gap:10px; }
+  /* Phone: estop above, pad below — the pad wants to live under the thumb,
+     and the stop must be visible without scrolling while driving. */
+  @media (max-width:699px) { .cart .padwrap { flex-direction:column-reverse; } }
+  .cart .estop { font:inherit; font-weight:800; letter-spacing:.06em; color:#fff;
+      background:#7f1d1d; border:1px solid #b91c1c; border-radius:12px;
+      padding:18px 14px; cursor:pointer; font-size:15px; }
+  .cart .estop:hover { background:#991b1b; }
+  .cart .tel { display:grid; grid-template-columns:auto 1fr; gap:4px 12px;
+      font-size:12.5px; color:var(--mut); }
+  .cart .tel b { color:var(--fg); font-weight:600; justify-self:end;
+      font-variant-numeric:tabular-nums; }
+  .cart .ctrlmode { display:flex; align-items:center; justify-content:space-between;
+                    gap:10px; font-size:13px; color:var(--mut); }
+  .cart .warn { background:#3a2a00; color:var(--warn); border-radius:9px;
+      padding:9px 12px; font-size:12.5px; margin-bottom:12px; }
+  .cart .warn[hidden] { display:none; }
 
   /* live camera */
-  .cam .phead .cam-hbtns { margin-left:auto; display:flex; gap:8px; }
-  .cam .phead button { padding:7px 14px; font-size:12px; }
+  .cam-toolbar { display:flex; gap:8px; flex-wrap:wrap; align-items:center;
+                 margin-bottom:12px; }
+  .cam-toolbar button { padding:7px 14px; font-size:12px; }
+  #camBtn { margin-left:auto; }
+  /* Which camera. A segmented pair rather than two loose buttons, because these
+     are one choice with two answers, not two independent actions. */
+  .cam-src { display:flex; border:1px solid var(--border); border-radius:8px; overflow:hidden; }
+  .cam-src button { border:0; border-radius:0; padding:7px 12px; font-size:12px;
+                    background:var(--panel); color:var(--mut); }
+  .cam-src button + button { border-left:1px solid var(--border); }
+  .cam-src button.on { background:var(--accent); color:#fff; }
+  .cam-src button:disabled { opacity:.4; cursor:not-allowed; }
   .cam-view { position:relative; background:#000; border:1px solid var(--border);
-              border-radius:12px; overflow:hidden; min-height:240px;
+              border-radius:12px; overflow:hidden; min-height:200px;
               display:flex; align-items:center; justify-content:center; }
   /* Cap the feed so starting the camera doesn't grow the panel and shove the
-     animation off-screen — it stays parked in its top-left tile. */
-  .cam-view img { width:100%; height:auto; max-height:44vh; object-fit:contain; display:block; }
+     rest of the page around. */
+  .cam-view img { width:100%; height:auto; max-height:48vh; object-fit:contain; display:block; }
+  @media (max-width:699px) { .cam-view img { max-height:58vh; } }
   .cam-msg { color:var(--mut); font-size:13px; padding:48px 20px; text-align:center; }
-  .cam-ctls { display:flex; gap:16px; align-items:center; flex-wrap:wrap; margin-top:14px; }
+  .cam-ctls { display:flex; gap:14px; align-items:center; flex-wrap:wrap; margin-top:14px; }
   .cam-ctls label { color:var(--mut); font-size:12px; text-transform:uppercase;
                     letter-spacing:.05em; display:flex; align-items:center; gap:7px; }
-  .cam-ctls select { font:inherit; font-weight:600; color:var(--fg); background:var(--panel);
-                     border:1px solid var(--border); border-radius:8px; padding:6px 9px; cursor:pointer; }
   .cam-ctls .lens { flex:1; min-width:180px; }
-  .cam-ctls .lens input[type=range] { flex:1; height:22px; accent-color:var(--accent); }
+  .cam-ctls .lens input[type=range] { flex:1; }
   .cam-ctls .lens .ctl-ch { min-width:56px; text-align:right; }
   .cam-ctls .flip { margin-left:auto; cursor:pointer; }
-  .cam-ctls .flip input { accent-color:var(--accent); }
   .cam-ctls .ledtog { cursor:pointer; }
   .cam-ctls .ledtog input { accent-color:#ff3b3b; }
 
-  /* Talk-to-FRED voice/AI panel (inside the controls panel) */
-  .voice { margin-top:16px; border-top:1px solid var(--border); padding-top:14px; }
-  .voice .phead { display:flex; align-items:center; gap:10px; }
+  /* Talk-to-FRED — its own panel now, not a box under the sliders */
+  .talk { display:flex; flex-direction:column; }
   .voice .vbtn { margin-left:auto; font:inherit; font-weight:600; color:var(--fg);
       background:var(--panel); border:1px solid var(--border); border-radius:9px;
       padding:7px 13px; cursor:pointer; }
   .voice .vbtn:hover:not(:disabled) { background:rgba(255,255,255,.05); }
   .voice .vbtn:disabled { opacity:.4; cursor:not-allowed; }
   #listenBtn.on { background:#7f1d1d; border-color:#b91c1c; color:#fff; }
+  .voice .vbtn.stop { margin-left:auto; color:#f4b4b4; border-color:#7f1d1d; }
+  .voice .vbtn.stop:hover:not(:disabled) { background:#7f1d1d; color:#fff; }
+  .voice .vbtn.stop + .vbtn { margin-left:8px; }
   .voice .vrow { display:flex; gap:8px; margin:10px 0 0; }
-  .voice .vrow input { flex:1; font:inherit; color:var(--fg); background:#0e0e11;
-      border:1px solid var(--border); border-radius:9px; padding:9px 12px; }
+  .voice .vrow input { flex:1; background:var(--panel2); }
   .voice .vrow .vbtn { margin-left:0; }
 
-  /* chat transcript */
-  .voice .chat { max-height:260px; overflow-y:auto; display:flex; flex-direction:column;
-      gap:8px; padding:12px 2px; margin-top:10px; }
-  .voice .chat:empty::before { content:"No messages yet — say “Hey FRED…” or type below.";
+  /* the deck of one-tap things to say. Sits above the input so the phone
+     order is tabs, phrases, keyboard; collapsible because the transcript is
+     the panel's real tenant and the deck is a guest with a lanyard. */
+  .deck { border-top:1px solid var(--border); margin-top:10px; padding-top:8px; }
+  .deck-head { display:flex; align-items:center; gap:8px; }
+  .deck-toggle { border:0; background:transparent; color:var(--mut); padding:6px 4px;
+                 font-size:12px; font-weight:700; letter-spacing:.06em;
+                 text-transform:uppercase; }
+  .deck-toggle:hover { color:var(--fg); background:transparent; }
+  .deck.open .deck-toggle { color:var(--fg); }
+  .deck-editbtn { border:0; background:transparent; color:var(--mut); padding:6px 8px;
+                  font-size:12px; }
+  .deck-editbtn.on { color:var(--accent); }
+  .deck-body { margin-top:6px; }
+  .deck-tabs { display:flex; gap:4px; overflow-x:auto; scrollbar-width:none;
+               -webkit-overflow-scrolling:touch; padding-bottom:6px; }
+  .deck-tabs::-webkit-scrollbar { display:none; }
+  .deck-tabs button { flex:none; border:0; border-bottom:2px solid transparent;
+                      border-radius:8px 8px 0 0; background:transparent;
+                      color:var(--mut); font-size:12.5px; padding:6px 11px; }
+  .deck-tabs button.on { color:var(--fg); border-bottom-color:var(--accent);
+                         background:rgba(45,127,249,.10); }
+  .deck-list { display:flex; flex-wrap:wrap; gap:7px; max-height:170px;
+               overflow-y:auto; padding:2px 0; }
+  .deck-list button { position:relative; font-size:13px; padding:8px 13px;
+                      border-radius:999px; background:var(--panel2); max-width:100%;
+                      text-align:left; }
+  .deck-list button:hover { border-color:var(--accent); }
+  .deck-list button.saying { border-color:var(--ok); color:var(--ok); }
+  /* edit mode: every pill grows a ✕ and taps delete instead of speak */
+  .deck.editing .deck-list button::after { content:"✕"; margin-left:8px;
+                      color:var(--bad); font-weight:700; }
+  .deck-addrow { display:flex; gap:6px; margin-top:8px; flex-wrap:wrap; }
+  /* Must follow the display:flex above: an author display rule outranks the
+     UA's [hidden]{display:none}. Third time this trap has been documented in
+     this file; first time the author walked into it himself. */
+  .deck-addrow[hidden] { display:none; }
+  .deck-addrow input { flex:1 1 160px; background:var(--panel2); }
+  .deck-addrow #deckNewTab { flex:0 1 120px; }
+
+  /* chat transcript: grows to fill the panel's column, scrolls inside */
+  .voice .chat { flex:1 1 220px; min-height:180px; overflow-y:auto;
+      display:flex; flex-direction:column; gap:8px; padding:12px 2px; margin-top:2px;
+      overscroll-behavior:contain; }
+  .voice .chat:empty::before { content:"No messages yet — say “Fred…” or type below.";
       color:var(--mut); font-size:12.5px; }
   .msg { max-width:88%; padding:8px 11px; border-radius:13px; font-size:13px; line-height:1.4;
       word-wrap:break-word; }
@@ -165,6 +284,7 @@
       vertical-align:middle; text-transform:uppercase; letter-spacing:.03em; }
   .msg .tag.ai { background:#3b2f6b; color:#c7b8ff; }
   .msg .tag.local { background:#173a2a; color:#7fe0b0; }
+  .msg .tag.say { background:#1c3350; color:#8fc2ff; }
 
   /* face-tracking overlay: reticle wanders (seek animation) while searching,
      and snaps onto the detected face (.locked, driven live from /api/track) */
@@ -187,7 +307,7 @@
       50%{ left:57%; top:52%; } 75%{ left:47%; top:50%; } }
   @media (prefers-reduced-motion: reduce){ .track-ov .reticle { animation:none; } }
 
-  /* ---- theater / picture-in-picture mode -------------------------------
+  /* ---- theater / picture-in-picture -------------------------------------
      "Enlarge" blows the camera up to fill the viewport and floats ONE
      translucent overlay panel (condensed head + controls) on top, which
      can be dragged anywhere so it never blocks the video. */
@@ -207,8 +327,9 @@
   #pip { display:none; }
   body.theater #pip {
     display:block; position:fixed; z-index:60; top:18px; right:18px;
-    width:330px; max-height:calc(100vh - 36px); overflow:auto;
-    background:rgba(20,20,23,.8); backdrop-filter:blur(10px);
+    width:330px; max-width:calc(100vw - 24px); max-height:calc(100vh - 36px);
+    overflow:auto; background:rgba(20,20,23,.8);
+    -webkit-backdrop-filter:blur(10px); backdrop-filter:blur(10px);
     border:1px solid var(--border); border-radius:14px;
     box-shadow:0 16px 48px #000b; resize:both; }
   .pip-head {
@@ -230,14 +351,30 @@
   body.theater #pip .controls .hint { display:none; }
   body.theater #pip .ctl { margin-bottom:15px; }
 
-  #toast { position:fixed; left:50%; bottom:24px; transform:translateX(-50%);
-           background:#04310f; color:var(--ok); border:1px solid #0a5; padding:10px 18px;
-           border-radius:10px; opacity:0; transition:opacity .25s; pointer-events:none; font-weight:600; }
-  #toast.show { opacity:1; }
+  /* ---- mic level meter --------------------------------------------------
+     Six seconds of what the microphone actually heard. It exists because no
+     number here can honestly be turned into "muted" -- this hardware gates a
+     quiet room to exact zeros too -- but a person watching this while they
+     talk settles it instantly. */
+  .mic { margin-top:10px; }
+  .micbars { display:flex; align-items:flex-end; gap:1px; height:34px;
+             padding:3px 4px; background:#101013; border:1px solid var(--border);
+             border-radius:8px; overflow:hidden; }
+  .micbars i { flex:1 1 0; min-width:0; background:var(--ok); border-radius:1px;
+               height:2px; transition:height .1s linear; opacity:.85; }
+  .micbars i.zero { background:#33343a; }        /* digital silence, not a low level */
+  .micbars.idle i { background:#33343a; }
+  .micfoot { display:flex; justify-content:space-between; gap:10px;
+             margin-top:4px; font-size:11px; color:var(--mut); }
+  .micfoot .warn { color:#e0b05f; }
+
   @media (prefers-reduced-motion: reduce) { #head { transition:none; } }
 </style>
+<link rel="stylesheet" href="/static/pin.css">
+<script src="/static/pin.js"></script>
+<script src="/static/ui.js"></script>
 </head>
-<body>
+<body data-view="cam">
 <div class="app">
   <div class="topbar">
     <h1>FRED</h1>
@@ -246,16 +383,29 @@
     <a class="admin-link" href="/admin" title="Admin settings">⚙</a>
   </div>
 
+  <div class="auditbar" id="auditBar" hidden>
+    <b>AUDIT MODE</b>
+    <span class="det">Dry run — no audio out, no servo motion, cart held.
+      Readouts show what FRED <i>would</i> do.</span>
+    <button type="button" onclick="onAudit(false)">Turn off</button>
+  </div>
+
   <div class="wrap">
     <section class="panel cam" id="camPanel">
       <div class="phead">Live camera
         <span id="camState" class="badge">…</span>
-        <span class="cam-hbtns">
-          <button id="trackBtn" onclick="toggleTrack()" disabled
-                  title="Face tracking (not yet connected)">◎ Track face</button>
-          <button id="bigBtn" onclick="toggleBig()">⛶ Enlarge</button>
-          <button id="camBtn" onclick="toggleCam()" disabled>▶ Start camera</button>
+      </div>
+      <div class="cam-toolbar">
+        <span class="cam-src" id="camSrc">
+          <button id="srcHead" class="on" onclick="setCamSource('head')"
+                  title="The camera in FRED's head — it moves as he looks around">👁 Head</button>
+          <button id="srcWide" onclick="setCamSource('wide')" disabled
+                  title="The wide camera on the chest">🌐 Wide 180°</button>
         </span>
+        <button id="trackBtn" onclick="toggleTrack()" disabled
+                title="Face tracking (not yet connected)">◎ Track face</button>
+        <button id="bigBtn" onclick="toggleBig()">⛶ Enlarge</button>
+        <button id="camBtn" onclick="toggleCam()" disabled>▶ Start camera</button>
       </div>
       <div class="cam-view">
         <img id="camImg" alt="live camera feed" hidden>
@@ -305,10 +455,6 @@
         <div class="pano-msg" id="panoMsg">360&deg; camera off</div>
       </div>
       <div class="who" id="surWho"></div>
-      <div class="cartrow" id="cartRow" hidden>
-        <span id="cartState">Cart</span>
-        <button class="stop" onclick="cartStop()">■ STOP CART</button>
-      </div>
     </section>
 
     <section class="panel face">
@@ -322,27 +468,102 @@
         <button onclick="rest()">↺ Reset</button>
         <button onclick="relax()">◌ Relax</button>
         <button id="saveBtn" class="primary hidden" onclick="save()">💾 Save config</button>
+        <label class="toggle audit-tog" id="auditTog"
+               title="Dry run — interact normally, but no audio out, no servo motion, no cart">
+          <input type="checkbox" id="auditChk" onchange="onAudit(this.checked)"> Audit</label>
         <label class="toggle"><input type="checkbox" id="calib" onchange="setCalib()"> Calibration</label>
       </div>
       <p class="hint">Drag the sliders to move the eyes left/right and up/down, and open the jaw.
          Changes drive the servos live (or a mock, when no hardware is attached).</p>
 
-      <div class="voice" id="voice">
+    </section>
+
+    <section class="panel talk voice" id="voice">
         <div class="phead">Talk to FRED
           <span id="voiceState" class="badge">…</span>
+          <button id="stopBtn" class="vbtn stop" onclick="stopFred()"
+                  title="Stop FRED talking now">✋ Stop</button>
           <button id="clearLogBtn" class="vbtn" onclick="clearLog()" title="Clear transcript">🗑</button>
           <button id="listenBtn" class="vbtn" onclick="toggleListen()" disabled>🎤 Listen</button>
         </div>
         <div class="chat" id="chatLog"></div>
+        <div class="deck" id="deck">
+          <div class="deck-head">
+            <button class="deck-toggle" id="deckToggle" onclick="toggleDeck()">▸ Quick say</button>
+            <div class="grow"></div>
+            <button class="deck-editbtn" id="deckEditBtn" onclick="deckEditMode()"
+                    title="Add or remove phrases">✎ Edit</button>
+          </div>
+          <div class="deck-body" id="deckBody" hidden>
+            <div class="deck-tabs" id="deckTabs"></div>
+            <div class="deck-list" id="deckList"></div>
+            <div class="deck-addrow" id="deckAddRow" hidden>
+              <input type="text" id="deckNewText" placeholder="New phrase…" maxlength="200"
+                     onkeydown="if(event.key==='Enter')deckAdd()">
+              <input type="text" id="deckNewTab" list="deckTabNames" placeholder="Tab" maxlength="24">
+              <datalist id="deckTabNames"></datalist>
+              <button class="vbtn" onclick="deckAdd()">Add</button>
+            </div>
+          </div>
+        </div>
         <div class="vrow">
           <input type="text" id="cmdBox" placeholder="Message FRED…"
                  onkeydown="if(event.key==='Enter')sendCmd()">
           <button class="vbtn" onclick="sendCmd()">Send</button>
         </div>
-        <p class="hint" id="voiceHint">Say “Hey FRED, open your mouth”, or type above.</p>
+        <div class="mic" id="micMeter" hidden>
+          <div class="micbars" id="micBars" title="What the microphone has heard in the last six seconds"></div>
+          <div class="micfoot"><span id="micRead">—</span><span id="micNote"></span></div>
+        </div>
+        <p class="hint" id="voiceHint">Say “Fred, open your mouth”, or type above.</p>
+      </section>
+
+    <section class="panel cart" id="cartPanel" hidden>
+      <div class="phead">Drive base <span id="cartState" class="badge">…</span></div>
+      <div class="warn" id="cartWarn" hidden></div>
+      <div class="padwrap">
+        <div class="pad off" id="cartPad">
+          <div class="cross"></div>
+          <div class="knob" id="cartKnob"></div>
+          <div class="padhint">hold to drive · release to stop</div>
+        </div>
+        <div class="side">
+          <button class="estop" onclick="cartStop(true)">■ EMERGENCY STOP</button>
+          <label class="ctrlmode">Hand controller
+            <select id="cartCtrlMode" onchange="setCartController(this.value)">
+              <option value="off">Disabled</option>
+              <option value="takeover">May take over</option>
+              <option value="only">Controller only</option>
+            </select>
+          </label>
+          <div class="tel">
+            <span>Controller</span><b id="cartPad2">—</b>
+            <span>Battery</span><b id="cartBat">—</b>
+            <span>Board temp</span><b id="cartTemp">—</b>
+            <span>Wheels L/R</span><b id="cartWheels">—</b>
+            <span>Commanded</span><b id="cartCmd">—</b>
+          </div>
+        </div>
       </div>
+      <p class="hint">Drag the pad: up/down is speed, left/right is steering. It only
+         moves while you hold it — let go, close this tab, or lose signal and the chest
+         Pi stops it within half a second. <b>May take over</b> lets the hand controller
+         seize the cart whenever R1 is held, the way the old PS2 pad did;
+         <b>Controller only</b> refuses this pad entirely.</p>
     </section>
   </div>
+
+  <!-- phone navigation: fixed to the bottom, where the thumb already is.
+       Hidden entirely on wide screens, where everything is visible at once.
+       The Drive tab appears only while the cart feature is enabled — same
+       rule as the cart panel itself. -->
+  <nav id="tabbar" aria-label="Panel sections">
+    <button data-view="cam"    onclick="setView('cam')"><span class="ico">📷</span>Camera</button>
+    <button data-view="talk"   onclick="setView('talk')"><span class="ico">💬</span>Chat</button>
+    <button data-view="servos" onclick="setView('servos')"><span class="ico">🎚</span>Servos</button>
+    <button data-view="cart"   onclick="setView('cart')" hidden><span class="ico">🕹</span>Drive</button>
+    <button data-view="face"   onclick="setView('face')"><span class="ico">🙂</span>Face</button>
+  </nav>
 
   <!-- theater overlay: the .face and .controls panels get moved in here while
        the video is enlarged, then moved back to the grid on exit -->
@@ -363,32 +584,61 @@ const LABELS = { eye_x:'Look Left / Right', eye_y:'Look Up / Down',
                  jaw:'Jaw Open / Close', neck:'Head Turn',
                  head_tilt_lr:'Head Tilt L / R', head_tilt_fb:'Head Tilt Fwd / Back' };
 
-async function api(path, body) {
-  const opt = { method: body ? 'POST' : 'GET' };
-  if (body) { opt.headers = {'Content-Type':'application/json'}; opt.body = JSON.stringify(body); }
-  const r = await fetch(path, opt);
-  return r.json();
+// api() comes from /static/pin.js — it raises the PIN keypad on a 401
+// and retries the call once the PIN lands.
+
+// A self-rescheduling poll. Unlike setInterval, it never lets one slow request
+// overlap the next tick: the next tick is queued only *after* the current one
+// settles. On venue WiFi, where an RTT can exceed the interval, setInterval
+// stacks requests faster than they drain and starves exactly the loop that
+// matters — the cart drive at 10 Hz — so every poller on this page is one of
+// these instead. `ms` is the gap between the end of one tick and the start of
+// the next, so a slow network slows the cadence rather than piling on.
+function makePoll(fn, ms) {
+  let on = false, timer = null;
+  async function tick() {
+    if (!on) return;
+    try { await fn(); } catch (e) { /* a failed poll must not end the loop */ }
+    if (on) timer = setTimeout(tick, ms);
+  }
+  return {
+    start() { if (!on) { on = true; tick(); } },
+    stop()  { on = false; if (timer) { clearTimeout(timer); timer = null; } },
+  };
 }
 
-function toast(msg) {
-  const t = document.getElementById('toast');
-  t.textContent = msg; t.classList.add('show');
-  clearTimeout(t._t); t._t = setTimeout(() => t.classList.remove('show'), 1600);
+// toast() comes from /static/ui.js — shared with the admin page.
+
+// ---- audit (dry run) mode ----------------------------------------------
+// One place that paints the state, so the checkbox and the banner can never
+// disagree about whether the robot is live.
+let AUDIT = null;                 // last painted state; null until first load
+function reflectAudit(on) {
+  on = !!on;
+  AUDIT = on;
+  document.getElementById('auditChk').checked = on;
+  document.getElementById('auditTog').classList.toggle('on', on);
+  document.getElementById('auditBar').hidden = !on;
+}
+async function onAudit(checked) {
+  reflectAudit(checked);                       // optimistic: the switch feels instant
+  const s = await api('/api/audit', { audit: !!checked });
+  reflectAudit(!!(s || {}).audit);             // then settle on what the server did
+  toast(AUDIT ? 'Audit mode ON — no sound, no motion'
+              : 'Audit mode OFF — FRED is live again');
 }
 
 async function load() {
   STATE = await api('/api/state');
-  const m = document.getElementById('mode');
-  m.textContent = STATE.mock ? 'MOCK' : 'LIVE';
-  m.className = 'badge ' + (STATE.mock ? 'mock' : 'live');
   const s = STATE.settings || {};
   if (s.iris_color) document.documentElement.style.setProperty('--iris-color', s.iris_color);
+  reflectAudit(!!(STATE.audit || {}).audit);
   initCam();
   initLed();
   initVoice();
   initSurround();
   render();
-  if (!_headPoll) _headPoll = setInterval(pollHead, 120);   // ~8 Hz: face mirrors the real robot
+  if (!_headPoll) { _headPoll = makePoll(pollHead, 120); _headPoll.start(); }   // ~8 Hz: face mirrors the real robot
 }
 
 // ---- voice / talk to FRED (chat transcript) ----------------------------
@@ -406,8 +656,66 @@ function applyVoice(v) {
   st.textContent = label + (v.ai_available ? ' · AI' : '');
   st.className = 'badge ' + (v.listening ? 'live' : 'mock');
   document.getElementById('voiceHint').textContent = v.ai_available
-    ? 'Say “Hey FRED, open your mouth”, or type above.'
+    ? 'Say “Fred, open your mouth”, or type above.'
     : 'Built-in commands work now — add an API key for open questions (see SERVICE.md).';
+  drawMic(v.mic);
+}
+
+// ---- mic level meter ---------------------------------------------------
+// Deliberately shows, and does not judge. The panel used to be able to say only
+// "no signal for N seconds", because on this hardware a run of exact zeros is
+// what a muted mic AND a quiet room both look like — so any threshold turned
+// into a red "MUTED" would be wrong every quiet evening, and a status panel
+// that cries wolf stops being read. A meter sidesteps the whole problem: talk,
+// and either the bars move or they do not.
+const MIC_FLOOR_DB = -60;                 // quietest level the meter bothers to draw
+
+function drawMic(mic) {
+  const box = document.getElementById('micMeter');
+  if (!mic || !mic.running) { box.hidden = true; return; }
+  box.hidden = false;
+
+  const bars = document.getElementById('micBars');
+  const levels = mic.levels || [];
+  const scale = mic.full_scale || 32767;
+  // Build the bar elements once, then only move them: this redraws every 1.2 s
+  // and rebuilding the DOM each time would throw away the CSS transition that
+  // makes it read as a meter rather than a flicker.
+  if (bars.childElementCount !== levels.length) {
+    bars.innerHTML = '';
+    for (let i = 0; i < levels.length; i++) bars.appendChild(document.createElement('i'));
+  }
+  bars.classList.toggle('idle', !mic.capturing);
+  levels.forEach((raw, i) => {
+    const el = bars.children[i];
+    el.classList.toggle('zero', raw === 0);
+    el.style.height = Math.max(2, Math.round(dbFraction(raw, scale) * 100)) + '%';
+  });
+
+  const peak = mic.peak_recent || 0;
+  const read = document.getElementById('micRead');
+  read.textContent = peak > 0
+    ? `peak ${(20 * Math.log10(peak / scale)).toFixed(0)} dBFS`
+    : 'digital silence';
+  const note = document.getElementById('micNote');
+  if (!mic.capturing) {
+    note.className = ''; note.textContent = 'mic paused while FRED speaks';
+  } else if (mic.silent_for != null && mic.silent_for >= 20) {
+    // The same fact the chest status row reports, and the same refusal to call
+    // it a mute — but here you can look at the bars and decide for yourself.
+    note.className = 'warn';
+    note.textContent = `nothing heard for ${Math.round(mic.silent_for)}s — check the mute button`;
+  } else {
+    note.className = ''; note.textContent = '';
+  }
+}
+
+// Peaks are linear, hearing is not: speech sits around -20 dBFS and a linear
+// bar would render it as a sliver against a full-scale ceiling nothing reaches.
+function dbFraction(raw, scale) {
+  if (!raw) return 0;
+  const db = 20 * Math.log10(raw / scale);
+  return Math.max(0, Math.min(1, (db - MIC_FLOOR_DB) / -MIC_FLOOR_DB));
 }
 function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 function appendMsg(item) {
@@ -423,6 +731,7 @@ function appendMsg(item) {
     let tag = '';
     if (role === 'fred' && item.source === 'claude') tag = '<span class="tag ai">AI</span>';
     else if (role === 'fred' && item.source === 'local') tag = '<span class="tag local">cmd</span>';
+    else if (role === 'fred' && item.source === 'say') tag = '<span class="tag say">deck</span>';
     el.innerHTML = '<span class="who">' + who + tag + '</span>' + esc(item.text);
   }
   log.appendChild(el);
@@ -447,10 +756,21 @@ async function fetchLog() {
 function initVoice() {
   applyVoice(STATE.voice);
   fetchLog();
-  if (!_voicePoll) _voicePoll = setInterval(async () => {
-    const v = await api('/api/voice'); STATE.voice = v; applyVoice(v);
-    await fetchLog();
-  }, 1200);
+  if (!_voicePoll) {
+    _voicePoll = makePoll(async () => {
+      const v = await api('/api/voice'); STATE.voice = v; applyVoice(v);
+      await fetchLog();
+    }, 1200);
+    _voicePoll.start();
+  }
+}
+async function stopFred() {
+  // Cut FRED off mid-answer without shouting his name over him. Fires the two
+  // endpoints that already existed with no UI caller: kill any audio playback
+  // (open route, so it lands instantly), then interrupt the reply in progress.
+  try { await api('/api/sound/stop', {}); } catch (e) {}
+  try { await api('/api/voice', {interrupt: true}); } catch (e) {}
+  toast('Stopped');
 }
 async function toggleListen() {
   const on = !document.getElementById('listenBtn').classList.contains('on');
@@ -500,25 +820,126 @@ function syncLedToCam(on) {
 }
 
 // ---- live camera -------------------------------------------------------
+// Two cameras, one viewer. The head camera rides the neck and is the one every
+// control below belongs to; the wide camera is the PanaCast on the chest, fixed,
+// looking out at ~180 degrees. Focus, flip and face-tracking are meaningless on
+// the second, so switching source hides them rather than leaving dead controls.
 let CAM_ON = false;
+let CAM_SRC = 'head';
+const CAM_URL = {head: '/camera/stream', wide: '/camera/wide/stream'};
+
+function wideOk() {
+  // Only "running" will do: available() is true whenever OpenCV loaded, and the
+  // spotter can be stopped or unable to open the device. The
+  // stream route refuses in both cases, so offering the button would be a lie.
+  const sp = STATE && STATE.spotter;
+  return !!(sp && sp.running);
+}
+
+function setCamSource(src) {
+  if (src === CAM_SRC) return;
+  const was = CAM_ON;
+  if (CAM_ON) stopCam();               // release the old feed before opening the new
+  CAM_SRC = src;
+  applyCamSource();
+  if (was) startCam();
+}
+
+function applyCamSource() {
+  const wide = CAM_SRC === 'wide';
+  document.getElementById('srcHead').classList.toggle('on', !wide);
+  document.getElementById('srcWide').classList.toggle('on', wide);
+  // Focus/lens/flip drive the head camera through /api/camera. The wide camera
+  // is a fixed USB device with none of those, so the whole row goes.
+  document.getElementById('camCtls').style.display = wide ? 'none' : '';
+  const tb = document.getElementById('trackBtn');
+  if (wide) {
+    tb.disabled = true;
+    tb.title = 'Face tracking follows the head camera — it is the one that moves';
+    if (TRACK_ON) toggleTrack();       // tracking a feed we are no longer showing
+  }
+  if (!CAM_ON) document.getElementById('camMsg').textContent =
+    wide ? 'Wide camera off' : 'Camera off';
+}
+
+// A camera that opens and then delivers nothing looks identical to a dead one
+// from here: the button greys out and the tooltip says something true and
+// useless. It is worth a visible panel instead, because the fix is not obvious
+// and the last time it took an hour to rediscover — see WideSpotter.recover.
+function showWideTrouble() {
+  const sp = (STATE && STATE.spotter) || {};
+  let box = document.getElementById('wideTrouble');
+  const show = !!sp.hint && !sp.running;
+  if (!show) { if (box) box.remove(); return; }
+  if (!box) {
+    box = document.createElement('div');
+    box.id = 'wideTrouble';
+    box.style.cssText = 'margin:8px 0;padding:10px 12px;border-radius:8px;'
+      + 'background:rgba(255,170,0,.10);border:1px solid rgba(255,170,0,.35);'
+      + 'font-size:13px;line-height:1.45';
+    const msg = document.getElementById('camMsg');
+    (msg && msg.parentNode ? msg.parentNode : document.body)
+      .insertBefore(box, msg || null);
+  }
+  box.innerHTML =
+    '<b>Wide camera not delivering frames.</b><br>'
+    + '<span id="wideWhy"></span><br>'
+    + '<button id="wideFix" style="margin-top:8px">⟳ Power-cycle the camera</button>'
+    + ' <span id="wideFixMsg" style="opacity:.75"></span>';
+  document.getElementById('wideWhy').textContent = sp.hint;
+  document.getElementById('wideFix').onclick = fixWideCamera;
+}
+
+async function fixWideCamera() {
+  const btn = document.getElementById('wideFix');
+  const msg = document.getElementById('wideFixMsg');
+  if (btn) { btn.disabled = true; btn.textContent = '⟳ Cycling…'; }
+  if (msg) msg.textContent = 'cutting power, then waiting for it to come back…';
+  let r;
+  try { r = await api('/api/camera/wide/reset', {}); }
+  catch (e) { r = {ok: false, error: String(e)}; }
+  if (r && r.ok) {
+    if (msg) msg.textContent = 'back — the camera is streaming again.';
+    toast('Wide camera recovered');
+  } else {
+    if (btn) { btn.disabled = false; btn.textContent = '⟳ Power-cycle the camera'; }
+    if (msg) msg.textContent = (r && (r.error || r.hint)) || 'still not streaming.';
+    toast('Camera did not come back — the lead may need pulling', true);
+  }
+}
+
 function initCam() {
   const cam = STATE && STATE.camera;      // object of settings, or null if no camera
   const ok = !!cam;
+  const sw = document.getElementById('srcWide');
+  sw.disabled = !wideOk();
+  sw.title = wideOk() ? 'The wide camera on the chest — a fixed ~180 degree view'
+             : 'Wide camera unavailable: '
+               + (((STATE && STATE.spotter) || {}).error || 'not running');
+  showWideTrouble();
+  // The wide camera going away underneath us — the USB
+  // lead pulled — must not strand the panel on a feed that will never arrive.
+  // Before anything below reads CAM_SRC, because this can change it.
+  if (CAM_SRC === 'wide' && !wideOk()) setCamSource('head');
+  const wide = CAM_SRC === 'wide';
   const st = document.getElementById('camState');
-  st.textContent = ok ? 'READY' : 'NONE';
-  st.className = 'badge ' + (ok ? 'live' : 'mock');
-  document.getElementById('camBtn').disabled = !ok;
-  const trackOk = ok && STATE.track && STATE.track.available;
+  const usable = wide ? wideOk() : ok;
+  st.textContent = usable ? 'READY' : 'NONE';
+  st.className = 'badge ' + (usable ? 'live' : 'mock');
+  document.getElementById('camBtn').disabled = !usable;
+  const trackOk = ok && !wide && STATE.track && STATE.track.available;
   const tb = document.getElementById('trackBtn');
   tb.disabled = !trackOk;
   tb.title = trackOk ? 'Follow a face with the eyes and neck'
-                     : 'Face tracking needs OpenCV + a camera';
+             : wide ? 'Face tracking follows the head camera — it is the one that moves'
+                    : 'Face tracking needs OpenCV + a camera';
   if (STATE.track && STATE.track.tracking) applyTrack(STATE.track);   // already running
   if (!ok) {
-    document.getElementById('camMsg').textContent = 'No camera detected';
+    if (!wide) document.getElementById('camMsg').textContent = 'No camera detected';
     document.getElementById('camCtls').style.display = 'none';
     return;
   }
+  if (wide) document.getElementById('camCtls').style.display = 'none';
   document.getElementById('afMode').value = String(cam.af_mode === 0 ? 0 : 2);
   const lp = document.getElementById('lensPos');
   lp.min = cam.lens_min; lp.max = cam.lens_max; lp.value = cam.lens_position;
@@ -551,24 +972,29 @@ function onFlip() {
 }
 function toggleCam() { CAM_ON ? stopCam() : startCam(); }
 function startCam() {
+  const wide = CAM_SRC === 'wide';
   const img = document.getElementById('camImg');
   img.onerror = () => { document.getElementById('camMsg').textContent = 'Stream error'; stopCam(); };
-  img.src = '/camera/stream?t=' + performance.now();   // cache-bust so it (re)connects
+  img.src = CAM_URL[CAM_SRC] + '?t=' + performance.now();  // cache-bust so it (re)connects
   img.hidden = false;
   document.getElementById('camMsg').style.display = 'none';
-  document.getElementById('camBtn').textContent = '⏹ Stop camera';
-  syncLedToCam(true);                          // physical LED follows (if enabled)
+  document.getElementById('camBtn').textContent = wide ? '⏹ Stop wide' : '⏹ Stop camera';
+  // The red eye is a privacy light for the camera in his HEAD. The wide camera
+  // is on the chest and does not turn it on — a status light that means two
+  // different things means nothing.
+  if (!wide) syncLedToCam(true);
   CAM_ON = true;
 }
 function stopCam() {
+  const wide = CAM_SRC === 'wide';
   const img = document.getElementById('camImg');
   img.onerror = null;              // avoid the blank-src triggering our error handler
   img.src = '';                    // disconnect -> server releases the camera
   img.hidden = true;
   const msg = document.getElementById('camMsg');
-  msg.style.display = ''; msg.textContent = 'Camera off';
-  document.getElementById('camBtn').textContent = '▶ Start camera';
-  syncLedToCam(false);                         // physical LED follows (if enabled)
+  msg.style.display = ''; msg.textContent = wide ? 'Wide camera off' : 'Camera off';
+  document.getElementById('camBtn').textContent = wide ? '▶ Start wide' : '▶ Start camera';
+  if (!wide) syncLedToCam(false);              // physical LED follows (if enabled)
   CAM_ON = false;
   if (TRACK_ON) toggleTrack();       // tracking makes no sense without the feed
 }
@@ -590,6 +1016,10 @@ async function toggleTrack() {
   const want = !(cur && cur.tracking !== undefined ? cur.tracking : TRACK_ON);
   const res = await api('/api/track', {on: want});
   if (res.error) { toast('⚠ ' + res.error); return; }
+  // Tracking drives the head camera, so show that one — this can be turned on
+  // by a voice command or by Claude while you happen to be watching the wide
+  // feed, and the reticle over a camera that isn't tracking makes no sense.
+  if (want) setCamSource('head');
   if (want && !CAM_ON && !document.getElementById('camBtn').disabled) startCam();
   applyTrack(res);
 }
@@ -629,14 +1059,15 @@ function onSeek(v) {
 }
 function startTrackPoll() {
   if (_trackPoll) return;
-  _trackPoll = setInterval(async () => {
+  _trackPoll = makePoll(async () => {
     const st = await api('/api/track');
     updateReticle(st);
     if (!st.tracking) applyTrack(st);         // server stopped on its own -> sync UI
   }, 200);
+  _trackPoll.start();
 }
 function stopTrackPoll() {
-  if (_trackPoll) { clearInterval(_trackPoll); _trackPoll = null; }
+  if (_trackPoll) { _trackPoll.stop(); _trackPoll = null; }
   const ret = document.querySelector('#trackOv .reticle');
   ret.classList.remove('locked'); ret.removeAttribute('style');   // resume seek anim
   document.querySelector('#trackOv .tlabel').textContent = '◎ Searching…';
@@ -670,7 +1101,6 @@ function initSurround() {
   document.getElementById('panoMsg').textContent =
       avail ? '360° camera off' : 'No 360° camera (OpenCV missing)';
   applySurround(STATE.surround || {});
-  applyCart(STATE.cart || {});
   if (avail && !_surPoll) _surPoll = setInterval(pollSurround, 1000);
 }
 function applySurround(sv) {
@@ -690,21 +1120,11 @@ function applySurround(sv) {
                  + (x.dist_m != null ? ` ~${x.dist_m}m` : '')).join(' · ')
     : 'Nobody around' + (sv.loop_fps ? ` · ${sv.loop_fps} fps` : '');
 }
-function applyCart(c) {
-  const row = document.getElementById('cartRow');
-  row.hidden = !(c && c.enabled);
-  if (row.hidden) return;
-  const g = c.guard || {};
-  document.getElementById('cartState').textContent =
-      'Cart ' + (c.connected ? 'connected' : 'MOCK')
-      + (c.governed_speed ? ` · moving ${c.governed_speed}` : ' · stopped')
-      + (g.why ? ` · ⚠ ${g.why}` : '');
-}
 async function pollSurround() {
   try {
-    const [sv, c] = await Promise.all([api('/api/surround'), api('/api/cart')]);
-    if (STATE) STATE.surround = sv, STATE.cart = c;
-    applySurround(sv); applyCart(c);
+    const sv = await api('/api/surround');
+    if (STATE) STATE.surround = sv;
+    applySurround(sv);
   } catch (e) { /* transient — next tick */ }
 }
 async function toggleWatch() {
@@ -727,14 +1147,13 @@ function togglePano() {
   }
   document.getElementById('panoBtn').textContent = PANO_ON ? '⏹ Panorama' : '▶ Panorama';
 }
-async function cartStop() {
-  const c = await api('/api/cart', {stop: true});
-  if (STATE) STATE.cart = c;
-  applyCart(c);
-  toast('Cart stopped');
-}
-
 function render() {
+  // Painted here, not once in load(): the badge sits over the sliders, so if it
+  // says MOCK while they drive real servos it is worse than useless. Every path
+  // that replaces STATE re-renders, so it now follows the state it labels.
+  const m = document.getElementById('mode');
+  m.textContent = STATE.mock ? 'MOCK' : 'LIVE';
+  m.className = 'badge ' + (STATE.mock ? 'mock' : 'live');
   const wrap = document.getElementById('servos');
   wrap.innerHTML = '';
   for (const [name, s] of Object.entries(STATE.servos)) {
@@ -873,6 +1292,9 @@ async function pollHead() {
   if (!STATE) return;
   const p = await api('/api/positions');
   if (!p || !p.pos) return;
+  // Repaint only on a real change: this poll runs at ~8 Hz, and the toggle is
+  // flipped by hand. Guarding also stops us fighting a click mid-flight.
+  if (typeof p.audit === 'boolean' && p.audit !== AUDIT) reflectAudit(p.audit);
   const now = performance.now();
   for (const [name, ang] of Object.entries(p.pos)) {
     if (ang == null || !STATE.servos[name]) continue;
@@ -982,7 +1404,15 @@ function cancelPending() {
 }
 
 async function rest() { cancelPending(); STATE = await api('/api/rest', {}); render(); }
-async function relax() { cancelPending(); await api('/api/relax', {}); toast('Relaxed'); }
+// Relaxing stops face tracking server-side (the loop would re-drive the very
+// servos we just cut), so take the server's word for the tracking state here
+// rather than leaving the button armed until the 200ms poll notices.
+async function relax() {
+  cancelPending();
+  const res = await api('/api/relax', {});
+  if (res && res.track) applyTrack(res.track);
+  toast(res && res.tracking_stopped ? 'Relaxed · tracking off' : 'Relaxed');
+}
 
 function setCalib() {
   CALIB = document.getElementById('calib').checked;
@@ -1087,12 +1517,310 @@ async function pollHealth() {
            + `throttled ${h.throttled_hex}) — hover flags reflect since-boot history.`;
 }
 
+/* ---- drive base -------------------------------------------------------
+   The cart only moves while it is being asked to: the chest Pi stops it if no
+   command arrives inside its watchdog window. So "release to stop" needs no
+   release message to arrive — we send one anyway for immediacy, but the safety
+   does not depend on it. That is deliberate, and it is why a dropped phone, a
+   closed tab, or a dead WiFi link all end with the cart stopped.            */
+let _cartHeld = false, _cartTimer = null, _cartVec = {steer: 0, speed: 0};
+let _cartLimits = {steer: 250, speed: 300}, _cartOnline = false;
+
+function cartSetKnob(fx, fy) {                 // fx, fy in -1..1
+  const k = document.getElementById('cartKnob');
+  k.style.left = `${50 + fx * 42}%`;
+  k.style.top  = `${50 - fy * 42}%`;
+}
+
+function cartFromEvent(ev) {
+  const pad = document.getElementById('cartPad');
+  const r = pad.getBoundingClientRect();
+  const p = ev.touches ? ev.touches[0] : ev;
+  // Clamp to the pad: dragging past the edge should pin at full, not overshoot.
+  let fx = ((p.clientX - r.left) / r.width) * 2 - 1;
+  let fy = 1 - ((p.clientY - r.top) / r.height) * 2;
+  fx = Math.max(-1, Math.min(1, fx));
+  fy = Math.max(-1, Math.min(1, fy));
+  const dead = 0.12;                           // ignore a shaky thumb near centre
+  if (Math.abs(fx) < dead) fx = 0;
+  if (Math.abs(fy) < dead) fy = 0;
+  cartSetKnob(fx, fy);
+  _cartVec = {steer: Math.round(fx * _cartLimits.steer),
+              speed: Math.round(fy * _cartLimits.speed)};
+}
+
+async function cartTick() {
+  if (!_cartHeld) return;
+  try {
+    const r = await api('/api/cart/drive', _cartVec);
+    document.getElementById('cartCmd').textContent =
+      `${r.speed ?? 0} / ${r.steer ?? 0}`;
+    cartWarn(r.ignored || '');
+  } catch (e) { /* the watchdog stops it; the status poll will report why */ }
+}
+
+async function setCartController(mode) {
+  const r = await api('/api/cart/controller', {mode});
+  if (r.error) { toast('⚠ ' + r.error); return; }
+  toast(mode === 'off' ? 'Hand controller disabled'
+        : mode === 'only' ? 'Hand controller only — the panel pad is refused'
+        : 'Hand controller may take over');
+}
+
+function cartWarn(msg) {
+  const w = document.getElementById('cartWarn');
+  w.textContent = msg || '';
+  w.hidden = !msg;
+}
+
+function cartGrab(ev) {
+  if (!_cartOnline) return;
+  ev.preventDefault();
+  _cartHeld = true;
+  document.getElementById('cartPad').classList.add('live');
+  cartFromEvent(ev);
+  cartTick();
+  if (!_cartTimer) { _cartTimer = makePoll(cartTick, 100); _cartTimer.start(); }   // 10 Hz, self-throttling on bad WiFi
+}
+
+function cartMove(ev) { if (_cartHeld) { ev.preventDefault(); cartFromEvent(ev); } }
+
+function cartRelease() {
+  if (!_cartHeld) return;
+  _cartHeld = false;
+  if (_cartTimer) { _cartTimer.stop(); _cartTimer = null; }
+  document.getElementById('cartPad').classList.remove('live');
+  _cartVec = {steer: 0, speed: 0};
+  cartSetKnob(0, 0);
+  cartStop(false);
+}
+
+async function cartStop(estop) {
+  _cartHeld = false;
+  if (_cartTimer) { _cartTimer.stop(); _cartTimer = null; }
+  cartSetKnob(0, 0);
+  try {
+    const r = await api('/api/cart/stop', {estop: !!estop});
+    if (estop) toast(r.unreachable ? 'Cart unreachable — it stops itself' : 'Emergency stop');
+    if (r.estop) cartWarn('Emergency stop latched — press EMERGENCY STOP again to clear.');
+  } catch (e) { toast('Stop request failed — the cart stops itself anyway'); }
+}
+
+async function pollCart() {
+  const panel = document.getElementById('cartPanel');
+  const badge = document.getElementById('cartState');
+  const pad = document.getElementById('cartPad');
+  let c;
+  try { c = await api('/api/cart'); } catch (e) { return; }
+
+  if (!c.configured) { panel.hidden = true; _cartOnline = false; return; }
+  panel.hidden = false;
+  if (c.limits) _cartLimits = c.limits;
+
+  // "Online" is not enough to drive: a connected Pico with a PS2 controller on
+  // it will ignore us, and saying so beats a pad that silently does nothing.
+  _cartOnline = !!(c.online && c.connected && !c.ps2_active && !c.estop);
+  pad.classList.toggle('off', !_cartOnline);
+
+  let label = 'offline', cls = 'mock';
+  if (!c.online) { label = 'unreachable'; }
+  else if (!c.connected) { label = 'no Pico'; }
+  else if (c.estop) { label = 'E-STOP'; }
+  else if (c.ps2_active || c.controller_driving) { label = 'controller has it'; }
+  else if (c.controller_mode === 'only') { label = 'controller only'; }
+  else { label = c.moving ? 'driving' : 'ready'; cls = 'live'; }
+  badge.textContent = label;
+  badge.className = 'badge ' + cls;
+
+  if (c.estop) cartWarn('Emergency stop latched — press EMERGENCY STOP again to clear.');
+  else if (c.ps2_active) cartWarn('A PS2 controller is connected; it has priority over the panel.');
+  else if (c.controller_driving) cartWarn('The hand controller has the deadman held; it has priority over this pad.');
+  else if (c.controller_mode === 'only') cartWarn('Controller-only mode — this pad is refused. Hold R1 on the hand controller to drive.');
+  else if (c.online && !c.connected) cartWarn('The cart Pico is not plugged into the chest Pi.');
+  else if (!c.online) cartWarn(c.error || 'Cannot reach the chest Pi.');
+  else if (!_cartHeld) cartWarn('');
+
+  const gp = c.controller || {};
+  document.getElementById('cartPad2').textContent =
+    !gp.connected ? 'not connected'
+      : (gp.deadman ? 'driving (R1 held)' : 'connected, idle');
+  const sel = document.getElementById('cartCtrlMode');
+  // Don't yank the dropdown while it has focus — the user may be mid-choice.
+  if (c.controller_mode && sel.value !== c.controller_mode && document.activeElement !== sel)
+    sel.value = c.controller_mode;
+
+  document.getElementById('cartBat').textContent =
+    c.battery_v != null ? `${c.battery_v.toFixed(1)} V` : '—';
+  document.getElementById('cartTemp').textContent =
+    c.board_temp_c != null ? `${c.board_temp_c.toFixed(1)} °C` : '—';
+  document.getElementById('cartWheels').textContent =
+    c.speed_l != null ? `${c.speed_l} / ${c.speed_r}` : '—';
+  if (!_cartHeld) document.getElementById('cartCmd').textContent =
+    `${c.speed ?? 0} / ${c.steer ?? 0}`;
+}
+
+(function initCart() {
+  const pad = document.getElementById('cartPad');
+  pad.addEventListener('mousedown', cartGrab);
+  pad.addEventListener('touchstart', cartGrab, {passive: false});
+  window.addEventListener('mousemove', cartMove);
+  window.addEventListener('touchmove', cartMove, {passive: false});
+  window.addEventListener('mouseup', cartRelease);
+  window.addEventListener('touchend', cartRelease);
+  window.addEventListener('touchcancel', cartRelease);
+  // Losing the tab is the same as letting go — a backgrounded phone must not
+  // leave the cart rolling on its last command.
+  window.addEventListener('blur', cartRelease);
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) cartRelease();
+  });
+})();
+
 load();
 mountFace();
 initDrag();
 pollHealth();
 syncTrack();
-setInterval(() => { pollHealth(); syncTrack(); }, 5000);
+pollCart();
+makePoll(async () => { await pollHealth(); await syncTrack(); }, 5000).start();
+makePoll(pollCart, 1000).start();
+
+// ---- the quick-say deck -------------------------------------------------
+// One tap speaks a canned line through /api/say — for the moments at an event
+// when typing is not an option. Edit mode turns the pills into delete buttons
+// and reveals the add row; the deck itself lives on the brain, so every
+// browser sees the same one.
+let DECK = { deck: {}, tab: '', edit: false };
+
+async function loadDeck() {
+  const r = await api('/api/phrases');
+  DECK.deck = (r && r.deck) || {};
+  const tabs = Object.keys(DECK.deck);
+  if (!tabs.includes(DECK.tab)) DECK.tab = tabs[0] || '';
+  renderDeck();
+}
+
+function renderDeck() {
+  const tabs = Object.keys(DECK.deck);
+  const tabBox = document.getElementById('deckTabs');
+  tabBox.innerHTML = '';
+  for (const t of tabs) {
+    const b = document.createElement('button');
+    b.textContent = t;
+    b.className = t === DECK.tab ? 'on' : '';
+    b.onclick = () => { DECK.tab = t; try { localStorage.setItem('deckTab', t); } catch (e) {} renderDeck(); };
+    tabBox.appendChild(b);
+  }
+  const list = document.getElementById('deckList');
+  list.innerHTML = '';
+  for (const text of (DECK.deck[DECK.tab] || [])) {
+    const b = document.createElement('button');
+    b.textContent = text;
+    b.onclick = () => DECK.edit ? deckRemove(text) : sayPhrase(text, b);
+    list.appendChild(b);
+  }
+  if (!tabs.length) list.innerHTML = '<span class="hint">The deck is empty — ✎ Edit to add a line.</span>';
+  const names = document.getElementById('deckTabNames');
+  names.innerHTML = tabs.map(t => '<option value="' + t.replace(/"/g, '&quot;') + '">').join('');
+  document.getElementById('deck').classList.toggle('editing', DECK.edit);
+  document.getElementById('deckEditBtn').classList.toggle('on', DECK.edit);
+  document.getElementById('deckAddRow').hidden = !DECK.edit;
+}
+
+async function sayPhrase(text, btn) {
+  btn.classList.add('saying');
+  try {
+    const r = await api('/api/say', { text: text });
+    if (r.error) toast('⚠ ' + r.error, true);
+  } finally {
+    setTimeout(() => btn.classList.remove('saying'), 900);
+  }
+}
+
+async function deckAdd() {
+  const text = document.getElementById('deckNewText').value.trim();
+  const tab = document.getElementById('deckNewTab').value.trim() || DECK.tab || 'Misc';
+  if (!text) return;
+  const r = await api('/api/phrases/add', { tab: tab, text: text });
+  if (r.error) { toast('⚠ ' + r.error, true); return; }
+  DECK.deck = r.deck; DECK.tab = tab;
+  document.getElementById('deckNewText').value = '';
+  renderDeck();
+}
+
+async function deckRemove(text) {
+  const r = await api('/api/phrases/remove', { tab: DECK.tab, text: text });
+  if (r.error) { toast('⚠ ' + r.error, true); return; }
+  DECK.deck = r.deck;
+  renderDeck();
+}
+
+function deckEditMode() {
+  DECK.edit = !DECK.edit;
+  // Entering edit with the deck folded would edit an invisible thing.
+  if (DECK.edit && document.getElementById('deckBody').hidden) toggleDeck(true);
+  renderDeck();
+}
+
+function toggleDeck(forceOpen) {
+  const body = document.getElementById('deckBody');
+  const open = forceOpen === true ? true : body.hidden;
+  body.hidden = !open;
+  document.getElementById('deck').classList.toggle('open', open);
+  document.getElementById('deckToggle').textContent = (open ? '▾' : '▸') + ' Quick say';
+  if (!open) { DECK.edit = false; renderDeck(); }
+  try { localStorage.setItem('deckOpen', open ? '1' : '0'); } catch (e) {}
+}
+
+(function () {
+  try {
+    DECK.tab = localStorage.getItem('deckTab') || '';
+    if (localStorage.getItem('deckOpen') === '1') toggleDeck(true);
+  } catch (e) {}
+  // ?deck=1 opens it regardless — for the bookmark on the event phone,
+  // alongside ?view=talk.
+  if (new URLSearchParams(location.search).get('deck') === '1') toggleDeck(true);
+  loadDeck();
+})();
+
+// ---- phone tab bar ------------------------------------------------------
+// One panel at a time on a phone, switched from the bottom bar. Desktop never
+// runs this path visually (the bar is display:none), but the state is set
+// anyway and is harmless: the wide layouts show every panel regardless.
+function setView(v) {
+  document.body.dataset.view = v;
+  try { localStorage.setItem('fredView', v); } catch (e) {}
+  for (const b of document.querySelectorAll('#tabbar button'))
+    b.classList.toggle('on', b.dataset.view === v);
+}
+(function () {
+  let WANTED = '';
+  const cart = document.getElementById('cartPanel');
+  const driveTab = document.querySelector('#tabbar [data-view=cart]');
+  // The Drive tab exists exactly when the cart panel does. The panel's hidden
+  // attribute is flipped by the cart poller, so mirror it rather than keeping
+  // a second copy of "is the cart enabled".
+  const sync = () => {
+    driveTab.hidden = cart.hidden;
+    if (cart.hidden && document.body.dataset.view === 'cart') setView('cam');
+    // A deep link or remembered tab can ask for Drive before the first cart
+    // poll has unhidden the panel — honour it as soon as the cart shows up,
+    // unless the user has navigated somewhere else in the meantime.
+    else if (!cart.hidden && WANTED === 'cart'
+             && document.body.dataset.view === 'cam') { setView('cart'); WANTED = ''; }
+  };
+  new MutationObserver(sync).observe(cart, { attributes: true, attributeFilter: ['hidden'] });
+  // ?view=talk beats the remembered tab: it makes the chat bookmarkable,
+  // which is how a phone on a lanyard at an event should open this page.
+  let v = 'cam';
+  try { v = localStorage.getItem('fredView') || 'cam'; } catch (e) {}
+  v = new URLSearchParams(location.search).get('view') || v;
+  if (!document.querySelector('#tabbar [data-view=' + CSS.escape(v) + ']')) v = 'cam';
+  WANTED = v;
+  if (v === 'cart' && cart.hidden) v = 'cam';
+  setView(v);
+  sync();
+})();
 </script>
 </body>
 </html>

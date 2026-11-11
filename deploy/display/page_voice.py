@@ -1,0 +1,127 @@
+"""Put FRED into listening mode, from the robot rather than from a laptop.
+
+One button, because that is the whole job: this is the thing you want to press
+while standing in front of him, and every extra control on the page is one more
+thing to hit by accident with the same thumb.
+
+The button paints the state the *brain* reports, not the state we asked for.
+A tap posts and then lets the next poll tell us what happened — an optimistic
+toggle would show "listening" for a robot that never started, which on a panel
+you glance at is worse than a slow answer. The tap is latched as PENDING until
+the poller catches up so it doesn't just look ignored for a second.
+"""
+from __future__ import annotations
+
+import time
+
+
+PENDING_FOR = 3.0                   # seconds a tap stays "PENDING" if nothing changes
+
+
+class VoicePage:
+    title = "VOICE"
+
+    def __init__(self):
+        self._pending_until = 0.0
+        self._pending_to: bool | None = None
+
+    # ---- input ------------------------------------------------------------
+
+    @staticmethod
+    def _listening(snap: dict) -> bool:
+        return bool(((snap.get("nuc") or {}).get("voice") or {}).get("listening"))
+
+    @staticmethod
+    def _available(snap: dict) -> bool:
+        voice = (snap.get("nuc") or {}).get("voice")
+        return bool(voice and voice.get("available"))
+
+    @staticmethod
+    def _volume(snap: dict):
+        """His output level, or None when this rig has no settable mixer.
+
+        Read out of the brain's own state rather than asked for separately —
+        /api/state is already polled every tick, and a second request per tick
+        to learn one integer is a request the robot LAN does not need.
+        """
+        vol = ((snap.get("nuc") or {}).get("sound") or {}).get("volume")
+        return int(vol) if isinstance(vol, (int, float)) else None
+
+    def view(self, snap: dict) -> dict:
+        """The page as data: what the button says and whether it does anything.
+
+        Split out of draw() so the Qt panel reaches the same conclusions — that
+        the brain is unreachable, or that voice is unavailable and pressing
+        would 503 — without a second copy of the reasoning.
+        """
+        reachable = bool(snap.get("nuc"))
+        listening = self._listening(snap)
+        available = self._available(snap)
+        pending = (self._pending_to is not None
+                   and time.monotonic() < self._pending_until
+                   and listening != self._pending_to)
+        if self._pending_to is not None and listening == self._pending_to:
+            self._pending_to = None          # the brain caught up
+
+        if not reachable:
+            return {"label": "NO LINK", "on": False, "ink": "bad", "live": False,
+                    "status": "CANNOT REACH THE BRAIN", "statusInk": "bad", "hint": ""}
+        if not available:
+            # Volume still belongs on this page even here. "Voice unavailable"
+            # is about the *microphone* — no Vosk model, no capture device —
+            # and says nothing about the speaker: he can be unable to hear you
+            # and still be much too loud, which is precisely the moment someone
+            # reaches for this page.
+            return {"label": "N/A", "on": False, "ink": "dim", "live": False,
+                    "status": "VOICE UNAVAILABLE ON BRAIN", "statusInk": "dim",
+                    "hint": "", "volume": self._volume(snap)}
+
+        said = (snap.get("nuc") or {}).get("voice") or {}
+        if said.get("speaking"):
+            status = "SPEAKING"
+        elif said.get("thinking"):
+            status = "THINKING"
+        elif listening and (said.get("mic") or {}).get("armed"):
+            # He has just asked something and is holding the mic open for the
+            # reply. Worth its own line: the whole point is that the person does
+            # not have to say his name, and standing at the robot is exactly
+            # where you would otherwise wait for a prompt that never comes.
+            status = "LISTENING FOR YOUR ANSWER"
+        elif listening:
+            # Not "HEY FRED": the wake word is the name on its own, and a panel
+            # that tells people otherwise is where the "hey" habit comes from.
+            status = "LISTENING FOR FRED"
+        else:
+            status = "NOT LISTENING"
+        return {"label": "PENDING" if pending else ("ON" if listening else "OFF"),
+                "on": bool(listening), "live": True,
+                "ink": "dim" if pending else ("ok" if listening else "ink"),
+                "status": status, "statusInk": "dim",
+                "hint": "TAP TO TURN " + ("OFF" if listening else "ON"),
+                # The separate question of whether he starts listening by
+                # himself after a reboot. Deliberately not the same switch: the
+                # big one is "is he listening right now", and conflating the two
+                # is how you end up unable to leave him deaf on purpose.
+                "atBoot": bool((((snap.get("nuc") or {}).get("settings") or {})
+                                .get("voice") or {}).get("enabled")),
+                "atBootLive": True,
+                # None when the card has no mixer to turn; the QML hides the
+                # row rather than drawing a slider that cannot move anything.
+                "volume": self._volume(snap)}
+
+    def set_volume(self, net, percent: float) -> None:
+        """How loud he is. Fired at the brain, which owns the sound card."""
+        net.post_volume(percent)
+
+    def toggle_at_boot(self, net, want: bool) -> None:
+        """Start listening by himself next time he boots, or don't."""
+        net.post_voice_at_boot(bool(want))
+
+    def toggle(self, net) -> None:
+        """What a tap on the button does, wherever the tap came from."""
+        want = not self._listening(net.snapshot())
+        self._pending_to = want
+        self._pending_until = time.monotonic() + PENDING_FOR
+        net.post_voice(want)
+
+    # ---- drawing ----------------------------------------------------------

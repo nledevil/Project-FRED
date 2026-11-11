@@ -23,7 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from inmoov.camera360 import Camera360  # noqa: E402
 from inmoov.surround import SurroundVision  # noqa: E402
-from inmoov.cart import Cart  # noqa: E402
+from inmoov.cart import CartClient  # noqa: E402
 from inmoov import commands  # noqa: E402
 
 FAILURES: list[str] = []
@@ -110,30 +110,29 @@ def main() -> int:
         check("spoken_summary is speakable", "movement" in summary
               or "someone" in summary, summary)
 
-        print("— Cart governor (mock serial) —")
-        cart = Cart(port="/dev/nonexistent", guard_cb=sv.nav_assess, enabled=True)
-        st = cart.drive(0, 100, ttl=1.5)
-        time.sleep(0.4)                 # a few keepalive ticks
-        st = cart.status()
-        check("cart runs in mock mode", st["mock"] is True)
-        g = st["guard"]
+        print("— Cart governor (audit mode: nothing is sent) —")
+        cart = CartClient()
+        cart.set_audit(True)
+        cart.guard = sv.nav_assess
+        st = cart.drive(0, 100)
+        g = cart.last_guard
         # The mock person has no range estimate (motion-only), so whenever it's
         # in the forward ±45° arc the governor must cap speed at half.
         in_path = seen_presence is not None and abs(seen_presence["yaw"]) <= 45
         if in_path:
             check("governor caps speed for motion in path",
-                  st["governed_speed"] <= 50, f"governed {st['governed_speed']}, {g}")
+                  st["speed"] <= 50, f"governed {st['speed']}, {g}")
         else:
             check("governor leaves a clear path alone",
-                  st["governed_speed"] == 100 or g["factor"] < 1.0,
-                  f"governed {st['governed_speed']}, {g}")
-        cart.drive(0, 100, ttl=0.2)
-        time.sleep(0.6)
-        check("command TTL decays to a stop", cart.status()["governed_speed"] == 0
-              and cart.status()["speed"] == 0)
-        cart.shutdown()
+                  st["speed"] == 100 or g["factor"] < 1.0,
+                  f"governed {st['speed']}, {g}")
+        cart.guard = lambda speed: 1 / 0
+        check("a broken guard stops the cart", cart.drive(0, 100)["speed"] == 0)
+        cart.guard = lambda speed: None
+        check("a guard with no opinion leaves speed alone",
+              cart.drive(0, 100)["speed"] == 100)
 
-        print("— Claude look_around tool —")
+        print("— Claude look_around_360 tool —")
         import types
         ctx = types.SimpleNamespace(camera360=cam, surround=sv, cart=cart,
                                     sensors=None)
@@ -142,7 +141,7 @@ def main() -> int:
               and sum(1 for x in blocks if x.get("type") == "image") == 4
               and all(x["source"]["media_type"] == "image/jpeg"
                       for x in blocks if x.get("type") == "image"))
-        check("look_around('all') builds 4 labelled image blocks", ok,
+        check("look_around_360('all') builds 4 labelled image blocks", ok,
               f"{type(blocks).__name__} of {len(blocks) if isinstance(blocks, list) else '-'}")
         spoken = commands.execute_action(ctx, "scan_surroundings")
         check("scan_surroundings speaks", isinstance(spoken, str) and spoken, spoken)

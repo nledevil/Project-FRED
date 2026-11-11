@@ -1,0 +1,19 @@
+[Unit]
+Description=Re-run DHCP when eth0 has carrier but no address
+# Both Pis carry this. ifupdown's allow-hotplug reacts to device events, not to
+# a cable being reseated, so nothing else on the box notices a link that came
+# back. See deploy/link-watchdog.sh for the full explanation.
+After=network.target
+
+[Service]
+Type=oneshot
+Environment=IFACE=eth0
+ExecStart=/usr/local/sbin/link-watchdog
+# Exits 0 when there is nothing to do, which is almost always.
+
+# ifup daemonises a dhclient, and that dhclient lands in THIS service's cgroup.
+# With the default KillMode=control-group systemd tears the cgroup down the
+# moment ExecStart returns and takes the fresh dhclient with it: the address is
+# configured, but nothing is left to renew the lease. KillMode=process stops
+# systemd reaping the children we deliberately left running.
+KillMode=process

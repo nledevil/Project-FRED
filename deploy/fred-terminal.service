@@ -1,0 +1,60 @@
+# Reference copy. This unit holds no secret — it authenticates on a header, not a
+# password — so it installs as-is:
+#   sudo cp deploy/fred-terminal.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now fred-terminal
+#   sudo tailscale serve --bg --http 8081 127.0.0.1:7681
+# That last line is the half that is not in this file: without it nothing can
+# reach this port at all. Repeat for 8082/7682 and 8083/7683.
+# Requires: tmux (apt) and the ttyd x86_64 static binary at /usr/local/bin/ttyd.
+[Unit]
+Description=FRED browser terminal — the NUC brain (ttyd + tmux + Claude Code, :7681)
+After=network-online.target
+Wants=network-online.target
+# One of three. The head and chest terminals (:7682, :7683) also run HERE and
+# simply ssh out, rather than each Pi serving its own ttyd. The robot LAN is not
+# routable from the house network — no ip_forward, no NAT, and dnsmasq hands out
+# no option:router on purpose — so a browser on the house WiFi can reach the NUC
+# and nothing behind it. Terminating all three on the NUC means every terminal is
+# reachable wherever the panel itself is reachable, with no port forwarding.
+
+# Reached only through Tailscale Serve, which is why this binds to loopback and
+# authenticates on a header rather than a password. It is one of TWO doors into
+# this same tmux session: fred-terminal-local.service binds every interface and
+# takes a password, for the access point and for venues where there is no uplink
+# and so no tailnet. Read that unit before assuming this one is the only way in.
+#
+# ttyd 1.7.7 requires HTTP basic auth on the *WebSocket upgrade*, not just on the
+# page. Browsers send cached credentials on the page load and on /token but do
+# not reliably attach them to the upgrade -- over Tailscale they did not, so the
+# page rendered, the token fetched, and the terminal then sat at "enter to
+# connect" while ttyd refused the socket without logging a reason. That is not
+# fixable from this end; the fix is to stop using basic auth here.
+#
+# So: -i lo makes the port unreachable from the LAN, the tailnet, and the access
+# point -- only Tailscale Serve can reach it -- and -H trusts the identity header
+# Serve injects. Because nothing on a network can reach the port, that header
+# cannot be forged from one. The trade is that any *local* account on this box
+# can curl loopback with a made-up header and get a shell as nledevil; on a
+# single-user machine that is not a new capability, but it is the reason -i lo is
+# not optional.
+[Service]
+Type=simple
+User=nledevil
+Group=nledevil
+WorkingDirectory=/home/nledevil/fred/Project-FRED
+Environment=HOME=/home/nledevil
+Environment=TERM=xterm-256color
+Environment=LANG=C.UTF-8
+# /usr/local/bin first: that is where claude lives.
+Environment=PATH=/usr/local/bin:/home/nledevil/.local/bin:/usr/bin:/bin
+# No --check-origin here, unlike the -local unit. Serve rewrites Host to
+# fred:8081 while ttyd sees a connection to 127.0.0.1:7681, so the origin check
+# compares two names that will never match and rejects every websocket. The
+# protection it gives up is covered by the bind: a cross-site request from a
+# stranger's browser cannot reach a loopback port in the first place.
+ExecStart=/usr/local/bin/ttyd -W -p 7681 -i lo -H Tailscale-User-Login -m 3 -t fontSize=15 /usr/bin/tmux new-session -A -s nuc -c /home/nledevil/fred/Project-FRED
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

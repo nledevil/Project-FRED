@@ -1,0 +1,107 @@
+/* The panel's design system — tokens and base controls, shared by index.html
+ * and admin.html.
+ *
+ * One file rather than a copy in each page's <style> for the same reason
+ * pin.js is shared: two copies of "what a button looks like" is two chances to
+ * fix only one of them, and the pages had already started to drift (admin's
+ * buttons were 10px 18px, the panel's 9px 16px, for no reason anyone chose).
+ *
+ * Layout stays in each page: what is shared is what things look like, not
+ * where they go.
+ */
+
+:root {
+  --bg:#0c0c0e; --panel:#161619; --panel2:#0e0e11; --border:#2a2b31;
+  --fg:#e8e9ec; --head:#f3f4f6; --mut:#868b95;
+  --accent:#2d7ff9; --ok:#22c55e; --warn:#f59e0b; --bad:#f87171;
+  /* One knob for "how far from the screen edge", so phones can pull in. */
+  --pad:20px;
+}
+@media (max-width:699px) { :root { --pad:10px; } }
+
+* { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+body { margin:0; background:var(--bg); color:var(--fg);
+       font:15px/1.45 system-ui,-apple-system,sans-serif; padding:var(--pad); }
+
+/* ---- top bar ----------------------------------------------------------- */
+.topbar { display:flex; align-items:center; gap:12px; margin:2px 4px 16px;
+          min-height:34px; }
+.topbar h1 { font-size:16px; font-weight:700; letter-spacing:.02em; margin:0; }
+.topbar .sub { color:var(--mut); font-size:13px; }
+.health { margin-left:auto; font-size:12px; font-weight:600; padding:5px 11px;
+          border-radius:999px; border:1px solid var(--border); color:var(--mut);
+          font-variant-numeric:tabular-nums; white-space:nowrap; cursor:default; }
+.health.ok   { background:#04310f; border-color:#0a5; color:var(--ok); }
+.health.warn { background:#3a2a00; border-color:#7a5a10; color:var(--warn); }
+.health.bad  { background:#3a0d0d; border-color:#a33; color:var(--bad); }
+.admin-link, .back { font-size:15px; text-decoration:none; color:var(--mut);
+          line-height:1; padding:6px 10px; border:1px solid var(--border);
+          border-radius:999px; white-space:nowrap; }
+.admin-link:hover, .back:hover { color:var(--fg); background:rgba(255,255,255,.04); }
+.back { font-size:13px; margin-left:auto; }
+/* The subtitle is the first thing a phone does not have room for. */
+@media (max-width:699px) { .topbar .sub { display:none; } }
+
+/* ---- panels ------------------------------------------------------------ */
+.panel { background:var(--panel); border:1px solid var(--border);
+         border-radius:14px; padding:18px; min-width:0; }
+.phead { display:flex; align-items:center; gap:10px; text-transform:uppercase;
+         letter-spacing:.09em; font-size:12.5px; font-weight:700; color:#d7dae0;
+         margin:0 0 14px; }
+.badge { margin-left:auto; font-size:11px; font-weight:700; padding:3px 9px;
+         border-radius:999px; letter-spacing:.05em; }
+.badge.mock { background:#3a2a00; color:var(--warn); }
+.badge.live { background:#04310f; color:var(--ok); }
+.hint { color:var(--mut); font-size:12.5px; line-height:1.5; margin:14px 0 0; }
+
+/* ---- controls ---------------------------------------------------------- */
+button { font:inherit; font-weight:600; color:var(--fg); background:transparent;
+         border:1px solid var(--border); border-radius:9px; padding:9px 16px;
+         cursor:pointer; }
+button:hover { background:rgba(255,255,255,.04); }
+button:active { transform:translateY(1px); }
+button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+button.hidden { display:none; }
+button:disabled { opacity:.4; cursor:not-allowed; }
+
+input[type=text], input[type=password], input[type=number] {
+  font:inherit; color:var(--fg); background:var(--panel2);
+  border:1px solid var(--border); border-radius:9px; padding:9px 12px;
+  min-width:0; }
+select { font:inherit; font-weight:600; color:var(--fg); background:var(--panel);
+         border:1px solid var(--border); border-radius:8px; padding:8px 11px;
+         cursor:pointer; max-width:100%; }
+input[type=range] { height:26px; accent-color:var(--accent); cursor:pointer; margin:0; }
+input[type=color] { width:46px; height:36px; padding:0; border:1px solid var(--border);
+                    border-radius:8px; background:var(--panel); cursor:pointer; }
+.switch, .toggle { display:flex; align-items:center; gap:9px; cursor:pointer; }
+.switch input, .toggle input { width:18px; height:18px; accent-color:var(--accent); }
+.toggle { color:var(--mut); font-size:13px; }
+
+.actions { display:flex; gap:10px; flex-wrap:wrap; align-items:center;
+           margin-top:18px; padding-top:16px; border-top:1px solid var(--border); }
+.actions .spacer, .grow { flex:1; }
+
+/* A finger is not a mouse pointer: give it something it can actually hit.
+ * 44px is the size guideline both platforms agree on; 42 + borders lands there. */
+@media (pointer:coarse) {
+  button { min-height:42px; }
+  select { min-height:42px; }
+  input[type=text], input[type=password] { min-height:42px; }
+  input[type=range] { height:36px; }
+  .switch input, .toggle input { width:22px; height:22px; }
+}
+
+/* ---- toast ------------------------------------------------------------- */
+#toast { position:fixed; left:50%; bottom:24px; transform:translateX(-50%);
+         background:#04310f; color:var(--ok); border:1px solid #0a5;
+         padding:10px 18px; border-radius:10px; opacity:0; transition:opacity .25s;
+         pointer-events:none; font-weight:600; max-width:calc(100vw - 32px);
+         z-index:200; }
+#toast.show { opacity:1; }
+#toast.err { background:#3a0d0d; color:var(--bad); border-color:#a33; }
+/* Clear the phone's bottom bars (the tab bar on the panel, the sticky save on
+ * admin) instead of hiding behind them. */
+@media (max-width:699px) {
+  #toast { bottom:calc(72px + env(safe-area-inset-bottom, 0px)); }
+}

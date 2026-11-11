@@ -1,9 +1,13 @@
 # Project-FRED
 
-A control stack for an **InMoov**-style humanoid running on a pair of Raspberry
-Pis: servo control, an offline wake-word listener with a Claude-backed
-conversational brain, camera face-tracking, a mobile-friendly web panel, an
-animated chest display, and a microcontroller sensor node.
+A control stack for an **InMoov**-style humanoid: servo control, an offline
+wake-word listener with a Claude-backed conversational brain, camera
+face-tracking, a mobile-friendly web panel, an animated chest display, and a
+microcontroller sensor node.
+
+It runs either way — all on one Raspberry Pi, or with an x86 box as the brain and
+the Pis reduced to device servers for the hardware bolted to them. Which one you
+get is a couple of keys in `settings.json`, not a fork.
 
 The robot this was built for is called FRED. **Nothing in the code depends on
 that** — the name lives in a couple of config strings and the spoken wake word,
@@ -11,7 +15,7 @@ so call yours whatever you like.
 
 > This is one person's working robot, not a product. It is published in the hope
 > that the wiring notes, the failure modes documented in `SERVICE.md`, and the
-> two-Pi architecture save someone else a few evenings. Expect to adapt it.
+> split-brain architecture save someone else a few evenings. Expect to adapt it.
 
 ---
 
@@ -20,55 +24,125 @@ so call yours whatever you like.
 | | |
 |---|---|
 | **Servos** | 6 channels via a PCA9685 — eyes (X/Y), jaw, neck rotate, head tilt (L/R and F/B). Soft limits, calibration mode, graceful relax. |
-| **Voice in** | Always-on wake word ("Hey FRED") using **Vosk** — fully offline, on-device. No cloud listening. |
+| **Voice in** | Always-on wake word ("Fred") using **Vosk** — fully offline, on-device. No cloud listening. |
 | **Brain** | Local regex commands answer instantly and for free; anything else falls through to **Claude**, which gets the same actions as tool definitions so it can actually *drive the robot*, not just talk. |
 | **Voice out** | ALSA `aplay`, with a speech envelope published to the chest display so the animation's mouth matches the audio. |
+| **Vision** | Camera Module 3 via `picamera2`, a USB camera via V4L2, or another machine's MJPEG stream — one interface, three backends. Plus an OpenCV Haar-cascade face tracker on a PD loop that moves the eyes, neck and head tilt to hold a face centred. |
+| **Hearing direction** | The reSpeaker Flex (XVF3800) beamforms toward whoever is speaking and reports the angle. FRED turns his head toward a voice he cannot see — in the dark, or from behind. A third bearing source for the face tracker, ranked below a real face and above the ultrasonics; calibrated from the admin panel by talking to him. |
 | **Vision** | Camera Module 3 via `picamera2`, MJPEG stream to the panel, plus an OpenCV Haar-cascade face tracker on a PD loop that moves the eyes, neck and head tilt to hold a face centred. |
-| **360° surround** | An Insta360 X5 on a mast above the head (UVC webcam mode) gives a full-circle view: Claude can *actually look* in any direction (`look_around` returns real photos), person/motion detection feeds the face tracker a bearing to anyone approaching from any angle, and a safety governor slows or stops the cart when someone is in its path. Mocks itself without the camera. See [`INSTA360.md`](INSTA360.md). |
-| **Cart** | Host-side driver for the [FRED-Cart](https://github.com/nledevil/Project-FRED-Cart) hoverboard base: governed drive commands over USB serial with a command TTL, under the Pico's own failsafes. |
+| **360° surround** | An Insta360 X5 on a mast above the head (UVC webcam mode) gives a full-circle view: Claude can *actually look* in any direction (`look_around_360` returns real photos), person/motion detection feeds the face tracker a bearing to anyone approaching from any angle, and a safety governor slows or stops the cart when someone is in its path. Mocks itself without the camera. See [`INSTA360.md`](INSTA360.md). |
 | **Web panel** | Flask on `:8080` — live servo sliders, camera view, conversation transcript, calibration mode, and an admin screen. |
 | **Chest display** | A second Pi drives a 7" DSI panel with framebuffer animations (arc reactor, flux capacitor, animated face, voice HUD), switchable at runtime from the panel. |
 | **Sensors** | A Raspberry Pi Pico reads two HC-SR04 ultrasonics and a PIR, does its own echo timing and event detection, and streams JSON to the robot. Claude can read them, so "is anyone there?" and "did someone walk by?" are answered from actual hardware. |
-| **Networking** | Falls back to being its own WiFi access point when no known network is around, plus an always-on Bluetooth PAN between the two Pis. |
+| **Drive base** | An optional [hoverboard cart](https://github.com/nledevil/Project-FRED-Cart) — two hub motors and a Pico on the chest Pi. Hold-to-drive joystick in the panel, plus drive actions Claude can call. Motion has to be continuously requested or it stops; see below. |
+| **Networking** | A private wired robot LAN with the brain serving DHCP, so the machines find each other on any venue's network — or none. Falls back to being its own WiFi access point when no known network is around. |
 
 ---
 
 ## Architecture
 
-Two Pis, deliberately. The head runs everything that needs the camera, the
-servos and the microphone; the chest Pi does nothing but drive its panel and
-relay the sensor node. They are joined by a Bluetooth PAN with fixed addresses,
-so the link survives any venue's DHCP — or the total absence of a network.
+One brain, two device servers. An x86 NUC runs everything that thinks — the
+control panel, the voice stack, face tracking. The two Pis keep only the
+hardware physically attached to them and expose it over the network: the head Pi
+owns the I²C servo bus and the CSI camera, the chest Pi drives its panel and
+relays the sensor node. A plain gigabit switch joins all three on a private
+segment, with the NUC serving DHCP so the link survives any venue's network — or
+the total absence of one.
 
 ```
-                    ┌──────────────────────────────────────────┐
-                    │  HEAD PI  (Pi 4B, DietPi)                │
-   servos ──I2C─────┤  PCA9685 · camera · mic · speaker        │
-   camera ──CSI─────┤                                          │
-                    │  web/app.py — Flask control panel :8080  │
-                    │  inmoov/    — the robot's own package    │
-                    └───────┬──────────────────────┬───────────┘
-                            │                      │
-              WiFi / own AP │                      │ Bluetooth PAN
-              192.168.x.x   │                      │ 10.0.0.1 ⇄ 10.0.0.2
-                            │                      │
-                    ┌───────┴──────────┐   ┌───────┴───────────────────┐
-                    │  phone / laptop  │   │  CHEST PI                 │
-                    │  control panel   │   │  display_control.py :8081 │
-                    └──────────────────┘   │  7" DSI panel animations  │
-                                           │  sensor relay ────────────┼── USB
-                                           └───────────────────────────┘      │
-                                                                      ┌───────┴────────┐
-                                                                      │  Pico sensor   │
-                                                                      │  node: 2×      │
-                                                                      │  HC-SR04 + PIR │
-                                                                      └────────────────┘
+                    ┌────────────────────────────────────────────────┐
+   PanaCast ──USB───┤  NUC "fred"  (x86, Ubuntu) — THE BRAIN         │
+   PowerConf ─USB───┤  web/app.py — Flask control panel      :8080   │
+   (mic+speaker)    │  inmoov/    — voice, face tracking, brain      │
+                    │  dnsmasq    — DHCP/DNS for the robot LAN       │
+                    └──────┬──────────────────────────────┬──────────┘
+                           │ WiFi 192.168.x.x             │ robot LAN
+                           │ (internet, management)       │ 10.0.0.1
+                   ┌───────┴──────────┐                   │
+                   │  phone / laptop  │            ┌──────┴──────┐
+                   │  control panel   │            │   SWITCH    │
+                   └──────────────────┘            └──┬───────┬──┘
+                                                      │       │
+                  ┌───────────────────────────────────┘       └──────────────┐
+                  │  HEAD PI  10.0.0.10                 CHEST PI  10.0.0.11  │
+   servos ──I2C───┤  servo_server.py         :8082      display_control :8081│
+   camera ──CSI───┤  camera_stream.py        :8081      7" DSI panel         │
+                  │  (imx708 → MJPEG)                   sensor relay ────────┼─USB
+                  └──────────────────────────────────────────────────────────┘   │
+                                                                        ┌────────┴───────┐
+                                                                        │  Pico sensor   │
+                                                                        │  node: 2×      │
+                                                                        │  HC-SR04 + PIR │
+                                                                        └────────────────┘
 ```
+
+**The NUC is `10.0.0.1`** — the address the head Pi used to hold under the old
+Bluetooth PAN. That was deliberate: the chest Pi already posts every sensor
+reading to `10.0.0.1:8080`, so moving the brain needed no change on the chest at
+all.
 
 The sensor node plugs into the **chest** Pi (that's where the sensors physically
-are, and the head is on pan/tilt servos so a USB run into it would fatigue). The
-chest Pi relays each reading to the head over the PAN, where the head is always
-`10.0.0.1` — no address to chase.
+are, and the head is on pan/tilt servos so a USB run into it would fatigue).
+
+Nothing on the Pis decides anything. The head exposes servos as HTTP/JSON and
+its camera as MJPEG; the NUC consumes both, and `inmoov/` cannot tell whether
+the I²C bus is six inches away or on the far end of an ethernet cable — see
+`RemoteServoController` and the `mjpeg` camera backend. The payoff is latency:
+the head↔brain round trip went from 7.3 ms over Bluetooth to **0.36 ms** over
+ethernet, which is the budget the face tracker's PD loop has to live in.
+
+---
+
+## Drive base (optional)
+
+FRED can be bolted to a [hoverboard cart](https://github.com/nledevil/Project-FRED-Cart):
+two hub motors on a mainboard running EFeru FOC firmware, commanded by a Pico that
+also owns a PS2 controller for manual driving.
+
+The Pico plugs into the **chest** Pi, for the same reason the sensor node does — the
+cart is at the base, and the head is on pan/tilt servos. But the thing deciding where
+to go (Claude, the web panel) runs on the brain, so drive intent crosses the robot LAN
+to get there. That shapes the whole design:
+
+**The safety layer lives on the chest Pi, not with the brain.**
+`deploy/display/cart_driver.py` holds the only handle on the serial port, re-sends the
+current command at 10 Hz, and zeroes it if it goes half a second without hearing a
+fresh one. Any link between the deciding machine and the wheels is a link that can
+fail: this was written when the two Pis were joined by a Bluetooth PAN, which dropped
+outright once when the head's Bluetooth controller threw a hardware error. The wired
+LAN that replaced it is far better, but it is still a cable, a switch and a NIC, and
+the brain is now a separate machine again — one more hop, not fewer. If the deciding
+end were the only thing keeping the cart going, a dead link would leave it rolling on
+its last command until the Pico's own 2 s host-silence failsafe expired — about 3.3 m
+at the firmware's speed cap. With the watchdog on the chest it is under a metre.
+
+Everything else follows from that:
+
+- **Motion must be continuously requested.** The panel's joystick posts while it is
+  held; let go, close the tab, or lose WiFi and the cart stops. There is no "release"
+  message to fail to arrive.
+- **Claude gets `nudge()`, not "go".** `inmoov/cart.py` has no API for "start moving and
+  return" — a programmatic move takes a duration, is capped at 5 s, and stops itself.
+- **The PS2 controller always wins.** The firmware ignores host drive commands whenever
+  a controller is connected, so picking it up takes the robot away from autonomous
+  control mid-drive. The panel and FRED both say so rather than appearing to ignore you.
+  **Currently moot: PS2 is disabled in the cart firmware** (`PS2_ENABLED 0`, 2026-08-12)
+  because the receiver stopped answering — see the cart repo's README. The arbitration
+  described above is still what the firmware does when it is switched back on, and the
+  panel's `PS2 REMOTE` state simply never fires meanwhile.
+
+Off by default. Enable it in the admin panel (or `cart.enabled` in
+`config/settings.json`) once the Pico is wired up; it reuses the chest Pi's address
+from the `display` settings. Speeds are in the firmware's units — roughly 0.64 wheel
+RPM each, capped at 300 by the Pico regardless of what is asked for.
+
+Testable with no cart attached:
+
+```bash
+python3 deploy/display/tools/test_cart_driver.py   # driver vs a simulated Pico
+python3 deploy/display/tools/test_cart_api.py      # the chest Pi's HTTP surface
+./venv/bin/python deploy/display/tools/test_cart_head.py   # client + spoken actions
+```
 
 ---
 
@@ -76,13 +150,16 @@ chest Pi relays each reading to the head over the PAN, where the head is always
 
 | Part | Notes |
 |---|---|
-| Raspberry Pi 4B ×2 | Head and chest. DietPi (Debian 13 "trixie"), Python 3.13. |
-| PCA9685 | 16-channel PWM servo driver, I²C address `0x40`, 50 Hz. |
+| x86 mini PC | The brain. Ubuntu 26.04. Anything with a couple of cores and a NIC works. |
+| Raspberry Pi 4B ×2 | Head and chest, now device servers only. DietPi (Debian 13 "trixie"). |
+| Gigabit switch | Joins the NUC and both Pis on the robot LAN. Unmanaged is fine. |
+| PCA9685 | 16-channel PWM servo driver, I²C address `0x40`, 50 Hz. On the head Pi. |
 | Servos ×6 | See the channel map below. |
 | **5–6 V PSU** | Sized for servo stall current — several amps. **Not** the Pi's 5 V rail. |
-| Camera Module 3 | Autofocus, on the head. |
-| USB microphone | Any ALSA-visible mic; used by the Vosk listener. |
-| USB speaker / DAC | Played through `aplay`. |
+| Camera Module 3 | Autofocus, on the head Pi; streamed to the brain as MJPEG. |
+| USB microphone | Any ALSA-visible mic. On the **brain**, since that is where voice runs. |
+| USB speaker / DAC | Played through `aplay`, on the brain. A USB speakerphone covers both. |
+| USB webcam | Optional second camera on the brain (e.g. a wide-angle one), via `v4l2`. |
 | 7" DSI touchscreen | On the chest Pi, 800×480, RGB565 framebuffer. |
 | Insta360 X5 *(optional)* | On a mast above the head, USB-C to the head Pi in webcam mode. Bring-up in [`INSTA360.md`](INSTA360.md). |
 | Raspberry Pi Pico | Sensor node. A plain Pico is fine — the firmware needs no WiFi. |
@@ -112,6 +189,28 @@ Default channel map — edit in `config/servos.json`:
 | 3 | `neck` | rotate left / right |
 | 4 | `head_tilt_lr` | tilt side to side |
 | 5 | `head_tilt_fb` | nod forward / back |
+
+### Mic array control interface (direction of arrival)
+
+Audio works for anyone through ALSA, but the vendor USB interface that reports
+which way a voice came from is a raw endpoint, and udev gives those to root. One
+rule fixes it, and without it FRED would have to run the whole voice stack as
+root to turn toward a voice:
+
+```bash
+sudo cp deploy/99-respeaker-xvf3800.rules /etc/udev/rules.d/
+sudo udevadm control --reload-rules
+sudo udevadm trigger --subsystem-match=usb --attr-match=idVendor=2886
+```
+
+Your account needs to be in `plugdev` (`id -nG`). Check it took with the admin
+panel's **Hearing direction** page — the needle should move when you talk.
+
+Then calibrate once: stand directly in front of him, keep talking, and press
+**Capture forward**. Whatever direction the array is steering at that moment
+becomes straight ahead, so the mounting orientation is measured rather than
+worked out. Nothing else needs setting unless he turns the wrong way, which is
+the **Mirrored** toggle.
 
 ### Sensor node wiring
 
@@ -153,6 +252,8 @@ i2cdetect -y 1          # after reboot: expect the PCA9685 at 0x40
 
 ### 2. Python environment
 
+On a **Pi**, where picamera2/OpenCV/numpy come from apt:
+
 ```bash
 git clone git@github.com:nledevil/Project-FRED.git
 cd Project-FRED
@@ -161,6 +262,27 @@ python3 -m venv --system-site-packages venv
                        adafruit-circuitpython-servokit adafruit-circuitpython-pca9685 \
                        CairoSVG
 ```
+
+On the **brain** (x86) there is no picamera2 and no apt OpenCV worth inheriting,
+so use a plain venv and pip wheels:
+
+```bash
+sudo apt install -y python3-venv alsa-utils opencv-data
+python3 -m venv venv
+./venv/bin/pip install flask requests anthropic vosk pyserial numpy CairoSVG \
+                       opencv-contrib-python-headless
+```
+
+> **Use `opencv-contrib-python-headless`, not `opencv-python-headless`.** OpenCV
+> 5 moved the legacy Haar cascade and HOG detectors out of `objdetect` and into
+> contrib's `xobjdetect`, so the plain wheel has no `cv2.CascadeClassifier` and
+> face tracking dies at construction. The contrib wheel exposes it at top level
+> and needs no code change. (`objdetect` itself is still there — `FaceDetectorYN`
+> and friends — so don't read this as "the module was removed".)
+>
+> `opencv-data` supplies the cascade XML at
+> `/usr/share/opencv4/haarcascades/`, which is where `face_tracker.CASCADE_PATH`
+> looks. The pip wheels ship no data files.
 
 Vosk needs a model. Download a small English one from
 [alphacephei.com/vosk/models](https://alphacephei.com/vosk/models) and unpack it
@@ -191,10 +313,31 @@ instead of touching I²C — so you can develop the whole control path on a lapt
 `deploy/` holds the systemd units. Full walkthrough in
 [`SERVICE.md`](SERVICE.md).
 
+On the **brain** — the control panel:
+
 ```bash
-sudo cp deploy/inmoov.service /etc/systemd/system/
-sudo systemctl enable --now inmoov
+sudo cp deploy/fred-panel.service /etc/systemd/system/
+sudo systemctl enable --now fred-panel
 ```
+
+On the **head Pi** — the two device servers, and *not* the panel (its
+`inmoov.service` is the old one-Pi topology; leaving it running would fight the
+brain for the camera and port 8080):
+
+```bash
+sudo systemctl disable --now inmoov            # the head is a device server now
+sudo cp deploy/camera-stream.service deploy/servo-server.service /etc/systemd/system/
+sudo systemctl enable --now camera-stream servo-server
+```
+
+> `servo-server.service` starts with `SERVO_MOVE_TO_REST=0`, so bringing it up
+> never drives a servo — unlike `ServoController`'s own default, which sweeps
+> everything to rest the moment it is constructed. That is the right default for
+> something systemd may start at boot with nobody watching. It also honours
+> `SERVO_LOCKED`, a comma-separated list of servos it will refuse to move for
+> *any* caller, answering `423`. Use it when a mechanism is physically obstructed
+> — enforced on the machine holding the I²C bus rather than trusted to every
+> client.
 
 ---
 
@@ -213,6 +356,24 @@ every command is clamped to them), `rest_angle`, `actuation_range`,
 > The shipped limits are **deliberately conservative placeholders**. Run
 > `calibrate.py` against your own mechanism and tighten them before running at
 > speed — a servo driving into a printed part will strip it.
+
+`settings.json` keys that decide *where the hardware is* — these are what make
+the same code run as a self-contained head Pi or as a brain driving one over the
+network:
+
+| Key | Effect |
+|---|---|
+| `camera.backend` | `auto`, `picamera2` (local CSI), `mjpeg` (a stream), `v4l2` (local USB) |
+| `camera.source` | stream URL for `mjpeg`, device index or `/dev/videoN` for `v4l2` |
+| `servo.remote_host` | empty = drive the local PCA9685; set = drive `servo_server.py` there |
+| `servo.remote_port` | defaults to `8082` |
+
+A head Pi with everything attached needs none of them. A brain wants, e.g.:
+
+```json
+{ "camera": { "backend": "mjpeg", "source": "http://10.0.0.10:8081/stream.mjpg" },
+  "servo":  { "remote_host": "10.0.0.10" } }
+```
 
 ---
 
@@ -245,11 +406,25 @@ unavailable.
 
 ### Face tracking
 
-A background thread pulls low-resolution grayscale frames from the camera's
-`lores` stream (so MJPEG viewers are undisturbed), runs a Haar cascade, and
-drives a PD controller on the eyes, neck and head tilt. Because the camera rides
-the moving head it is a genuine feedback loop — gains are tunable live from the
-panel and persist in `settings.json`.
+A background thread pulls low-resolution grayscale frames from the camera (the
+`lores` stream on a Pi, so MJPEG viewers are undisturbed; a once-decoded frame on
+the other backends), runs a Haar cascade, and drives a PD controller on the eyes,
+neck and head tilt. Because the camera rides the moving head it is a genuine
+feedback loop — gains are tunable live from the panel and persist in
+`settings.json`.
+
+When the brain and the servos are on different machines the loop closes over the
+network, so the link has to be quick. Two things keep it that way:
+`servo_server.py` sets `disable_nagle_algorithm` (without it every reply costs
+~40 ms to Nagle vs delayed-ACK, capping the link at ~24 Hz — below the frame
+rate), and `RemoteServoController.set_angles()` sends several servos in one round
+trip so `eye_x` and `eye_y` cannot land a request apart. Measured round trip on a
+gigabit segment: **~2.4 ms**.
+
+Feedback flows back the same way. Every reply carries the angle the controller
+*actually applied* after clamping — ask for 999° and the cache ends up holding
+the servo's real maximum — so `get_angle()` on the brain never drifts from the
+hardware.
 
 ### Chest display — `:8081`
 
@@ -261,6 +436,20 @@ Presets: arc reactor (cyan/copper), flux capacitor, animated face, voice HUD.
 It also carries the **sensor relay** and can overlay a live sensor readout on
 top of whichever animation is playing — toggled from the admin page.
 
+**He paints.** "Fred, draw me a dragon" calls the `make_picture` tool
+(`inmoov/images.py`): the picture is generated on the NUC — locally with
+stable-diffusion.cpp and sd-turbo after a one-time `tools/install_sdcpp.sh`
+(a few seconds a picture, no internet), or through the OpenAI Images API if a
+key is set in the admin page — then sent to the chest as a JPEG
+(`POST /api/picture`) and shown over the animation until a tap or a hold
+time. A picture wakes a sleeping screen. The admin page's Chest display
+section has a "Paint a picture" box for trying it without a microphone, and
+shows the last one. Pictures are kept under `logs/pictures/`.
+
+The screen also **sleeps**: no touch for an adjustable time (default ten
+minutes, set from the chest's DISPLAY tab or the admin page) cuts the
+backlight; a touch, a picture, or FRED speaking brings it back.
+
 ### 360° surround vision
 
 `inmoov/camera360.py` consumes the X5 as a plain UVC webcam delivering
@@ -269,20 +458,17 @@ a normal rectilinear image. `inmoov/surround.py` layers awareness on top —
 cheap motion sectors over the whole circle, targeted Haar person/face
 detection on the busy directions, and a merged track list with rough
 distances. The face tracker takes its "someone is over there" bearing from
-here (falling back to the ultrasonics), Claude gets `look_around` (real
+here (falling back to the ultrasonics), Claude gets `look_around_360` (real
 images) and `scan_surroundings` (a spoken who's-where), and the cart's speed
 is governed by what's in its path. The whole stack runs against a synthetic
 mock scene when no camera is attached — `demo360.py` proves the chain end to
 end with no hardware.
 
-### Cart drive
-
-`inmoov/cart.py` talks to the [FRED-Cart](https://github.com/nledevil/Project-FRED-Cart)
-Pico over USB serial (`"<steer> <speed>"`, `x` = stop). Commands carry a TTL
-and decay to a stop unless renewed; a 10 Hz keepalive sits under the Pico's
-2 s failsafe; and the surround-vision governor rescales every command against
-whoever is standing in the way. Claude may drive only if the admin panel's
-**AI driving** toggle is on (off by default) — his `stop_cart` always works.
+The cart governor is `CartClient.guard` in `inmoov/cart.py`, wired to
+`SurroundVision.nav_assess` in `web/app.py`: every drive command — joystick,
+spoken, or Claude's `drive` tool — is scaled by what the 360 camera sees in the
+direction of travel, while surround vision is watching. It only ever takes
+speed away, and a guard that errors stops the cart.
 
 ### Sensor node
 
@@ -296,16 +482,52 @@ MicroPython's raw REPL, standing in for `mpremote` (the chest Pi has no pip).
 
 ### Networking
 
+- **Robot LAN** — a private wired segment joining the brain and both Pis through
+  a switch, independent of any venue's network:
+
+  | Host | Address | Serves |
+  |---|---|---|
+  | NUC (brain) | `10.0.0.1` | panel `:8080`, DHCP + DNS |
+  | head Pi | `10.0.0.10` | `camera_stream` `:8081`, `servo_server` `:8082` |
+  | chest Pi | `10.0.0.11` | `display_control` `:8081` |
+
+  The brain runs `dnsmasq` bound to the robot-LAN interface only, with
+  reservations keyed on each Pi's `eth0` MAC — but as of R7a (2026-09-09) both
+  Pis pin those addresses **statically** in `/etc/network/interfaces`
+  (tracked in `deploy/net-head/`, `deploy/net-chest/`), so neither has to wait
+  on the NUC's DHCP at boot. The address never changed; only how it's obtained.
+
+  The default route is **per-Pi**, matching how each is actually used: the chest
+  carries `gateway 10.0.0.1` (its uplink is the NUC, which masquerades the LAN
+  out to the internet), while the head omits it (its uplink is its own `wlan0`,
+  and the `/24` link route reaches the NUC regardless — a second default route
+  would race the one on `wlan0`). Each Pi keeps `interfaces.dhcp.bak` beside the
+  live file as a one-line revert to the old DHCP behaviour.
+
 - **Hotspot fallback** — when no known WiFi is in range the head becomes its own
-  access point so you can still reach the panel at a venue. See
+  access point so you can still reach it at a venue. See
   [`HOTSPOT.md`](HOTSPOT.md).
-- **Bluetooth PAN** — a permanent link between the two Pis at `10.0.0.1` and
-  `10.0.0.2`, independent of any WiFi. The installer takes the peer's Bluetooth
-  address as an argument, so it works on your pair of adapters:
+- **Access point `fred`** — the NUC serves its own WiFi so the panel is reachable
+  at a venue with no network: SSID `fred`, panel at `http://192.168.50.1:8080`.
+  Off by default; switch it on from the panel or the chest touchscreen's Wireless
+  tab. It runs on the **onboard Intel radio**, because the USB card added for the
+  job turned out not to be able to do it — `rtl8xxxu` advertises `managed` and
+  `monitor` only, no `AP`. So the two cards swapped roles on 2026-08-12: the USB
+  card is now the house-WiFi client (all a client needs is `managed`) and the
+  Intel hosts the AP. The NUC's house address moved to `192.168.68.71` with that
+  swap. Config in `deploy/hotspot-nuc/`; the AP gets its **own** dnsmasq instance
+  so toggling it can never disturb the one handing the Pis their addresses on br0.
+
+- **Bluetooth PAN (retired)** — the two Pis used to be joined at `10.0.0.1` and
+  `10.0.0.2` over Bluetooth; `deploy/pan/` still installs it if you want the
+  old two-Pi topology back. Note that `pan-server` on the head claims
+  `10.0.0.1`, which now belongs to the brain — run both and the head will
+  resolve the brain's address to its own loopback and never reach it. On the
+  chest, `pan-check.timer` rebuilds the link every 60 s, so disable that too:
 
   ```bash
-  sudo deploy/pan/install.sh head  <chest-bdaddr>
-  sudo deploy/pan/install.sh chest <head-bdaddr>
+  sudo systemctl disable --now pan-server.service    # head
+  sudo systemctl disable --now pan-client.service pan-check.timer   # chest
   ```
 
 ---
@@ -313,9 +535,9 @@ MicroPython's raw REPL, standing in for `mpremote` (the chest Pi has no pip).
 ## Development
 
 Every hardware wrapper mocks itself out when its device is missing —
-`ServoController` without `/dev/i2c-1`, `Camera` without libcamera, `Sound`
-without ALSA, `Led` without GPIO. So the whole control path runs on an ordinary
-machine:
+`ServoController` without a reachable PCA9685, `Camera` with no working backend,
+`Sound` without ALSA, `Led` without GPIO. So the whole control path runs on an
+ordinary machine:
 
 ```bash
 ./venv/bin/python demo.py               # scripted moves, no hardware needed
@@ -330,12 +552,18 @@ Force it explicitly with `ServoController(mock=True)`.
 
 ```
 inmoov/                  the robot's Python package (servos, camera, voice, sensors)
+  camera.py              picamera2 / mjpeg / v4l2 backends behind one interface
+  remote_servo.py        client for a head Pi running servo_server.py
 web/                     Flask control panel — app.py, templates, static
 config/                  servos.json (tracked); settings.json + secrets.env (not)
 deploy/                  systemd units and installers
+  servo_server.py        head Pi: exposes the PCA9685 as HTTP/JSON on :8082
+  camera_stream.py       head Pi: exposes the CSI camera as MJPEG on :8081
+  fred-panel.service     brain: the control panel (the x86/NUC unit)
+  inmoov.service         head Pi: the control panel, for the old one-Pi topology
   display/               everything that runs on the chest Pi
   hotspot/               WiFi access-point fallback
-  pan/                   Bluetooth PAN between the two Pis
+  pan/                   Bluetooth PAN between the two Pis (retired — see Networking)
 firmware/pico_sensor_node/   MicroPython sensor node + its push tool
 sounds/                  startup chime and effects
 calibrate.py demo.py     bench tools

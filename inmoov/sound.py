@@ -18,6 +18,7 @@ from __future__ import annotations
 import atexit
 import hashlib
 import os
+import re
 import shutil
 import select
 import subprocess
@@ -30,6 +31,10 @@ from collections import OrderedDict
 from pathlib import Path
 
 SOUNDS_DIR = Path(__file__).resolve().parent.parent / "sounds"
+# How long a playback-level reading stays good. Long enough that a polled
+# /api/state costs at most one amixer a second however many panels are watching,
+# short enough that the number on a slider is never visibly behind the hardware.
+VOLUME_TTL = 1.0
 # Optional Piper neural TTS: self-contained binary + voice model, preferred over
 # espeak when present. Convention: models/piper/bin/piper + models/piper/voices/*.onnx.
 PIPER_DIR = Path(__file__).resolve().parent.parent / "models" / "piper"
@@ -48,6 +53,33 @@ PIPER_VOICE = "northern_english_male"
 # turns a ~0.8 s render into a file lookup. Long Claude replies never repeat,
 # but they age out harmlessly.
 _TTS_CACHE_MAX = 64
+
+
+# Respellings applied on the way into the synthesiser. Piper phonemises through
+# espeak-ng, which reads a few strings the way they're spelled rather than the
+# way they're said, and the only lever we have is the spelling we hand it.
+#
+# Applied in _synth() alone, so this changes how a line *sounds* and nothing
+# else: the transcript, the API replies and FRED's conversation memory all keep
+# the words he actually chose.
+#
+# Verified against piper's own bundled libespeak-ng with the voice this build
+# uses (en-gb-x-rp), rather than by ear — add to this list the same way:
+#
+#     "Pis"   -> pˈɪs      (i.e. "piss")
+#     "Pi's"  -> pˈaɪz     correct, and "Pi" on its own is already pˈaɪ
+_SAY_AS = (
+    # "I have two Raspberry Pis for..." landed as "two raspberry piss". Only the
+    # bare plural is wrong, so that is all this touches.
+    (re.compile(r"\bpis\b", re.I), "Pi's"),
+)
+
+
+def _say_as(text: str) -> str:
+    """Respell ``text`` so the synthesiser pronounces it correctly."""
+    for pattern, replacement in _SAY_AS:
+        text = pattern.sub(replacement, text)
+    return text
 
 
 def _silent_unlink(path: str | Path) -> None:
@@ -208,27 +240,59 @@ class Sound:
         wake-up). Positive = the jaw waits longer before it starts moving, for
         when the mouth runs ahead of the voice; negative = the jaw moves sooner.
         Tune by ear, usually within ±0.2.
+    audit : bool
+        Audit (dry-run) mode. Speech is still *rendered* and still occupies the
+        clock for exactly as long as it would have taken to play, but no audio
+        device is ever opened — see ``set_audit``.
     """
 
     def __init__(self, device: str = "plughw:0,0",
                  sounds_dir: str | Path = SOUNDS_DIR, enabled: bool = True,
-                 lead_in: float = 0.0, sync_offset: float = 0.0):
+                 lead_in: float = 0.0, sync_offset: float = 0.0,
+                 gap_lead_in: float = 0.0, audit: bool = False):
         self.device = device
         self.sounds_dir = Path(sounds_dir)
         self.enabled = enabled
         self.lead_in = max(0.0, float(lead_in))
+        # Lead-in for the *second and later* clips of one reply. This used to be
+        # flatly zero, on the reasoning that the device was already awake — but a
+        # reply is spoken as one aplay per sentence, and every aplay closes and
+        # reopens the PCM. On a USB speakerphone that reopen costs real time, so
+        # sentences after the first lost their opening syllable while the device
+        # woke up: "he misses parts of words while he's talking", and only ever
+        # in multi-sentence answers, which is what made it look intermittent.
+        #
+        # Much smaller than lead_in on purpose. It only has to cover the reopen,
+        # not a cold start, and every millisecond here is silence between the
+        # sentences of one reply. 0.0 restores the old behaviour exactly.
+        self.gap_lead_in = max(0.0, float(gap_lead_in))
         self.sync_offset = float(sync_offset)
+        self._audit = bool(audit)
+        # In audit mode nothing is spawned, so there is no process to poll for
+        # "still playing". Instead we remember when the clip *would* have ended
+        # and let is_playing() answer from the clock.
+        self._virtual_end: float | None = None
         self._lock = threading.Lock()
-        # Suspended = the audio card has been handed off to another owner (e.g.
-        # MyRobotLab). While suspended, playback is a no-op. (The mic/arecord is
-        # held by the Listener, which is stopped separately during a handoff.)
-        self._suspended = False
         self._proc: subprocess.Popen | None = None
         # Monotonic time at which the current clip's first sample is expected to
         # be audible. The jaw animation schedules itself against this, not
         # against "now" — see audio_epoch().
         self._audio_t0: float | None = None
         self._ok = shutil.which("aplay") is not None
+        # The playback level lives on the card's mixer; see set_volume. Kept
+        # separate from _ok because a rig can perfectly well play sound with no
+        # settable mixer, and that must not disable audio — it only means the
+        # panels have no volume slider to offer.
+        self._mixer_ok = shutil.which("amixer") is not None
+        # Plural: a card can present several playback controls in series, and
+        # driving only one of them is a bug this used to have. Discovered
+        # lazily, then cached.
+        self._volume_ctls: list[str] | None = None
+        # Last reading and when it was taken. See volume() for why this is not
+        # optional: settings() is on a polled endpoint.
+        self._vol_read: int | None = None
+        self._vol_at = 0.0                      # monotonic; 0 = nothing cached
+        self._vol_lock = threading.Lock()
         self._espeak = shutil.which("espeak-ng") or shutil.which("espeak")
         # Piper is the preferred TTS (far more natural voice); espeak is the
         # fallback. render_tts()/speak() try piper first, then espeak.
@@ -247,9 +311,31 @@ class Sound:
 
     # ---- capability -------------------------------------------------------
     def available(self) -> bool:
-        """True when playback is possible (aplay present). Independent of the
-        ``enabled`` mute flag, which callers can toggle at runtime."""
-        return self._ok
+        """True when playback is possible (aplay present, or audit mode, which
+        needs no device at all). Independent of the ``enabled`` mute flag, which
+        callers can toggle at runtime."""
+        return self._ok or self._audit
+
+    # ---- audit (dry run) --------------------------------------------------
+    def is_audit(self) -> bool:
+        return self._audit
+
+    def set_audit(self, on: bool) -> None:
+        """Turn audit mode on/off. Idempotent; stops anything currently playing.
+
+        Audit mode is deliberately *not* a mute. A mute (``enabled=False``) makes
+        play_file() fail, which tells the lip-sync layer no audio is coming and
+        stops the jaw and the on-screen mouth dead. Audit instead simulates a
+        successful playback of the correct duration, so the whole speech
+        pipeline — render, envelope, mouth publish, jaw schedule — runs in real
+        time against a silent speaker. That is the point: you get to watch
+        exactly what FRED would have done.
+        """
+        on = bool(on)
+        if on == self._audit:
+            return
+        self.stop()                # never leave a real aplay running behind us
+        self._audit = on
 
     def list(self) -> list[str]:
         """Sorted names of playable sounds (``.wav`` stems in sounds_dir)."""
@@ -267,6 +353,8 @@ class Sound:
 
     def is_playing(self) -> bool:
         with self._lock:
+            if self._virtual_end is not None:      # audit: the clock is the clip
+                return time.monotonic() < self._virtual_end
             return self._proc is not None and self._proc.poll() is None
 
     def can_speak(self) -> bool:
@@ -279,24 +367,172 @@ class Sound:
 
     def settings(self) -> dict:
         return {"device": self.device, "enabled": self.enabled,
-                "suspended": self._suspended,
+                "audit": self._audit,
                 "lead_in": self.lead_in, "sync_offset": self.sync_offset,
                 "playing": self.is_playing(), "can_speak": self.can_speak(),
-                "tts": self.tts_engine(), "sounds": self.list()}
+                "tts": self.tts_engine(), "sounds": self.list(),
+                # Read live from the mixer rather than echoed back from
+                # settings.json: the knob is on the hardware, and something
+                # else (alsactl at boot, a person on the device's own buttons)
+                # can move it without us. Reporting the stored number would
+                # make the panel confidently wrong.
+                "volume": self.volume(), "volume_control": ",".join(self._volume_ctls) if self._volume_ctls else None}
 
-    # ---- hardware handoff -------------------------------------------------
-    def is_suspended(self) -> bool:
-        return self._suspended
+    # ---- output level -----------------------------------------------------
+    #
+    # Playback level is the *card's* mixer, not something applied to the WAV:
+    # aplay has no volume of its own, and scaling samples in Python would cost
+    # a pass over every clip and lose bits on the way down. amixer is already a
+    # dependency in spirit — aplay is right beside it in alsa-utils.
+    #
+    # Everything here is best-effort and silent on failure. A robot with no
+    # mixer (audit mode, a dummy device, a card whose driver exposes no
+    # playback control) must still boot and still talk; it simply reports
+    # volume as None and the panels hide the control.
 
-    def suspend(self) -> None:
-        """Release the audio card: stop any current playback and refuse new
-        playback until resume(). Idempotent."""
-        self._suspended = True
-        self.stop()
+    def _mixer_card(self) -> str | None:
+        """The card name amixer wants, dug out of the ALSA device string.
 
-    def resume(self) -> None:
-        """Take the audio card back; playback works again. Idempotent."""
-        self._suspended = False
+        ``plughw:PowerConf,0`` -> ``PowerConf``, ``plughw:0,0`` -> ``0``. A
+        device with no card in it (``default``, ``pulse``) returns None, which
+        means "let amixer use its own default card".
+        """
+        dev = (self.device or "").strip()
+        if ":" not in dev:
+            return None
+        card = dev.split(":", 1)[1].split(",", 1)[0].strip()
+        return card or None
+
+    def _amixer(self, *args: str) -> str | None:
+        """Run amixer against our card. Returns stdout, or None on any failure."""
+        if not self._mixer_ok:
+            return None
+        card = self._mixer_card()
+        cmd = ["amixer"] + (["-c", card] if card else []) + list(args)
+        try:
+            out = subprocess.run(cmd, capture_output=True, text=True, timeout=2.0)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        return out.stdout if out.returncode == 0 else None
+
+    def _find_volume_controls(self) -> list[str] | None:
+        """Every simple control on this card with a playback volume, in order.
+
+        Discovered, never hardcoded: it is ``PCM`` on the PowerConf, ``Master``
+        on plenty of other cards, and ``Speaker`` on some. A cached hit is kept
+        for the life of the process — the controls cannot change without the
+        card changing, and the card is in the device string. A *miss* is not
+        cached, so plugging the speakerphone in after boot starts working
+        without a restart.
+
+        **All of them, not the first.** This used to stop at the first match,
+        which was right for a card that has one. The reSpeaker has two — a
+        stereo ``PCM,0`` and a mono ``PCM,1`` — and they are in series, so the
+        quieter one governs whatever the other says. Setting only the first
+        produced a robot that reported full volume while its output sat 20 dB
+        down, and was completely sincere about it.
+        """
+        if self._volume_ctls is not None:
+            return self._volume_ctls
+        out = self._amixer("scontents")
+        if not out:
+            return None
+        names = []
+        for block in out.split("Simple mixer control ")[1:]:
+            head, _, body = block.partition("\n")
+            if "pvolume" in body.split("Limits:", 1)[0]:
+                # "'PCM',0" -> "PCM,0", which is the form sget/sset accept.
+                names.append(head.strip().replace("'", ""))
+        self._volume_ctls = names or None
+        return self._volume_ctls
+
+    def volume(self) -> int | None:
+        """Playback level as a percentage, or None when there is no mixer.
+
+        Cached for VOLUME_TTL, because this is read from ``settings()`` and
+        ``settings()`` is on ``/api/state`` — which the chest polls continuously
+        and the two web pages poll on top of that. Uncached, every one of those
+        spawned an ``amixer``: about 1.4 ms of process each, several times a
+        second, for a number that only changes when somebody moves it.
+
+        The cache matters most when the answer is None. A pulled speakerphone
+        leaves the card gone but the poll rate unchanged, so the failing path
+        was the one running most often — measured at 1.4 ms a call with the
+        PowerConf unplugged, forever, for a number that could not change.
+
+        Cost of the TTL: a level changed on the device's own buttons can be up
+        to a second stale on the panels. Ours is applied through set_volume,
+        which drops the cache, so the slider you just moved never lags.
+        """
+        now = time.monotonic()
+        with self._vol_lock:
+            if self._vol_at and now - self._vol_at < VOLUME_TTL:
+                return self._vol_read
+            # Read under the lock so a herd of pollers arriving on an expired
+            # cache produces one amixer between them, not one each.
+            val = self._read_volume()
+            self._vol_read, self._vol_at = val, now
+            return val
+
+    def _read_volume(self) -> int | None:
+        """Ask the card its level. The uncached half of volume().
+
+        The *lowest* of the playback controls, because they are in series and
+        the quietest one is what you actually hear. set_volume writes them all
+        to the same figure so they normally agree; they can still drift, since
+        alsactl restores a level at boot and the speakerphone has buttons of its
+        own. Reporting the loudest then would be the same lie this method was
+        rewritten to stop telling.
+        """
+        ctls = self._find_volume_controls()
+        if not ctls:
+            return None
+        levels = []
+        for ctl in ctls:
+            out = self._amixer("sget", ctl)
+            if not out:
+                continue
+            # "  Mono: Playback 6161 [85%] [-4.31dB] [on]" — take the first
+            # percentage on a line about playback. A joined control has one
+            # line; a stereo one has two identical ones, so first is right
+            # either way.
+            for line in out.splitlines():
+                if "Playback" not in line:
+                    continue
+                m = re.search(r"\[(\d{1,3})%\]", line)
+                if m:
+                    levels.append(int(m.group(1)))
+                    break
+        return min(levels) if levels else None
+
+    def set_volume(self, percent: float) -> bool:
+        """Set the playback level, 0-100. True when the card took it.
+
+        Also unmutes. A volume control that leaves the card's playback switch
+        off is a control that does nothing, and "I turned it up and heard
+        nothing" is a worse failure than the switch being touched — 0% is how
+        you mute here, and it is reversible from the same slider.
+        """
+        pct = int(round(max(0.0, min(100.0, float(percent)))))
+        ctls = self._find_volume_controls()
+        if not ctls:
+            return False
+        # Every one of them. See _find_volume_control: on a card whose controls
+        # are in series, setting one and leaving the other is how the level ends
+        # up somewhere nobody asked for.
+        ok = False
+        for ctl in ctls:
+            if self._amixer("sset", ctl, f"{pct}%", "unmute") is not None:
+                ok = True
+        if not ok:
+            return False
+        # Drop the cache rather than storing pct: the card quantises to its own
+        # steps, so the next read is the only thing that knows what it actually
+        # took. Dropping it also makes the panels' round-trip honest — they show
+        # what the hardware did, not what we asked for.
+        with self._vol_lock:
+            self._vol_at = 0.0
+        return True
 
     # ---- text-to-speech backends -----------------------------------------
     @staticmethod
@@ -327,7 +563,11 @@ class Sound:
         Piper goes through the warm daemon when it's healthy (it renders into
         the cache dir, so we just move the file into place); a daemon failure
         falls back to a cold one-shot run, which is slow but always works.
+
+        Spelling is respelled for the synthesiser here (see ``_say_as``) — this
+        is the one place all three backends funnel through.
         """
+        text = _say_as(text)
         if self._daemon is not None:
             rendered = self._daemon.synth(text)
             if rendered is not None:
@@ -411,7 +651,7 @@ class Sound:
             return False
         return self.play_file(random.choice(clips), wait=wait)
 
-    def _with_lead_in(self, path: Path) -> tuple[Path, bool]:
+    def _with_lead_in(self, path: Path, seconds: float | None = None) -> tuple[Path, bool]:
         """Return ``(path_to_play, owned)``. When ``lead_in`` > 0, write a temp
         copy of the WAV with that many seconds of silence prepended and return it
         with ``owned=True`` (the caller deletes it after playback); this masks the
@@ -422,13 +662,14 @@ class Sound:
         audio starts rather than assume it's immediate — the padding this adds
         delays it, and getting that wrong makes the jaw run ahead of the voice.
         """
-        if self.lead_in <= 0:
+        seconds = self.lead_in if seconds is None else max(0.0, float(seconds))
+        if seconds <= 0:
             return path, False
         try:
             with wave.open(str(path), "rb") as w:
                 params = w.getparams()
                 frames = w.readframes(w.getnframes())
-            silence = bytes(int(self.lead_in * params.framerate)
+            silence = bytes(int(seconds * params.framerate)
                             * params.sampwidth * params.nchannels)
             fd, tmp = tempfile.mkstemp(suffix=".wav", prefix="inmoov-lead-")
             os.close(fd)
@@ -455,18 +696,20 @@ class Sound:
                   pad: bool = True) -> bool:
         """Play a specific .wav file. Returns True if playback was started.
 
-        ``pad`` applies the ``lead_in`` silence. Pass False for the second and
-        later clips of a continuous utterance: the device is already awake by
-        then, and re-padding every clip would insert a ``lead_in``-long gap
-        between the sentences of one reply.
+        ``pad`` selects *which* lead-in: True for the first clip of an utterance
+        (the full ``lead_in``), False for the second and later clips of one reply
+        (the shorter ``gap_lead_in``). It is not "padding or none" — every clip
+        is its own aplay, so every clip reopens the device and every clip can
+        lose its opening syllable. What differs is how much silence it takes to
+        cover a reopen versus a cold start, and how much of a gap between the
+        sentences of one reply is worth paying for it.
 
         This blocks briefly (see ``probe`` below) to catch an aplay that fails on
         startup, which delays the caller's lip-sync by that much when there's no
         lead-in to hide it — hence the shorter probe on continuation clips.
         """
-        if not self._ok or not self.enabled or self._suspended:
-            why = ("no aplay" if not self._ok
-                   else "handed off" if self._suspended else "muted")
+        if not self.available() or not self.enabled:
+            why = "no aplay" if not self._ok else "muted"
             print(f"[Sound] (silent) would play {path} [{why}]")
             return False
         path = Path(path)
@@ -474,11 +717,16 @@ class Sound:
             print(f"[Sound] file not found: {path}")
             return False
         self.stop()                                  # one voice at a time
-        if pad:
-            play_path, owned = self._with_lead_in(path)   # prepend device-warmup silence
-            pre_roll = self.lead_in if owned else 0.0     # padding may have failed
-        else:
-            play_path, owned, pre_roll = path, False, 0.0
+        if self._audit:
+            # Dry run: no device, no aplay, no padded temp file — just the clock.
+            return self._play_virtual(path, pad=pad, wait=wait)
+        # First clip of a reply gets the full cold-start lead-in; the ones after
+        # it get the shorter reopen pad. Both go through the same path so the
+        # epoch below is stamped with whatever silence was really prepended —
+        # get that wrong and the jaw runs ahead of the voice.
+        want = self.lead_in if pad else self.gap_lead_in
+        play_path, owned = self._with_lead_in(path, want)
+        pre_roll = want if owned else 0.0                 # padding may have failed
         cleanup = (lambda: _silent_unlink(play_path)) if owned else (lambda: None)
         # How long to wait for a failing aplay to exit before we call it started.
         # The first clip of an utterance follows arecord releasing the card, which
@@ -522,6 +770,37 @@ class Sound:
         self._audio_t0 = None
         cleanup()
         return False
+
+    @staticmethod
+    def _wav_duration(path: Path) -> float:
+        """Length of a WAV in seconds, or 0.0 if it can't be read."""
+        try:
+            with wave.open(str(path), "rb") as w:
+                rate = w.getframerate()
+                return w.getnframes() / float(rate) if rate else 0.0
+        except (wave.Error, OSError, EOFError):
+            return 0.0
+
+    def _play_virtual(self, path: Path, pad: bool, wait: bool) -> bool:
+        """Audit mode's stand-in for ``aplay``: report a successful playback of
+        the right length without opening the audio device.
+
+        The epoch is stamped exactly as the real path stamps it — including the
+        ``lead_in`` pre-roll and ``sync_offset`` — so ``audio_epoch()`` stays
+        truthful and the jaw/mouth animation is timed identically to a real
+        utterance. We don't bother writing the padded temp WAV: nothing reads it,
+        and the only thing the padding contributed was that delay.
+        """
+        duration = self._wav_duration(path)
+        pre_roll = self.lead_in if pad else self.gap_lead_in
+        with self._lock:
+            self._proc = None
+            self._audio_t0 = time.monotonic() + pre_roll + self.sync_offset
+            self._virtual_end = self._audio_t0 + duration
+            end = self._virtual_end
+        if wait:
+            time.sleep(max(0.0, end - time.monotonic()))
+        return True
 
     def render_tts(self, text: str, speed: int = 150, voice: str = "en") -> str | None:
         """Render ``text`` to a WAV and return its path, or None if no TTS backend
@@ -585,6 +864,7 @@ class Sound:
         with self._lock:
             proc, self._proc = self._proc, None
             self._audio_t0 = None
+            self._virtual_end = None       # audit: the clip stops being "playing"
         if proc is not None and proc.poll() is None:
             proc.terminate()
             try:

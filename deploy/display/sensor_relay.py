@@ -3,14 +3,16 @@
 
 The Pico in FRED's stomach reads the ultrasonics + PIR and prints one JSON
 object per line to USB serial (see firmware/pico_sensor_node/main.py). It's
-plugged into *this* Pi, but the app that reacts to sensors runs on the head — so
+plugged into *this* Pi, but the app that reacts to sensors runs on the brain — so
 something has to carry the lines across. That's this: read the tty, POST each
-line to ``http://10.0.0.1:8080/api/sensors/ingest`` over the Bluetooth PAN.
+line to ``http://10.0.0.1:8080/api/sensors/ingest`` over the robot LAN.
 
-The PAN address is the whole reason this design beats putting WiFi on the node:
-the head is *always* 10.0.0.1 on ``pan0``. No DHCP lease to chase, no mDNS, no
-venue network required. It rides inside display_control.py rather than being its
-own service because there's already a supervised, always-on process on this Pi.
+The fixed address is the whole reason this design beats putting WiFi on the node:
+the brain is *always* 10.0.0.1. That was true of the Bluetooth PAN this was
+written for, and it stayed true when the wired LAN replaced it — the NUC serves
+DHCP and keeps .1 for itself, so this line never had to change. No lease to
+chase, no mDNS, no venue network. It rides inside display_control.py rather than
+its own service because there's already a supervised, always-on process on this Pi.
 
 Stdlib only — this Pi has no pyserial and no requests, and a relay this small
 doesn't justify adding them. The tty is configured through ``termios`` and the
@@ -54,15 +56,34 @@ def resolve_port(spec: str = DEFAULT_PORT) -> str:
     the by-id name is derived from the board's flash ID, so it's stable across
     reboots and unambiguous if anything else USB-serial ever shows up. A spec
     containing a glob is expanded; anything else is taken literally.
+
+    The bare ttyACM fallback skips any tty whose by-id name says it is some
+    other board. The cart Pico lives on this same Pi: with the sensor node
+    unplugged, ``auto`` used to take the cart's tty, and every reopen hung up
+    the cart driver's fd too, so the cart dropped its link every ~3 s.
     """
     if spec and spec != "auto":
         matches = sorted(glob.glob(spec))
         return matches[0] if matches else spec
-    for pattern in ("/dev/serial/by-id/*MicroPython*", "/dev/ttyACM*"):
-        matches = sorted(glob.glob(pattern))
-        if matches:
-            return matches[0]
+    matches = sorted(glob.glob("/dev/serial/by-id/*MicroPython*"))
+    if matches:
+        return matches[0]
+    for path in sorted(glob.glob("/dev/ttyACM*")):
+        if not _named_as_other_board(path):
+            return path
     return ""
+
+
+def _named_as_other_board(path: str) -> bool:
+    """True if a by-id symlink points at this tty and doesn't say MicroPython."""
+    try:
+        target = os.path.realpath(path)
+    except OSError:
+        return False
+    for link in glob.glob("/dev/serial/by-id/*"):
+        if os.path.realpath(link) == target and "micropython" not in link.lower():
+            return True
+    return False
 
 
 def open_serial(path: str, baud: int = 115200) -> int:

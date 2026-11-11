@@ -1,0 +1,15 @@
+[Unit]
+Description=Probe fred-panel every 30s; restart after 3 consecutive failures
+
+[Timer]
+# ~90-120s from wedge to recovery: three probes at 30s. Slower than a human
+# with a laptop on a good day, far faster than one discovering the problem
+# mid-demo. OnBootSec is generous — the panel takes a while to come up and a
+# watchdog that restarts a service for being young helps nobody.
+OnBootSec=3min
+OnUnitActiveSec=30s
+AccuracySec=10s
+Unit=fred-panel-watchdog.service
+
+[Install]
+WantedBy=timers.target

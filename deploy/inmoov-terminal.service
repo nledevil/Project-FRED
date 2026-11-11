@@ -20,10 +20,10 @@ Environment=HOME=/home/dietpi
 Environment=TERM=xterm-256color
 Environment=LANG=C.UTF-8
 Environment=PATH=/home/dietpi/.local/bin:/usr/local/bin:/usr/bin:/bin
-# Serves a browser terminal on :7681, HTTP basic-auth (user "inmoov"), attaching
+# Serves a browser terminal on :7681, HTTP basic-auth (user "fred"), attaching
 # a persistent tmux session. --check-origin blocks cross-site websocket hijacking.
 # Do NOT port-forward :7681 to the internet (HTTP basic auth is plaintext).
-ExecStart=/usr/local/bin/ttyd -W -p 7681 -c inmoov:CHANGE_ME -m 3 --check-origin -t fontSize=15 /usr/bin/tmux new-session -A -s claude -c /home/dietpi/inmoov
+ExecStart=/usr/local/bin/ttyd -W -p 7681 -c fred:CHANGE_ME -m 3 --check-origin -t fontSize=15 /usr/bin/tmux new-session -A -s claude -c /home/dietpi/inmoov
 Restart=on-failure
 RestartSec=3
 

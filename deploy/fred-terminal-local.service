@@ -1,0 +1,61 @@
+# Reference copy. The INSTALLED copy lives at /etc/systemd/system/ and has a real
+# password baked into the -c flag — keep that out of git. To install:
+#   sudo cp deploy/fred-terminal-local.service /etc/systemd/system/
+#   sudo sed -i "s/CHANGE_ME/<your password>/" /etc/systemd/system/fred-terminal-local.service
+#   sudo chmod 600 /etc/systemd/system/fred-terminal-local.service
+#   sudo systemctl daemon-reload && sudo systemctl enable --now fred-terminal-local
+# Requires: tmux (apt) and the ttyd x86_64 static binary at /usr/local/bin/ttyd.
+[Unit]
+Description=FRED browser terminal — the NUC brain, local door (ttyd + tmux, :7691)
+After=network-online.target
+Wants=network-online.target
+
+# The SECOND door into the same terminal. fred-terminal.service binds loopback
+# and is published to the tailnet by Tailscale Serve; this one binds every
+# interface and takes a password. Both land in the same tmux session, so it is
+# one terminal with two ways in, not two terminals.
+#
+# This exists because Tailscale is not always there. At a venue with no uplink
+# the NUC cannot reach the coordination server, the tailnet is down, and Serve is
+# not a door at all — which is exactly when you want a shell. A laptop on the
+# `fred` access point has no route to the tailnet either, with or without an
+# uplink. Neither of those can be fixed from the Tailscale side; the answer is a
+# listener that does not involve Tailscale.
+#
+# Basic auth is safe to use HERE and not on the Serve side. The failure that
+# drove fred-terminal.service to header auth is specific to having a proxy in the
+# middle: browsers send cached credentials on the page and on /token but do not
+# reliably attach them to the WebSocket upgrade, so through Serve the page
+# rendered and the terminal then sat at "enter to connect". Hit directly, as this
+# one is, the credentials arrive and it works — which is how all three of these
+# ran before Serve existed.
+#
+# What this port is exposed to: the robot LAN, the access point, the house WiFi,
+# and the tailnet — anywhere the panel itself answers. The password is the only
+# thing in front of a shell as nledevil, so it is not a place for a weak one, and
+# it must never be port-forwarded to the internet: ttyd speaks plain HTTP and
+# basic auth crosses the wire in the clear.
+[Service]
+Type=simple
+User=nledevil
+Group=nledevil
+WorkingDirectory=/home/nledevil/fred/Project-FRED
+Environment=HOME=/home/nledevil
+Environment=TERM=xterm-256color
+Environment=LANG=C.UTF-8
+# /usr/local/bin first: that is where claude lives.
+Environment=PATH=/usr/local/bin:/home/nledevil/.local/bin:/usr/bin:/bin
+# --check-origin blocks cross-site websocket hijacking, and belongs here rather
+# than on the Serve unit: nothing rewrites Host on this path, so the check
+# passes. The panel opens this in a new tab (not an iframe) precisely so it keeps
+# passing.
+#
+# Session name "nuc" matches fred-terminal.service deliberately — -A attaches to
+# the existing session rather than creating a second one, so work started through
+# the tailnet is still on screen when you come back through the access point.
+ExecStart=/usr/local/bin/ttyd -W -p 7691 -c fred:CHANGE_ME -m 3 --check-origin -t fontSize=15 /usr/bin/tmux new-session -A -s nuc -c /home/nledevil/fred/Project-FRED
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

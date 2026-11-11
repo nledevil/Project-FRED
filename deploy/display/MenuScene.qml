@@ -1,0 +1,105 @@
+import QtQuick
+import QtQuick.Layouts
+
+// The settings menu, in the panel app. Geometry matches settings_menu.py's
+// chrome — 56px title bar, an 8px gap, a 30px tab strip — because this has to
+// look like the panel people already know, not like a new one.
+//
+// What is different is that none of it is placed by pixel arithmetic. The tab
+// row cannot fuse with the header and a label cannot overflow its button:
+// spacing and fontSizeMode make those unrepresentable rather than fixed, which
+// is the whole reason this port is worth doing.
+Item {
+    id: root
+    anchors.fill: parent
+
+    readonly property var titles: ["STATUS", "VOICE", "SERVOS", "CART",
+                                   "DISPLAY", "WIFI", "INFO"]
+
+    Rectangle { anchors.fill: parent; color: Th.bg }
+
+    // Locked: the pad covers the menu. The X still works — being unable
+    // to leave a screen you cannot get past would be its own trap.
+    readonly property bool locked: !(P.gateView.unlocked)
+
+    ColumnLayout {
+        anchors.fill: parent
+        spacing: 8
+
+        // ---- title bar ---------------------------------------------------
+        Rectangle {
+            Layout.fillWidth: true
+            Layout.preferredHeight: 56
+            color: Th.panel
+            RowLayout {
+                anchors.fill: parent
+                anchors.leftMargin: 24; anchors.rightMargin: 8
+                anchors.topMargin: 8; anchors.bottomMargin: 8
+                spacing: 8
+                Text {
+                    text: "FRED SETTINGS"; color: Th.ink
+                    font.pixelSize: Th.px["3"]; font.family: Th.font
+                    font.letterSpacing: Th.tracking
+                    Layout.fillWidth: true
+                    verticalAlignment: Text.AlignVCenter
+                }
+                Btn {
+                    label: "POWER"; implicitWidth: 96
+                    visible: !root.locked
+                    onTapped: P.showPower()
+                }
+                Btn {
+                    label: "X"; implicitWidth: 92; big: true
+                    onTapped: P.closeMenu()
+                }
+            }
+        }
+
+        // ---- tabs --------------------------------------------------------
+        RowLayout {
+            visible: !root.locked
+            Layout.fillWidth: true
+            Layout.leftMargin: 24; Layout.rightMargin: 24
+            spacing: 8
+            Repeater {
+                model: root.titles
+                Btn {
+                    objectName: "tab"
+                    fontPx: Th.tabPx
+                    label: modelData
+                    on: index === P.page
+                    Layout.fillWidth: true
+                    implicitHeight: 30
+                    onTapped: P.page = index
+                }
+            }
+        }
+
+        // ---- the page ----------------------------------------------------
+        Loader {
+            Layout.fillWidth: true; Layout.fillHeight: true
+            Layout.leftMargin: 24; Layout.rightMargin: 24
+            Layout.bottomMargin: 12
+            sourceComponent: root.locked ? pinGate
+                           : P.page === 0 ? statusPage
+                           : P.page === 1 ? voicePage
+                           : P.page === 2 ? servosPage
+                           : P.page === 3 ? cartPage
+                           : P.page === 4 ? displayPage
+                           : P.page === 5 ? wifiPage
+                           : infoPage
+        }
+    }
+
+    Component { id: statusPage; StatusPage {} }
+    Component { id: voicePage;  VoicePage {} }
+    Component { id: infoPage;   InfoPage {} }
+    Component { id: displayPage; DisplayPage {} }
+    Component { id: servosPage; ServosPage {} }
+    Component { id: cartPage;   CartPage {} }
+    Component { id: wifiPage;   WifiPage {} }
+    Component { id: pinGate;    PinGate {} }
+
+
+    PowerMenu { anchors.fill: parent }
+}

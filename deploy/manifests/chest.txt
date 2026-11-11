@@ -1,0 +1,140 @@
+# Chest Pi — 7" DSI panel, the stomach sensor node, the cart's Pico.
+#
+# This machine is stdlib-only on purpose: it has no pip and no ensurepip, and
+# nothing here imports the inmoov/ package. Keep it that way — the moment a file
+# here needs a dependency, it stops being installable on this Pi.
+#
+# flatten: yes -> everything lands directly in <root>, no subdirectories. That
+# matches how it is already deployed, and display_control.py imports its
+# siblings by adding its own directory to sys.path.
+
+root: /home/dietpi/display
+flatten: yes
+
+# --- supervisor + control API -----------------------------------------------
+deploy/display/display_control.py
+deploy/service-watchdog.sh
+deploy/display/display-watchdog.service
+deploy/display/display-watchdog.timer
+deploy/display/inmoov-display.service
+
+# --- framebuffer animations -------------------------------------------------
+deploy/display/fb.py
+deploy/display/font5x7.py
+deploy/display/reactor.py
+deploy/display/flux.py
+deploy/display/face.py
+deploy/display/voice_state.py
+deploy/display/metrics_hud.py
+
+# --- the settings menu, a scene of the panel app ----------------------------
+# cog_hud is drawn into the panel's overlay texture over every look; the panel
+# handles its own cog, and the daemon's watcher covers only a blank or latched
+# screen. The page_*.py files carry no drawing since the
+# numpy menu retired — they are the menu's judgements, served to the QML as
+# data, and net_snapshot is the poller those judgements read from.
+deploy/display/cog_hud.py
+deploy/display/backlight.py
+deploy/display/touch.py
+deploy/display/theme.py
+deploy/display/net_snapshot.py
+deploy/display/power_menu.py
+deploy/display/pin_gate.py
+deploy/display/page_status.py
+deploy/display/page_voice.py
+deploy/display/page_servos.py
+deploy/display/page_cart.py
+deploy/display/page_display.py
+deploy/display/page_info.py
+deploy/display/page_wireless.py
+
+# --- GPU animations ---------------------------------------------------------
+# Every look runs as a fragment shader now; the numpy modules are kept as the
+# reference tools/verify_shaders.py checks them against. The .qsb files are
+# baked from the .frag on this Pi at first run and are git-ignored.
+deploy/display/panel.py
+deploy/display/panel.qml
+deploy/display/AboutCard.qml
+deploy/display/PictureCard.qml
+deploy/display/MenuScene.qml
+deploy/display/Btn.qml
+deploy/display/StatusPage.qml
+deploy/display/InfoPage.qml
+deploy/display/VoicePage.qml
+deploy/display/DisplayPage.qml
+deploy/display/ServosPage.qml
+deploy/display/CartPage.qml
+deploy/display/WifiPage.qml
+deploy/display/UplinkView.qml
+deploy/display/Keyboard.qml
+deploy/display/PinGate.qml
+deploy/display/PowerMenu.qml
+deploy/display/gpu_anim.py
+deploy/display/anim.qml
+deploy/display/fonts/ttf/Rajdhani-Medium.ttf
+deploy/display/fonts/ttf/Orbitron[wght].ttf
+deploy/display/fonts/ttf/Exo2[wght].ttf
+deploy/display/shaders/reactor.frag
+deploy/display/shaders/flux.frag
+deploy/display/shaders/face.frag
+deploy/display/shaders/voice_hud.frag
+deploy/display/tools/verify_shaders.py
+
+# --- voice HUD reference ------------------------------------------------------
+# The readable definition of the picture; the shader above is what runs, and
+# panel.py imports this for the word and envelope textures it hands the GPU.
+deploy/display/voice_hud.py
+deploy/display/tools/test_menu_logic.py
+deploy/display/tools/test_panel_views.py
+deploy/display/tools/test_voice_hud_shader.py
+deploy/display/tools/test_visitor_attract.py
+deploy/display/tools/render_anims.py
+deploy/display/tools/test_fb_pack.py
+deploy/display/tools/test_touch_map.py
+
+# --- cart bring-up: the real Pico, not the simulated one -----------------
+deploy/display/tools/ps2_probe.py
+deploy/display/tools/watch_cart.py
+
+# --- sensor relay + drive base ----------------------------------------------
+deploy/display/sensor_relay.py
+deploy/display/cart_driver.py
+deploy/display/gamepad.py
+
+# --- the tool that flashes the sensor node ----------------------------------
+# push.py is a stdlib stand-in for `mpremote cp` — it exists precisely because
+# this Pi cannot pip install one, and the Pico it flashes is plugged in here.
+#
+# The firmware itself is deliberately NOT shipped. This directory is flattened,
+# and `main.py` is far too generic a name to drop beside the animations — and
+# `push.py --target` defaults to the *local* basename, so renaming it would
+# quietly flash the board under the wrong name and stop MicroPython running it
+# at boot. Copy it over at flash time instead, which is a rare operation:
+#
+#   scp firmware/pico_sensor_node/main.py dietpi@10.0.0.11:/tmp/
+#   ssh dietpi@10.0.0.11 'sudo systemctl stop inmoov-display &&
+#       cd ~/display && python3 push.py /tmp/main.py &&
+#       sudo systemctl start inmoov-display'
+firmware/pico_sensor_node/push.py
+
+# --- diagnostics ------------------------------------------------------------
+deploy/vcgencmd_power_report.sh
+
+# --- never touch ------------------------------------------------------------
+# state.json: the animation pick, persisted across reboots.
+keep: state.json
+# The cached panel PIN (salt + digest), pushed by the brain when it
+# changes. Never deployed: it is per-robot state, not source.
+keep: pin.json
+keep: child-stderr.log
+# The last picture the brain sent for the screen (FRED painting on request).
+keep: pictures
+keep: __pycache__
+# The push-role stamp: git rev + date of the last sync, reported by /api/state.
+keep: DEPLOYED
+# Compiled shaders, built on the Pi from the .frag sources next to them.
+# Artifacts, not source.
+keep: face.frag.qsb
+keep: flux.frag.qsb
+keep: reactor.frag.qsb
+keep: voice_hud.frag.qsb

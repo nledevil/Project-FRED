@@ -1,264 +1,265 @@
-"""Host-side driver for the FRED-Cart hoverboard base, vision-governed.
+"""The brain's client for the hoverboard cart on the chest Pi.
 
-The cart (see the Project-FRED-Cart repo) is a Pico that owns the hoverboard
-mainboard; this host talks to it over USB serial with a deliberately tiny text
-protocol:
+The cart's Pico hangs off the chest Pi (see deploy/display/cart_driver.py); this
+is the deciding end of that link, and it is the same shape as display.py — short
+timeouts, never raises into the web app, the base is not a dependency of the
+robot standing still.
 
-    "<steer> <speed>\\n"   drive command (ignored while a PS2 controller is on)
-    "x\\n"                 stop — always honoured
+One thing here is genuinely different from every other client in this package,
+and it is deliberate: **a single call cannot make the cart move for long.** The
+chest Pi stops the cart if it does not hear a fresh command within its watchdog
+window, so motion only continues while something keeps asking. That means:
 
-The Pico stops on its own after **2 s of host silence**, and the mainboard
-stops if the Pico's stream dies — so this driver's keepalive thread re-sends
-the current command at 10 Hz, and simply *going quiet* is itself a stop. The
-PS2 controller always outranks us: an operator grabbing the controller takes
-the cart away mid-move, which is the desired failure mode around people.
+* Teleop is naturally safe. The panel's joystick posts while it is held; let go,
+  close the tab, walk out of WiFi range, and the cart stops on its own.
+* Anything programmatic has to opt into a *duration*. ``nudge()`` is the only
+  way to move without a human holding something down, and it takes a bounded
+  time, runs the repeat loop itself, and stops at the end. There is no API here
+  for "start moving and return" — that shape is how robots get away from you.
 
-**Every command passes through the safety governor.** ``guard_cb`` (wired to
-``SurroundVision.nav_assess``) is consulted on every keepalive tick — not just
-when a command arrives — so a person stepping into the path *mid-move* scales
-the speed down or stops the cart within a tick, whatever the original command
-said. The governor can only ever reduce speed, never add motion.
-
-Commands also carry a **time-to-live** (default 1 s): motion decays to a stop
-unless the caller keeps renewing it. A web slider held down or an autonomy
-loop refreshes naturally; a crashed caller, a dropped WiFi panel, or a
-one-shot LLM tool call cannot leave the cart driving.
-
-Degrades gracefully, same as every wrapper here: no pyserial or no Pico →
-mock mode, commands are printed instead of sent, and the whole governor path
-still runs — which is how this gets developed before the cart is plugged in.
+Only one motion runs at a time: a new nudge cancels the one in flight, so
+"forward" immediately after "left" does what you meant rather than fighting.
 """
 from __future__ import annotations
 
 import threading
 import time
 
-try:
-    import serial  # pyserial — shared with the sensor-node reader
-    _SERIAL_ERR = None
-except Exception as exc:  # noqa: BLE001
-    serial = None
-    _SERIAL_ERR = exc
+import requests
 
-# Firmware full scale is ±1000, but ~150 is already walking pace (~73 wheel
-# RPM measured) and this base shares floors with children. Hard caps here,
-# beneath whatever the caller asks for; the Pico ramps, so no lurching.
-SPEED_CAP = 250
-STEER_CAP = 400
-KEEPALIVE_HZ = 10.0
-DEFAULT_TTL = 1.0        # seconds a command survives without renewal
+# Matches cart_driver / the Pico firmware. Mirrored so the head can describe the
+# range without a round trip; the chest clamps regardless.
+STEER_LIMIT = 250
+SPEED_LIMIT = 300
+
+SEND_HZ = 10.0                # how fast nudge() repeats; must beat the watchdog
+MAX_NUDGE_S = 5.0             # hard ceiling on one programmatic move
 
 
-class Cart:
-    """Serial link to the cart Pico: governed drive commands + status."""
+class CartError(Exception):
+    """The cart is unreachable, disabled, or refusing to move."""
 
-    def __init__(self, port: str = "/dev/ttyACM1", baud: int = 115200,
-                 guard_cb=None, log=None, max_speed: int = 150,
-                 max_steer: int = 300, enabled: bool = False):
-        self._port = str(port)
-        self._baud = int(baud)
-        # guard_cb(speed:int) -> {"factor": 0..1, "why": str} — SurroundVision.
-        self._guard_cb = guard_cb
-        self._log = log
-        self.enabled = bool(enabled)      # master switch, persisted in settings
-        self.max_speed = min(SPEED_CAP, abs(int(max_speed)))
-        self.max_steer = min(STEER_CAP, abs(int(max_steer)))
 
-        self._ser = None
-        self._mock = serial is None
-        self._lock = threading.Lock()     # guards _ser + targets
-        self._steer = 0
-        self._speed = 0
-        self._until = 0.0                 # monotonic deadline for the command
-        self._governed = 0                # last speed actually sent
-        self._guard = {"factor": 1.0, "why": ""}
-        self._last_feedback = ""          # latest raw line back from the Pico
-        self._error = ""
-        self._thread: threading.Thread | None = None
-        self._stop_evt = threading.Event()
+class CartClient:
+    """Talks to the cart driver on the chest Pi."""
 
-    # ---- capability / status ----------------------------------------------
-    def available(self) -> bool:
-        return self.enabled
+    def __init__(self, host: str = "", port: int = 8081, token: str = "",
+                 timeout: float = 2.0):
+        self.host = host
+        self.port = port
+        self.token = token
+        self.timeout = timeout
+        self._lock = threading.Lock()
+        self._motion: threading.Thread | None = None
+        self._cancel = threading.Event()
+        # Audit (dry run): drive commands are acknowledged but never sent. Stops
+        # are deliberately NOT suppressed — see stop().
+        self._audit = False
+        # An optional extra speed cap on top of STEER_LIMIT/SPEED_LIMIT, set by
+        # whoever owns policy (web/app.py, from event mode). None = firmware
+        # limits only. Callable so it stays live; see _ceiling().
+        self.speed_ceiling = None
+        # The 360 camera's say over speed: guard(speed) -> {"factor": 0..1,
+        # "why": str}, or None for no opinion (surround vision not watching).
+        # SurroundVision.nav_assess, wired in web/app.py. Asked on every drive,
+        # and nudge() and the joystick both drive at ~10 Hz, so a person
+        # stepping into the path mid-move slows or stops the cart within a
+        # tick. It can only ever take speed away. last_guard is what it said.
+        self.guard = None
+        self.last_guard: dict = {"factor": 1.0, "why": ""}
 
-    def status(self) -> dict:
-        with self._lock:
-            connected = self._ser is not None
-            return {"enabled": self.enabled, "connected": connected,
-                    "mock": self._mock or not connected,
-                    "port": self._port, "steer": self._steer, "speed": self._speed,
-                    "governed_speed": self._governed,
-                    "guard": dict(self._guard),
-                    "ttl_left": round(max(0.0, self._until - time.monotonic()), 2),
-                    "feedback": self._last_feedback, "error": self._error}
+    def configure(self, host: str | None = None, port: int | None = None,
+                  token: str | None = None) -> None:
+        if host is not None:
+            self.host = host.strip()
+        if port is not None:
+            self.port = int(port)
+        if token is not None:
+            self.token = token
 
-    # ---- lifecycle ---------------------------------------------------------
-    def start(self) -> bool:
-        """Open the link and start the keepalive loop. Safe to call again."""
-        if not self.enabled:
-            return False
-        with self._lock:
-            if self._thread is not None and self._thread.is_alive():
-                return True
-            self._stop_evt.clear()
-            self._thread = threading.Thread(target=self._run, name="cart",
-                                            daemon=True)
-            self._thread.start()
-        return True
+    def configured(self) -> bool:
+        return bool(self.host)
 
-    def shutdown(self) -> None:
-        """Stop the cart and the loop (app exit / disable toggle)."""
-        self.stop()
-        self._stop_evt.set()
-        t = self._thread
-        if t is not None:
-            t.join(timeout=2.0)
-        with self._lock:
-            self._thread = None
-            if self._ser is not None:
-                try:
-                    self._ser.close()
-                except Exception:  # noqa: BLE001
-                    pass
-                self._ser = None
+    # -- transport ---------------------------------------------------------
+    def _request(self, method: str, path: str, payload: dict | None = None) -> dict:
+        if not self.configured():
+            raise CartError("no cart configured")
+        headers = {"X-Display-Token": self.token} if self.token else {}
+        try:
+            r = requests.request(method, f"http://{self.host}:{self.port}{path}",
+                                 json=payload, headers=headers, timeout=self.timeout)
+        except requests.RequestException as e:
+            raise CartError(f"cannot reach the cart at {self.host}:{self.port}") from e
+        try:
+            data = r.json()
+        except ValueError:
+            raise CartError(f"cart returned non-JSON (HTTP {r.status_code})") from None
+        if r.status_code >= 400:
+            raise CartError(data.get("error") or f"cart error (HTTP {r.status_code})")
+        return data
 
-    def set_port(self, port: str) -> None:
-        """Point at a different serial device; the keepalive loop reconnects."""
-        with self._lock:
-            self._port = str(port)
-            if self._ser is not None:
-                try:
-                    self._ser.close()
-                except Exception:  # noqa: BLE001
-                    pass
-                self._ser = None
+    # -- state -------------------------------------------------------------
+    def state(self) -> dict:
+        return self._request("GET", "/api/cart")
 
-    def set_limits(self, max_speed: int | None = None,
-                   max_steer: int | None = None) -> None:
-        """Adjust the operator caps, still bounded by the hard module caps."""
-        if max_speed is not None:
-            self.max_speed = min(SPEED_CAP, abs(int(max_speed)))
-        if max_steer is not None:
-            self.max_steer = min(STEER_CAP, abs(int(max_steer)))
+    # -- audit (dry run) ---------------------------------------------------
+    def is_audit(self) -> bool:
+        return self._audit
 
-    # ---- commands -----------------------------------------------------------
-    def drive(self, steer: int, speed: int, ttl: float = DEFAULT_TTL) -> dict:
-        """Set the motion target (renew before ``ttl`` expires to keep moving).
+    def set_audit(self, on: bool) -> None:
+        """Turn audit mode on/off. Any nudge in flight is cancelled and the cart
+        is really stopped on the way in, so nothing keeps rolling on a watchdog
+        the audit is no longer feeding. Idempotent."""
+        on = bool(on)
+        if on == self._audit:
+            return
+        if on and self.configured():
+            try:
+                self.stop()                 # real stop, before drives go quiet
+            except CartError:
+                pass                        # unreachable: the watchdog has it anyway
+        self._audit = on
 
-        Clamped to the configured caps, then governed live by the vision guard.
-        Returns the status dict so callers can see what the governor did.
+    # -- motion ------------------------------------------------------------
+    def _ceiling(self) -> int | None:
+        """The current extra speed cap, or None for the firmware's own limits.
+
+        Held as a callable rather than a number so a live switch cannot go stale
+        here: event mode is flipped from the panel mid-event, and a copy taken
+        at construction would keep driving at workshop speed in a hall full of
+        children. See inmoov/event.py and where app.py assigns this.
         """
-        if not self.enabled:
-            return self.status()
-        self.start()
-        with self._lock:
-            self._steer = max(-self.max_steer, min(self.max_steer, int(steer)))
-            self._speed = max(-self.max_speed, min(self.max_speed, int(speed)))
-            self._until = time.monotonic() + max(0.1, min(5.0, float(ttl)))
-        return self.status()
+        source = self.speed_ceiling
+        if source is None:
+            return None
+        try:
+            value = source() if callable(source) else source
+        except Exception:                       # noqa: BLE001 - never block a drive
+            return None
+        return int(value) if value else None
 
-    def stop(self) -> dict:
-        """Zero the target and send the always-honoured 'x' immediately."""
-        with self._lock:
-            self._steer = self._speed = 0
-            self._until = 0.0
-            self._governed = 0
-        self._send_line("x")
-        return self.status()
+    def _governed(self, speed: int) -> int:
+        """``speed`` scaled by the guard. A guard that raises stops the cart:
+        a broken safety check must fail safe, not wave everything through."""
+        if self.guard is None or not speed:
+            return speed
+        try:
+            g = self.guard(speed)
+        except Exception as exc:                # noqa: BLE001 - fail SAFE
+            g = {"factor": 0.0, "why": f"guard error: {exc}"}
+        if not g:
+            self.last_guard = {"factor": 1.0, "why": ""}
+            return speed
+        factor = max(0.0, min(1.0, float(g.get("factor", 1.0))))
+        self.last_guard = {"factor": factor, "why": str(g.get("why") or "")}
+        return int(speed * factor)
 
-    # ---- the loop -----------------------------------------------------------
-    def _run(self) -> None:
-        period = 1.0 / KEEPALIVE_HZ
-        while not self._stop_evt.is_set():
-            t0 = time.monotonic()
-            self._connect_if_needed()
-            with self._lock:
-                steer, speed = self._steer, self._speed
-                expired = t0 >= self._until
-            if expired and (steer or speed):
-                with self._lock:            # TTL ran out: decay to a stop
-                    self._steer = self._speed = 0
-                steer = speed = 0
-            # Governor: consult the 360 camera every tick, moving or not-yet-
-            # moving, so the factor in status() is always current.
-            guard = {"factor": 1.0, "why": ""}
-            if self._guard_cb is not None and speed != 0:
+    def drive(self, steer, speed) -> dict:
+        """One command. Authority expires at the chest's watchdog unless repeated.
+
+        This is what the panel's joystick calls on every tick. Callers that are
+        not a human holding a control should use nudge() instead.
+
+        The cap is applied *here* rather than in nudge(), because nudge() calls
+        this — so every path out of this class passes through one clamp, and a
+        caller added later cannot route around it by accident.
+        """
+        cap = self._ceiling()
+        if cap is not None:
+            # Steer as well as speed: a fast spin next to a child is exactly as
+            # bad as a fast run at one, and capping only forward motion would
+            # have left the sharpest thing this base does uncapped.
+            steer = max(-cap, min(int(steer), cap))
+            speed = max(-cap, min(int(speed), cap))
+        speed = self._governed(int(speed))
+        if self._audit:
+            # Acknowledge without sending: nudge() checks this reply for an error
+            # before it spawns, and the joystick expects a dict back every tick.
+            return {"audit": True, "steer": steer, "speed": speed}
+        return self._request("POST", "/api/cart/drive",
+                             {"steer": steer, "speed": speed})
+
+    def stop(self, estop: bool = False) -> dict:
+        """Stop now, cancelling any nudge in flight.
+
+        Never suppressed by audit mode. A stop that doesn't reach the hardware is
+        the one failure this class must not have — and since audit never sends a
+        drive, a stop it doesn't need is harmless.
+        """
+        self._cancel.set()
+        return self._request("POST", "/api/cart/stop", {"estop": bool(estop)})
+
+    def clear_estop(self) -> dict:
+        return self._request("POST", "/api/cart/stop", {"clear_estop": True})
+
+    def set_controller_mode(self, mode: str) -> dict:
+        """Choose who may drive: ``off``, ``takeover`` or ``only``.
+
+        Not suppressed by audit mode: this decides who is *allowed* to move the
+        cart, it does not move it. Refusing to record that during a dry run
+        would leave the panel showing a mode the chest never adopted.
+        """
+        return self._request("POST", "/api/cart/controller", {"mode": str(mode)})
+
+    def nudge(self, steer, speed, seconds: float) -> dict:
+        """Move for ``seconds``, then stop. The only programmatic way to move.
+
+        Repeats the command at SEND_HZ for the duration — which is what keeps
+        the chest's watchdog satisfied — and always issues a stop at the end,
+        including if the caller cancels or the link fails partway through.
+
+        Returns as soon as the motion is *started*, so a spoken reply isn't held
+        up for the whole move; the caller gets told what was started, and the
+        cart stops on its own regardless of what happens up here.
+        """
+        seconds = max(0.1, min(float(seconds), MAX_NUDGE_S))
+        steer = max(-STEER_LIMIT, min(int(steer), STEER_LIMIT))
+        speed = max(-SPEED_LIMIT, min(int(speed), SPEED_LIMIT))
+
+        first = self.drive(steer, speed)        # fail fast, before spawning
+        if first.get("error"):
+            raise CartError(first["error"])
+
+        with self._lock:
+            self._cancel.set()                  # retire whatever was running
+            if self._motion and self._motion.is_alive():
+                self._motion.join(timeout=1.0)
+            self._cancel = threading.Event()
+            cancel = self._cancel
+            t = threading.Thread(target=self._run_motion,
+                                 args=(steer, speed, seconds, cancel),
+                                 name="cart-nudge", daemon=True)
+            self._motion = t
+            t.start()
+
+        out = dict(first)
+        out["seconds"] = seconds
+        return out
+
+    def _run_motion(self, steer: int, speed: int, seconds: float,
+                    cancel: threading.Event) -> None:
+        deadline = time.monotonic() + seconds
+        period = 1.0 / SEND_HZ
+        try:
+            while not cancel.is_set() and time.monotonic() < deadline:
+                if cancel.wait(period):
+                    break
                 try:
-                    g = self._guard_cb(speed)
-                    if isinstance(g, dict):
-                        guard = {"factor": float(g.get("factor", 1.0)),
-                                 "why": str(g.get("why", ""))}
-                except Exception as exc:  # noqa: BLE001 - a broken guard must FAIL SAFE
-                    guard = {"factor": 0.0, "why": f"guard error: {exc}"}
-            governed = int(speed * max(0.0, min(1.0, guard["factor"])))
-            with self._lock:
-                was = self._guard
-                self._guard = guard
-                self._governed = governed
-            if guard["why"] and guard["why"] != was.get("why") and self._log:
-                self._log.event(f"🛞 Cart governor: {guard['why']}"
-                                + (" — stopping" if governed == 0 else " — slowing"))
-            self._send_line(f"{steer} {governed}" if (steer or governed) else "0 0")
-            self._read_feedback()
-            dt = time.monotonic() - t0
-            if dt < period:
-                self._stop_evt.wait(period - dt)
-        self._send_line("x")               # loop exiting: leave the cart stopped
-
-    def _connect_if_needed(self) -> None:
-        if serial is None:
-            return
-        with self._lock:
-            if self._ser is not None:
-                return
-        try:
-            ser = serial.Serial(self._port, self._baud, timeout=0.05,
-                                write_timeout=0.2)
-            with self._lock:
-                self._ser = ser
-                self._error = ""
-            print(f"[Cart] connected to {self._port} @ {self._baud}")
-        except (OSError, serial.SerialException) as exc:
-            with self._lock:
-                if not self._error:
-                    print(f"[Cart] {self._port} unavailable ({exc}) — mock mode "
-                          f"until it appears")
-                self._error = str(exc)
-
-    def _send_line(self, line: str) -> None:
-        with self._lock:
-            ser = self._ser
-        if ser is None:
-            # Mock: log only *changes* so a bench run isn't 10 Hz of spam.
-            if line != getattr(self, "_mock_last", None):
-                self._mock_last = line
-                if line not in ("0 0", "x"):
-                    print(f"[Cart mock] -> {line}")
-            return
-        try:
-            ser.write((line + "\n").encode("ascii"))
-        except (OSError, serial.SerialException) as exc:
-            with self._lock:
-                self._error = str(exc)
+                    self.drive(steer, speed)
+                except CartError:
+                    # The link went away. Stop trying — and note that the cart is
+                    # already stopping on its own: the chest's watchdog expires
+                    # in well under a second without us. That is the whole point
+                    # of putting the watchdog down there.
+                    return
+        finally:
+            if not cancel.is_set():
                 try:
-                    ser.close()
-                except Exception:  # noqa: BLE001
-                    pass
-                self._ser = None               # keepalive loop reconnects
+                    self.stop()
+                except CartError:
+                    pass                        # the watchdog has it
 
-    def _read_feedback(self) -> None:
-        """Drain whatever the Pico printed (debug/feedback lines) non-blockingly;
-        keep the last line for the panel. Its absence is fine — the Pico only
-        prints when something changes or debug output is on."""
+    def busy(self) -> bool:
+        """True while a nudge is still running."""
         with self._lock:
-            ser = self._ser
-        if ser is None:
-            return
-        try:
-            while ser.in_waiting:
-                line = ser.readline().decode("utf-8", "replace").strip()
-                if line:
-                    with self._lock:
-                        self._last_feedback = line
-        except (OSError, serial.SerialException):
-            pass                                # unplug is handled by the writer
+            return bool(self._motion and self._motion.is_alive())

@@ -1,0 +1,322 @@
+#!/usr/bin/env python3
+"""Check the panel PIN: the digest, the rate limiting, and which routes it gates.
+
+The last of those is the part most worth testing. A PIN is only as good as the
+list of things behind it, and that list is 25 decorators spread over a thousand
+lines of app.py — exactly the kind of thing that silently loses an entry. So
+this asserts the whole split explicitly, in both directions: everything that
+moves him is gated, and the things deliberately left open (status, the camera,
+speech, and above all the cart's STOP) still answer without a PIN.
+
+    python3 tools/test_auth.py
+
+Exits non-zero on the first failure.
+"""
+from __future__ import annotations
+
+import re
+import sys
+import time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+from inmoov import auth                                  # noqa: E402
+
+FAILURES: list[str] = []
+
+
+def check(label: str, ok: bool, detail: str = ""):
+    print(f"  {'PASS' if ok else 'FAIL'}  {label}" + (f"  ({detail})" if detail else ""))
+    if not ok:
+        FAILURES.append(label)
+
+
+# Every route that must require the PIN, and every route that must not. Written
+# out rather than derived, so that adding an endpoint and forgetting to decide
+# about it shows up here as an unlisted route instead of a silent default.
+#
+# A path is listed once, by verb-union: several routes here answer an open GET
+# and a gated POST on the same path (/api/voice, /api/sound/volume), because
+# reading what he is doing and changing it are different questions. Listing such
+# a path under GATED asserts the *write* is behind the PIN, which is the half
+# that can be got wrong silently.
+GATED = [
+    "/api/settings", "/api/brain", "/api/audit",
+    # Event mode relaxes as well as tightens: switching it off puts the cart's
+    # speed ceiling back up, which is not a thing a passer-by should be able to
+    # do to a 350 lb machine in a room full of children.
+    "/api/event",
+    # Powering the brain down mid-demo is the most disruptive thing a stranger
+    # on the access point could do with one request.
+    "/api/poweroff",
+    "/api/cart/drive", "/api/cart/controller", "/api/hotspot",
+    "/api/display", "/api/display/metrics", "/api/display/sleep", "/api/led",
+    "/api/track",
+    # FRED painting on request. The prompt is something a visitor said to him
+    # (the transcript's class), and asking costs cores or money.
+    "/api/picture", "/api/picture/latest.png", "/api/picture/clear",
+    "/api/voice", "/api/command", "/api/log/clear", "/api/move", "/api/rest",
+    "/api/relax", "/api/record", "/api/channel", "/api/identify", "/api/save",
+    # The arm boards: all of it moves him or decides what will. The kill is
+    # gated too, unlike the cart's STOP — these servos hold when their signal
+    # is cut, so a kill halts a move rather than dropping an arm, and the page
+    # it lives on is already behind the PIN.
+    "/api/servo_boards", "/api/servo_boards/<uid>/side",
+    "/api/servo_boards/<uid>/assign", "/api/servo_boards/<uid>/identify",
+    "/api/servo_boards/<uid>/limits", "/api/servo_boards/<uid>/tune",
+    "/api/servo_boards/<uid>/rest", "/api/servo_boards/<uid>/kill",
+    "/api/servo_boards/relax", "/api/servo_boards/stop",
+    "/api/camera", "/api/sounds/terminator/upload", "/api/sounds/terminator/delete",
+    "/api/auth/pin", "/api/auth/pin/clear",
+    # The AP password is the outermost credential on the robot now that
+    # the access point comes up at boot with a route to the internet.
+    "/api/hotspot/config",
+    # Joining someone else's WiFi is the same class of thing as configuring the
+    # AP: it moves the robot onto a network, and forgetting one can strand him
+    # at a venue. The scan is gated too — it sweeps the band for 40 s, so it is
+    # a way to make him unresponsive as much as it is a way to read the room.
+    "/api/uplink/scan", "/api/uplink/join", "/api/uplink/forget",
+    # Editing the deck changes what a one-tap button will make him say in front
+    # of a crowd. Reading it is open, below.
+    "/api/phrases/add", "/api/phrases/remove",
+    # What people said to him. Bystander speech is never logged, but this is
+    # still a record of visitors' voices and belongs behind the PIN.
+    "/api/heard", "/api/heard.jsonl",
+    # Playing a sound is open; choosing how loud everything is, is not. Zero is
+    # a mute that looks like broken hardware to whoever is standing there, and
+    # full scale in a hall is its own disruption. Reading it stays open.
+    "/api/sound/volume",
+    # Reading which way a voice came from is open — it is a sensor, like
+    # /api/sensors. Writing is not: the same POST carries the calibration, and a
+    # wrong "forward" sends the head chasing the opposite side of the room.
+    "/api/mic",
+    # The switch that lets him run commands because somebody spoke to him. This
+    # gate is the whole security boundary of diagnostic mode — see
+    # inmoov/diagnostic.py — so if this line ever stops asserting, the mode is
+    # one unauthenticated POST away from on. Reading the state stays open: what
+    # he has run is worth being able to see without a PIN.
+    "/api/diagnostic",
+    # Cuts power to a USB port. Reached over HTTP, but it is a physical act.
+    "/api/camera/wide/reset",
+    # The 360 camera: reading is open like the other cameras' state; the
+    # writes re-zero which way is forward and switch surround vision, which
+    # also governs the cart's speed.
+    "/api/camera360", "/api/surround",
+]
+OPEN = [
+    "/api/cart/stop",       # never, ever gated
+    # /api/say is open by decorator, gated by hand inside: the phrase deck's
+    # lines pass without a PIN (they were chosen by the operator, and the deck
+    # is a one-tap event flow), free-form text does not — a stranger on the AP
+    # must not put words in a robot's mouth in front of children. The parser
+    # below cannot see a conditional gate, so the condition is asserted
+    # separately in "what leaves the LAN".
+    "/api/say", "/api/sound/play", "/api/sound/stop",
+    "/api/state", "/api/health", "/api/positions", "/api/mouth", "/api/log",
+    "/api/sensors/ingest", "/api/auth/login", "/api/auth/logout",
+    # Read-only views of live state, and the sound board.
+    "/api/cart", "/api/sensors", "/api/sounds", "/api/display/animations",
+    "/api/sounds/terminator", "/api/sounds/terminator/play",
+    # /api/auth has to answer before the page has a PIN to answer with, and
+    # /api/auth/material guards itself by address rather than by session --
+    # a session must never be able to fetch the digest.
+    "/api/auth", "/api/auth/material",
+    # Identity, not control: hostnames, addresses, uptimes and the git
+    # revision, none of which is a secret and all of which is already
+    # implied by /api/state. Kept open so the chest panel can show it
+    # without a session it has no way to obtain.
+    "/api/whoami",
+    # Which port this browser should open the terminals on. The URLs are not
+    # the secret -- the terminals authenticate for themselves, and both doors
+    # are on ports a scan of this host would find anyway. Gating it would also
+    # be backwards: the AP guest who cannot reach the tailnet door is exactly
+    # the one who needs to be told about the other one.
+    "/api/terminals",
+    # Reading the deck is open like the transcript is: the panel has to render
+    # the buttons before anyone has typed a PIN, and /api/say — which is what a
+    # deck button actually calls — is deliberately open anyway.
+    "/api/phrases",
+    # Which network he has joined, and the names of the ones he remembers. No
+    # passwords: the helper's saved() returns access-point keys only. Open for
+    # the same reason /api/whoami is — the chest panel shows it and has no
+    # session to obtain, and an empty WiFi page at a venue reads as broken.
+    "/api/uplink",
+]
+
+
+def route_map() -> dict:
+    """Which decorators sit on each route, read off app.py's source.
+
+    Parsed rather than imported: importing app.py builds a servo controller, a
+    camera and an assistant, which is a lot of hardware to stand up to find out
+    whether a decorator is present.
+    """
+    src = (ROOT / "web" / "app.py").read_text()
+    routes: dict[str, set] = {}
+    pattern = re.compile(r'^@app\.(get|post)\("([^"]+)"\)\n((?:@\w+\n)*)', re.M)
+    for verb, path, decorators in pattern.findall(src):
+        routes.setdefault(path, set()).update(
+            d.strip() for d in decorators.split("\n") if d.strip())
+    return routes
+
+
+def main() -> int:
+    print("the digest")
+    material = auth.make_material("1234")
+    check("a stored PIN is a salt and a digest, never the PIN",
+          "1234" not in str(material), str(material)[:60])
+    check("the right PIN verifies", auth.check_pin({"auth": {"pin": material}}, "1234"))
+    check("a wrong PIN does not", not auth.check_pin({"auth": {"pin": material}}, "1235"))
+    check("two identical PINs get different salts",
+          auth.make_material("1234")["salt"] != material["salt"])
+    check("no PIN set means nothing is gated", not auth.is_set({}))
+    check("a PIN set is reported as set", auth.is_set({"auth": {"pin": material}}))
+    for bad in ("123", "12345", "abcd", "", None, "12 4", "١٢٣٤"):
+        check(f"{bad!r} is not a valid PIN", not auth.normalise(bad))
+    check("'0000' is a valid PIN", auth.normalise("0000") == "0000")
+
+    print("who is asking")
+    settings = {"auth": {"pin": material}}
+    for addr in ("10.0.0.10", "10.0.0.11", "127.0.0.1", "::1"):
+        check(f"{addr} is the robot's own LAN", auth.is_trusted(addr, settings))
+    for addr in ("192.168.50.24", "192.168.68.15", "8.8.8.8", "", "not-an-ip"):
+        check(f"{addr!r} is not trusted", not auth.is_trusted(addr, settings))
+
+    print("rate limiting")
+    addr = "192.168.50.99"
+    check("a fresh address may try", auth.locked_for(addr) == 0.0)
+    for i in range(auth.FREE_TRIES):
+        auth.note_failure(addr)
+    check(f"{auth.FREE_TRIES} wrong tries are still free", auth.locked_for(addr) == 0.0)
+    wait = auth.note_failure(addr)
+    check("the next one starts the wait", wait > 0, f"{wait:.0f}s")
+    check("...and it is enforced", auth.locked_for(addr) > 0)
+    longer = auth.note_failure(addr)
+    check("the wait doubles", longer > wait, f"{wait:.0f}s -> {longer:.0f}s")
+    capped = wait
+    for _ in range(20):
+        capped = auth.note_failure(addr)
+    check("the wait is capped", capped == auth.LOCK_MAX_S, f"{capped:.0f}s")
+    auth.note_success(addr)
+    check("a correct PIN clears the record", auth.locked_for(addr) == 0.0)
+    check("one address's failures do not lock another",
+          auth.locked_for("192.168.50.100") == 0.0)
+
+    print("sessions: stateless, signed, restart-surviving")
+    st = {}
+    key = auth.session_secret(st)
+    check("a secret is minted and persisted into settings",
+          key and st.get("auth", {}).get("session_secret") == key)
+    check("asking again returns the same secret", auth.session_secret(st) == key)
+    token = auth.mint_token(key)
+    check("a fresh token verifies", auth.token_valid(token, key))
+    check("a made-up token does not", not auth.token_valid("nonsense", key))
+    check("an empty token does not", not auth.token_valid("", key))
+    _e, _n, _sig = token.split(".")
+    check("a tampered expiry does not verify (signature is over it)",
+          not auth.token_valid("99999999999." + _n + "." + _sig, key))
+    # The whole point: the same token still verifies under a secret re-read from
+    # settings, i.e. across a process restart — the in-memory dict couldn't.
+    key2 = auth.session_secret(dict(st))    # a "restarted" process reloads settings
+    check("a token survives a restart (same persisted secret)", auth.token_valid(token, key2))
+    # ...but not under a different secret (a foreign panel can't verify it).
+    check("a token from another secret is refused",
+          not auth.token_valid(token, auth.session_secret({})))
+    a, b = auth.mint_token(key), auth.mint_token(key)
+    check("tokens are distinct", a != b)
+    auth.revoke_token(a)
+    check("a logged-out token is refused", not auth.token_valid(a, key))
+    check("...but its neighbour still stands", auth.token_valid(b, key))
+    auth.rotate_secret(st)
+    check("rotating the secret signs everyone out (PIN change)",
+          not auth.token_valid(b, auth.session_secret(st)))
+    expired = auth.mint_token(key, ttl=-1)
+    check("an expired token is refused", not auth.token_valid(expired, key))
+
+    print("Host allowlist: the DNS-rebinding guard")
+    hs = {"auth": {"allowed_hosts": ["fred.local"]}}
+    check("a bare IP Host is allowed", auth.host_allowed("10.0.0.1:8080", hs))
+    check("an IPv6 literal Host is allowed", auth.host_allowed("[::1]:8080", hs))
+    check("localhost is allowed", auth.host_allowed("localhost:8080", hs))
+    check("a tailnet name is allowed", auth.host_allowed("fred.tail58016f.ts.net", hs))
+    check("a configured extra name is allowed", auth.host_allowed("fred.local", hs))
+    check("the default 'fred' is allowed", auth.host_allowed("fred", hs))
+    check("no Host at all is allowed (not a browser)", auth.host_allowed("", hs))
+    check("an unknown DNS name is REJECTED (the rebind)",
+          not auth.host_allowed("evil.example.com", hs))
+    check("a lookalike with a port is still rejected",
+          not auth.host_allowed("attacker.com:8080", hs))
+
+    print("what the PIN actually gates")
+    routes = route_map()
+    check("app.py's routes were parsed", len(routes) > 30, f"{len(routes)} routes")
+    for path in GATED:
+        decorators = routes.get(path)
+        check(f"gated: {path}", decorators is not None and "@protected" in decorators,
+              "" if decorators and "@protected" in decorators
+              else ("MISSING @protected" if decorators is not None else "route not found"))
+    for path in OPEN:
+        decorators = routes.get(path)
+        check(f"open:  {path}", decorators is not None and "@protected" not in decorators,
+              "" if decorators is not None and "@protected" not in decorators
+              else ("unexpectedly GATED" if decorators else "route not found"))
+
+    print("what leaves the LAN")
+    # /api/state is open on purpose — but served raw it carried the PIN digest
+    # and the device tokens, which hands an AP guest ten thousand offline
+    # guesses and defeats the rate limiter below. The route now redacts for
+    # untrusted callers; these checks hold both halves of that promise.
+    secretive = {"auth": {"pin": {"salt": "s", "hash": "h", "iterations": 1}},
+                 "display": {"host": "10.0.0.11", "token": "t"},
+                 "servo": {"remote_host": "10.0.0.10", "remote_token": "t"},
+                 "sensors": {"token": "t"},
+                 "sound": {"volume": 60}, "iris_color": "#143a97",
+                 "voice": {"mic_channels": 6}}
+    red = auth.redact_settings(secretive)
+    check("the auth subtree never leaves", "auth" not in red)
+    check("no key containing 'token' leaves",
+          not any("token" in k for sub in red.values()
+                  if isinstance(sub, dict) for k in sub))
+    check("the harmless keys still travel",
+          red.get("iris_color") == "#143a97"
+          and red.get("sound", {}).get("volume") == 60
+          and red.get("voice", {}).get("mic_channels") == 6, str(red))
+    check("the live dict is not mutated", "auth" in secretive)
+    check("redaction survives an empty or missing dict",
+          auth.redact_settings({}) == {} and auth.redact_settings(None) == {})
+
+    src = (ROOT / "web" / "app.py").read_text()
+    state_route = src[src.index('@app.get("/api/state")'):]
+    state_route = state_route[:state_route.index("\n@app.")]
+    check("/api/state's handler actually calls the redaction",
+          "redact_settings" in state_route and "is_trusted" in state_route)
+
+    say_route = src[src.index('@app.post("/api/say")'):]
+    say_route = say_route[:say_route.index("\n@app.")]
+    check("/api/say demands the PIN for text not on the deck",
+          "_authed()" in say_route and "phrases_mod.load()" in say_route
+          and "401" in say_route)
+    check("...and answers 401, so the keypad rises instead of a dead button",
+          '), 401' in say_route)
+
+    # The one that matters most, said twice on purpose.
+    check("STOP is reachable without a PIN, always",
+          "@protected" not in routes.get("/api/cart/stop", set()))
+
+    listed = set(GATED) | set(OPEN)
+    unlisted = sorted(p for p in routes
+                      if p.startswith("/api/") and p not in listed)
+    check("every /api route has been decided about", not unlisted,
+          "undecided: " + ", ".join(unlisted) if unlisted else "")
+
+    if FAILURES:
+        print(f"FAILED: {len(FAILURES)} check(s): {', '.join(FAILURES)}")
+        return 1
+    print("all checks passed")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

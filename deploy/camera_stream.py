@@ -2,19 +2,16 @@
 """Standalone libcamera → MJPEG streamer for the InMoov head camera.
 
 A tiny, self-contained MJPEG-over-HTTP server for the Pi Camera Module 3 (imx708)
-via picamera2/libcamera. It exists so MyRobotLab (or anything else) can consume
-the camera *as a stream* — MRL's OpenCV service can't grab a libcamera CSI camera
-directly, but its built-in ``MJpeg``/``FFmpeg`` frame grabbers read an MJPEG URL
-just fine. Point MRL's OpenCV at ``http://<pi>:8081/stream.mjpg``.
+via picamera2/libcamera. The brain's Camera object consumes it over the robot
+LAN (inmoov/camera.py, backend "mjpeg"), and anything else that reads an MJPEG
+URL — a browser, curl — works the same way.
 
-Deliberately owns ONLY the camera — no I2C, no audio — so it coexists with MRL
-driving the servos on the I2C bus (they're independent resources). This is the
-separate-process alternative to writing a custom libcamera FrameGrabber plugin
-for MRL (which would have to shell out to libcamera anyway; see SERVICE.md).
+Deliberately owns ONLY the camera — no I2C, no audio — so a servo_server restart
+never drops the stream and vice versa.
 
 Endpoints:
-  GET /stream.mjpg   multipart/x-mixed-replace MJPEG stream (the one MRL reads)
-  GET /snapshot.jpg  a single JPEG frame
+  GET /stream.mjpg   multipart/x-mixed-replace MJPEG stream
+  GET /snapshot.jpg  a single, freshly captured JPEG frame
   GET /              a bare HTML page showing the stream (for eyeballing it)
 
 Config via env: CAM_STREAM_PORT (8081), CAM_STREAM_SIZE (640x480),
@@ -54,11 +51,13 @@ class StreamOutput(io.BufferedIOBase):
 
     def __init__(self):
         self.frame: bytes | None = None
+        self.seq = 0                      # bumps once per frame; see _snapshot
         self.cond = threading.Condition()
 
     def write(self, buf) -> int:
         with self.cond:
             self.frame = bytes(buf)
+            self.seq += 1
             self.cond.notify_all()
         return len(buf)
 
@@ -85,9 +84,18 @@ class Handler(server.BaseHTTPRequestHandler):
         self.wfile.write(_PAGE)
 
     def _snapshot(self):
+        # Wait for a frame captured AFTER this request, never for merely "a
+        # frame". The old wait() returned on any notify or on timeout and took
+        # whatever was lying in the buffer — so a stalled encoder served the
+        # same stale JPEG forever, indistinguishable from a live one. The NUC
+        # had this exact bug in Camera.snapshot() (a child was described her
+        # absent father from an hours-old frame); this is the same fix on the
+        # same pattern, one machine over. 503 on timeout: "no picture" is an
+        # answer somebody can act on, a stale picture is a lie nobody can see.
         with output.cond:
-            output.cond.wait(timeout=5.0)
-            frame = output.frame
+            seen = output.seq
+            output.cond.wait_for(lambda: output.seq != seen, timeout=5.0)
+            frame = output.frame if output.seq != seen else None
         if not frame:
             self.send_error(503)
             return
@@ -119,7 +127,7 @@ class Handler(server.BaseHTTPRequestHandler):
                 self.wfile.write(frame)
                 self.wfile.write(b"\r\n")
         except (BrokenPipeError, ConnectionResetError):
-            pass                      # client (e.g. MRL) disconnected — normal
+            pass                      # client disconnected — normal
 
 
 class StreamServer(socketserver.ThreadingMixIn, server.HTTPServer):

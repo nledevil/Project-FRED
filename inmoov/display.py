@@ -89,9 +89,42 @@ class DisplayClient:
         """
         return self._request("POST", "/api/metrics", {"enabled": bool(enabled)})
 
+    def set_sleep(self, after_s: int) -> dict:
+        """How long the chest screen may sit untouched before it goes dark.
+
+        0 is never. The chest Pi remembers it and its panel enforces it; we
+        keep no copy, and read it back in state() like the metrics flag.
+        """
+        return self._request("POST", "/api/sleep", {"after_s": int(after_s)})
+
+    def show_picture(self, jpeg: bytes, caption: str = "", hold_s: int = 180) -> dict:
+        """Put a picture on the chest screen, over whatever animation is playing.
+
+        Sent as base64 in the JSON body — the chest daemon writes it beside its
+        state file and the panel shows it until a tap or ``hold_s`` seconds
+        (0 = until tapped). A picture wakes a sleeping screen.
+        """
+        import base64                                          # noqa: PLC0415
+        return self._request("POST", "/api/picture",
+                             {"jpeg_b64": base64.b64encode(jpeg).decode("ascii"),
+                              "caption": str(caption or "")[:120],
+                              "hold_s": int(hold_s)})
+
+    def clear_picture(self) -> dict:
+        return self._request("POST", "/api/picture", {"clear": True})
+
     def push_voice(self, payload: dict) -> dict:
         """Send FRED's voice state (and, on a new clip, the whole envelope)."""
         return self._request("POST", "/api/voice", payload)
+
+    def push_pin(self, material: dict) -> dict:
+        """Hand the chest the panel PIN's salt and digest, or {} to clear it.
+
+        So the touchscreen's own gate keeps working with the brain switched off:
+        the chest caches this and checks against the cache when it cannot reach
+        us. Only ever sent over the wired robot LAN.
+        """
+        return self._request("POST", "/api/pin", {"pin": dict(material or {})})
 
 
 class VoicePusher(threading.Thread):

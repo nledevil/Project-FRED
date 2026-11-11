@@ -1,0 +1,24 @@
+/* The PIN keypad, shared by the panel and the admin page.
+   Both templates already define --panel/--border/--fg/--mut/--ok, so this
+   inherits their look rather than bringing a second palette. */
+#pinwrap { position:fixed; inset:0; z-index:60; display:none;
+           align-items:center; justify-content:center;
+           background:rgba(8,8,10,.82); backdrop-filter:blur(3px); }
+#pinwrap.show { display:flex; }
+#pinbox { background:var(--panel); border:1px solid var(--border); border-radius:14px;
+          padding:22px 24px 18px; width:min(92vw,320px); text-align:center;
+          box-shadow:0 18px 50px rgba(0,0,0,.5); }
+#pinbox h3 { margin:0 0 4px; font-size:15px; letter-spacing:.04em; }
+#pinbox .sub { color:var(--mut); font-size:12px; margin-bottom:14px; }
+#pindots { display:flex; gap:10px; justify-content:center; margin-bottom:6px; }
+#pindots i { width:14px; height:14px; border-radius:50%; border:1px solid var(--border);
+             background:transparent; transition:background .12s; }
+#pindots i.on { background:var(--ok); border-color:var(--ok); }
+#pinerr { min-height:17px; font-size:12px; color:#e07a5f; margin:6px 0 10px; }
+#pinkeys { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; }
+#pinkeys button { padding:14px 0; font-size:18px; font-weight:600;
+                  background:#1b1c21; color:var(--fg);
+                  border:1px solid var(--border); border-radius:10px; cursor:pointer; }
+#pinkeys button:hover:not(:disabled) { background:#26272d; }
+#pinkeys button:disabled { opacity:.4; cursor:default; }
+#pinkeys button.wide { font-size:12px; letter-spacing:.06em; }

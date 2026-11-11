@@ -80,10 +80,10 @@ class FaceTracker:
                  invert_x: bool = False, invert_y: bool = False,
                  invert_neck: bool = False, invert_tilt: bool = False,
                  deadzone: float = 0.06,
-                 fps: float = 12.0, neck_gain: float = 2.5, tilt_gain: float = 1.8,
+                 fps: float = 15.0, neck_gain: float = 2.5, tilt_gain: float = 1.8,
                  sat_margin: float = 5.0, eye_recenter: float = 0.15,
                  seek_gain: float = 0.7, seek_edge: float = 0.35,
-                 seek_start_misses: int = 3, lost_hold_frames: int = 25,
+                 seek_start_misses: int = 3, lost_hold_frames: int = 31,
                  bearing_gain: float = 0.6, invert_bearing: bool = False,
                  bearing_change: float = 0.15,
                  event_cb=None, bearing_cb=None):
@@ -119,7 +119,20 @@ class FaceTracker:
         self.seek_gain = float(seek_gain)        # blind-follow speed after a face is lost
         self.seek_edge = float(seek_edge)        # only chase if the face was this far off-centre (0..1) when lost
         self.seek_start_misses = int(seek_start_misses)  # consecutive misses before seeking (ignore brief dropouts)
+        # Paced to the frame *source*, not to the CPU. 12.0 was the head Pi 4B's
+        # detection budget; on an x86 brain a JPEG decode plus a full-frame Haar
+        # pass costs ~12 ms (~80/s), so the frames themselves are the ceiling
+        # now. Asking for more than the camera delivers only re-runs the detector
+        # on a frame capture_gray() already handed us — the backends publish the
+        # newest frame and never block — and a repeat measures de/dt = 0, which
+        # quietly drops the damping term for that tick. Match the source instead:
+        # the head's camera_stream.py serves CAM_STREAM_FPS (15), a local
+        # picamera2 lores stream runs at 30.
         self._fps = max(1.0, float(fps))
+        # Counted in frames, so this window shortens as fps rises: 31 @ 15 fps is
+        # the ~2.1 s hold it was tuned to at 12. Giving up on someone who walked
+        # out of shot is a human-scale timeout — move it with fps. seek_start_misses
+        # is genuinely frame-shaped (ignore a few dropped detections), so it isn't.
         self.lost_hold_frames = int(lost_hold_frames)
         # Last horizontal error while a face was visible (+ = face to the right).
         # Its sign says which way to keep turning if the face then leaves frame;
@@ -139,6 +152,7 @@ class FaceTracker:
         # ``None`` = no valid history yet (just acquired / after a gap), so the
         # first frame contributes no damping kick from a stale reference.
         self._prev_ex = self._prev_ey = None
+        self._prev_track_t = 0.0                      # monotonic of the last tracked frame, for dt
         self._dex = self._dey = 0.0
 
         # Load the cascade once (None if OpenCV/file missing or file invalid).
@@ -155,7 +169,7 @@ class FaceTracker:
         self._lock = threading.Lock()
         self._status = {"face": False, "faces": 0, "error": None,
                         "center": None, "size": None, "loop_fps": 0.0,
-                        "seeking": False}
+                        "source_fps": 0.0, "seeking": False}
 
     # ---- capability / introspection ---------------------------------------
     def available(self) -> bool:
@@ -167,6 +181,19 @@ class FaceTracker:
     def is_tracking(self) -> bool:
         with self._lock:
             return self._thread is not None and self._thread.is_alive()
+
+    def driven(self) -> set[str]:
+        """The servos this loop commands: the configured names, plus head tilt
+        when this head has one.
+
+        Anything that cuts torque needs to ask. A relax on a servo the loop is
+        driving is undone on the next frame — the pulse is back within 1/fps
+        and the servo never actually goes slack.
+        """
+        names = set(self._names.values())
+        if self._tilt:
+            names.add(self._tilt)
+        return names
 
     def tuning(self) -> dict:
         return {k: getattr(self, "_fps" if k == "fps" else k) for k in TUNABLE}
@@ -231,7 +258,10 @@ class FaceTracker:
         misses = 0
         had_face = False                         # for acquired/lost transition events
         ema_cycle = 1.0 / self._fps              # actual loop period (incl. pacing), smoothed
+        ema_src = 1.0 / self._fps                # period between *new* frames, smoothed
         prev = None
+        src_prev = None
+        last_seq = None
         try:
             while not self._stop.is_set():
                 t0 = time.monotonic()
@@ -241,10 +271,28 @@ class FaceTracker:
                         self._status["loop_fps"] = round(1.0 / ema_cycle, 1)
                 prev = t0
 
-                gray = self._cam.capture_gray()
+                gray, seq = self._cam.capture_gray_seq()
                 if gray is None:
                     self._stop.wait(0.1)
                     continue
+                # Skip a frame we already processed: the source (a remote head Pi)
+                # can deliver slower than this loop polls, and re-detecting the same
+                # frame both wastes the detector and feeds the derivative a de/dt of
+                # zero that reads as "the face stopped moving". A repeat carries no
+                # new information, so pace and move on.
+                if seq is not None and seq == last_seq:
+                    dt = time.monotonic() - t0
+                    period = 1.0 / self._fps
+                    if dt < period:
+                        self._stop.wait(period - dt)
+                    continue
+                last_seq = seq
+                if src_prev is not None:         # real source frame rate, distinct from loop_fps
+                    ema_src = 0.8 * ema_src + 0.2 * max(t0 - src_prev, 1e-3)
+                    with self._lock:
+                        self._status["source_fps"] = round(1.0 / ema_src, 1)
+                src_prev = t0
+
                 face = self._detect(gray)
                 if face is not None:
                     misses = 0
@@ -327,11 +375,23 @@ class FaceTracker:
         # Error-rate for the derivative term, smoothed so a jittery Haar box
         # doesn't inject a phantom velocity. No history (just acquired / post-gap)
         # => zero rate this frame, so damping never kicks off a stale reference.
-        if self._prev_ex is None:
+        #
+        # Time-normalized: the raw per-frame delta is scaled by (nominal_dt / dt)
+        # so the D term means the same thing whatever the frame rate. Without this
+        # a source dropping to 8 fps makes each delta arrive over a longer gap,
+        # and the damping — tuned at full rate — quietly changes strength exactly
+        # when lag is worst. Clamped so a stalled or bursty frame can't spike it.
+        now = time.monotonic()
+        if self._prev_ex is None or not self._prev_track_t:
             dex = dey = 0.0
         else:
-            dex, dey = ex - self._prev_ex, ey - self._prev_ey
+            dt = now - self._prev_track_t
+            nominal = 1.0 / self._fps
+            scale = min(4.0, max(0.25, nominal / dt)) if dt > 1e-3 else 1.0
+            dex = (ex - self._prev_ex) * scale
+            dey = (ey - self._prev_ey) * scale
         self._prev_ex, self._prev_ey = ex, ey
+        self._prev_track_t = now
         self._dex = 0.6 * self._dex + 0.4 * dex
         self._dey = 0.6 * self._dey + 0.4 * dey
 
@@ -396,6 +456,7 @@ class FaceTracker:
         """Drop the derivative history so the next tracked frame starts damping
         from a clean slate (no phantom velocity across a detection gap)."""
         self._prev_ex = self._prev_ey = None
+        self._prev_track_t = 0.0
         self._dex = self._dey = 0.0
 
     def _seek_bearing(self) -> None:

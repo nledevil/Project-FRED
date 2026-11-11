@@ -1,0 +1,269 @@
+#!/usr/bin/env python3
+"""Join FRED to a WiFi network, from the panel or the web app.
+
+Installed as /usr/local/sbin/fred-uplink and run through one narrow sudoers
+rule. The reasoning is the same as fred-ap-config next to it: a fixed helper
+that takes no paths and edits exactly the block it owns, rather than a rule that
+can write anywhere. The passphrase arrives on stdin, so it never appears in
+argv or in `ps`.
+
+    fred-uplink status                 # what we are on now, and what is saved
+    fred-uplink scan                   # what is in range
+    echo '{"ssid": "...", "password": "..."}' | fred-uplink join
+    echo '{"ssid": "..."}' | fred-uplink forget
+
+**Joining adds; it does not replace.** netplan takes a list of access-points and
+wpa_supplicant picks whichever is in range, so adding the school's network keeps
+the workshop's. That is the behaviour you want when the robot goes out for a day
+and comes home — and it is the difference between one bad password at a venue
+being an inconvenience and being a robot with no way back onto the network.
+
+Everything is JSON on stdout so the caller never parses human text.
+"""
+from __future__ import annotations
+
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+
+# This helper owns one file and only that file. The hand-written
+# 00-installer-config.yaml carries the bridge, the two NICs and a page of
+# comments explaining why the NUC became the switch — none of which would
+# survive a machine rewriting it, because a YAML dumper drops every comment it
+# reads. So the client radio lives here, netplan merges the two, and the file
+# people wrote is never opened for writing.
+NETPLAN = "/etc/netplan/60-fred-uplink.yaml"
+BACKUP = NETPLAN + ".bak-uplink"
+
+HEADER = """# FRED's WiFi uplink. Written by /usr/local/sbin/fred-uplink from the panel
+# and the web app — edit those rather than this, or the next join overwrites it.
+#
+# Several access-points on purpose: wpa_supplicant joins whichever is in range,
+# so adding a venue's network keeps the workshop's and the robot finds its way
+# back home by itself. Contains passphrases, mode 0600, and deliberately not in
+# the repo.
+"""
+
+# The access point FRED hosts is not a client network and must never be joined
+# as one; wlo1 belongs to fred-hotspot.service.
+AP_IFACE = "wlo1"
+AP_CONF = "/etc/hostapd/fred.conf"
+
+
+def ap_ssid() -> str:
+    """The name of FRED's own access point, so the scan can leave it out.
+
+    It is always the strongest thing in range and joining it as a client is
+    nonsense — it is this machine's other radio.
+    """
+    try:
+        for line in open(AP_CONF):
+            if line.startswith("ssid="):
+                return line[5:].strip()
+    except OSError:
+        pass
+    return ""
+
+
+def run(args, timeout=15.0, stdin=None):
+    try:
+        p = subprocess.run(args, capture_output=True, text=True,
+                           timeout=timeout, input=stdin)
+        return p.returncode, (p.stdout or "") + (p.stderr or "")
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return 1, str(exc)
+
+
+def load():
+    """This helper's own netplan file, or an empty document if it has none."""
+    import yaml
+    try:
+        with open(NETPLAN) as f:
+            return yaml.safe_load(f) or {}
+    except OSError:
+        return {}
+
+
+def iface(doc=None) -> str:
+    """The client radio: whatever wireless interface is not hosting the AP.
+
+    Asked of the kernel rather than written down, because the two cards swapped
+    jobs once already — the Realtek cannot host an AP and the Intel can — and a
+    hardcoded name would have been wrong that day.
+    """
+    doc = doc if doc is not None else load()
+    for name in (doc.get("network", {}).get("wifis") or {}):
+        if name != AP_IFACE:
+            return name
+    try:
+        for name in sorted(os.listdir("/sys/class/net")):
+            if name != AP_IFACE and os.path.isdir(f"/sys/class/net/{name}/wireless"):
+                return name
+    except OSError:
+        pass
+    return ""
+
+
+def saved(doc=None) -> list:
+    doc = doc or load()
+    wifis = doc.get("network", {}).get("wifis") or {}
+    aps = (wifis.get(iface(doc)) or {}).get("access-points") or {}
+    return sorted(aps.keys())
+
+
+def status() -> dict:
+    dev = iface()
+    if not dev:
+        return {"interface": "", "error": "no client radio in netplan"}
+    out = {"interface": dev, "ssid": "", "signal": None, "address": "",
+           "saved": saved()}
+    code, text = run(["/sbin/wpa_cli", "-i", dev, "status"])
+    if code == 0:
+        for line in text.splitlines():
+            if line.startswith("ssid="):
+                out["ssid"] = line[5:].strip()
+            elif line.startswith("ip_address="):
+                out["address"] = line[11:].strip()
+    code, text = run(["/sbin/iw", "dev", dev, "link"])
+    if code == 0:
+        m = re.search(r"signal:\s*(-?\d+)", text)
+        if m:
+            out["signal"] = int(m.group(1))
+    return out
+
+
+def scan() -> list:
+    """What is in range, strongest first and one entry per name.
+
+    A scan takes a moment to populate, and asking for results immediately
+    returns whatever was left from last time — so this asks, waits, and then
+    reads. Duplicates are collapsed because a school will have a dozen access
+    points serving one name and a list of twelve identical rows is not a
+    choice, it is a wall.
+    """
+    dev = iface()
+    if not dev:
+        return []
+    mine = ap_ssid()
+    run(["/sbin/wpa_cli", "-i", dev, "scan"])
+    time.sleep(2.5)
+    code, text = run(["/sbin/wpa_cli", "-i", dev, "scan_results"])
+    if code != 0:
+        return []
+    best: dict = {}
+    for line in text.splitlines()[1:]:
+        parts = line.split("\t")
+        if len(parts) < 5:
+            continue
+        level, flags, ssid = parts[2], parts[3], parts[4].strip()
+        if not ssid:
+            continue                       # a hidden network is not something to tap
+        if ssid == mine:
+            continue                       # our own AP, on the other radio
+        try:
+            level = int(level)
+        except ValueError:
+            continue
+        secure = "WPA" in flags or "WEP" in flags or "SAE" in flags
+        if ssid not in best or level > best[ssid]["signal"]:
+            best[ssid] = {"ssid": ssid, "signal": level, "secure": secure}
+    return sorted(best.values(), key=lambda n: -n["signal"])
+
+
+def write(doc) -> tuple[bool, str]:
+    """Save netplan, check it parses, and apply — restoring on any failure."""
+    import yaml
+    had = os.path.exists(NETPLAN)
+    if had:
+        shutil.copy2(NETPLAN, BACKUP)
+    try:
+        with open(NETPLAN, "w") as f:
+            f.write(HEADER)
+            yaml.safe_dump(doc, f, sort_keys=False, default_flow_style=False)
+        os.chmod(NETPLAN, 0o600)
+        code, text = run(["/usr/sbin/netplan", "generate"], timeout=30.0)
+        if code != 0:
+            raise RuntimeError(f"netplan rejected it: {text.strip()[:200]}")
+        code, text = run(["/usr/sbin/netplan", "apply"], timeout=60.0)
+        if code != 0:
+            raise RuntimeError(f"apply failed: {text.strip()[:200]}")
+        return True, ""
+    except Exception as exc:                              # noqa: BLE001
+        # Put the old file back and re-apply it: a half-written network config
+        # on the machine that is also the robot's router is not somewhere to
+        # leave things.
+        if had:
+            shutil.copy2(BACKUP, NETPLAN)
+        else:
+            os.unlink(NETPLAN)
+        run(["/usr/sbin/netplan", "apply"], timeout=60.0)
+        return False, str(exc)
+
+
+def join(payload: dict) -> dict:
+    ssid = str(payload.get("ssid") or "").strip()
+    password = str(payload.get("password") or "")
+    if not ssid:
+        return {"ok": False, "error": "no network name"}
+    if password and not (8 <= len(password) <= 63):
+        return {"ok": False, "error": "a WPA password is 8 to 63 characters"}
+    doc = load()
+    dev = iface(doc)
+    if not dev:
+        return {"ok": False, "error": "no client radio found"}
+    wifis = doc.setdefault("network", {"version": 2}).setdefault("wifis", {})
+    entry = wifis.setdefault(dev, {})
+    aps = entry.setdefault("access-points", {})
+    aps[ssid] = {"password": password} if password else {}
+    entry.setdefault("dhcp4", True)
+    entry.setdefault("optional", True)
+    ok, err = write(doc)
+    return {"ok": ok, "error": err, "saved": saved()}
+
+
+def forget(payload: dict) -> dict:
+    ssid = str(payload.get("ssid") or "").strip()
+    doc = load()
+    dev = iface(doc)
+    aps = ((doc.get("network", {}).get("wifis") or {}).get(dev) or {}).get("access-points") or {}
+    if ssid not in aps:
+        return {"ok": False, "error": "not a saved network", "saved": saved()}
+    if len(aps) == 1:
+        # Refusing on purpose: forgetting the last network leaves the robot with
+        # no way back onto WiFi except a keyboard and a screen at the venue.
+        return {"ok": False, "error": "that is the only saved network",
+                "saved": saved()}
+    del aps[ssid]
+    ok, err = write(doc)
+    return {"ok": ok, "error": err, "saved": saved()}
+
+
+def main() -> int:
+    if len(sys.argv) < 2:
+        print(json.dumps({"error": "usage: fred-uplink status|scan|join|forget"}))
+        return 2
+    verb = sys.argv[1]
+    if verb == "status":
+        print(json.dumps(status()))
+        return 0
+    if verb == "scan":
+        print(json.dumps(scan()))
+        return 0
+    if verb in ("join", "forget"):
+        try:
+            payload = json.loads(sys.stdin.read() or "{}")
+        except ValueError:
+            print(json.dumps({"ok": False, "error": "bad request"}))
+            return 2
+        print(json.dumps(join(payload) if verb == "join" else forget(payload)))
+        return 0
+    print(json.dumps({"error": f"unknown verb {verb}"}))
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

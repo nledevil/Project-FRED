@@ -1,0 +1,11 @@
+[Unit]
+Description=Restart fred-panel when it is running but not answering
+# Restart= only fires on exit; this catches wedged-but-running — the failure
+# class where the panel sits "active" while deadlocked and the operator's
+# only tool for noticing is the panel itself. See deploy/service-watchdog.sh.
+
+[Service]
+Type=oneshot
+Environment=UNIT=fred-panel
+Environment=URL=http://127.0.0.1:8080/api/state
+ExecStart=/usr/local/sbin/service-watchdog

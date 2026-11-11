@@ -2,23 +2,39 @@
 action and a spoken reply.
 
 Hybrid, as chosen for this build:
-  1. **Local first.** ``commands.match_local`` handles the known commands
+  1. **Matcher first.** ``commands.match_local`` handles the known commands
      instantly, offline, at zero cost.
-  2. **Claude fallback.** Anything else goes to Claude (Anthropic API) with the
-     same actions exposed as tools, so it can both *answer* open questions and
-     *act* on natural-language commands the matcher didn't catch. Replies are
-     kept short because they're spoken aloud.
+  2. **An LLM for the rest.** Anything else goes to a model with the same actions
+     exposed as tools, so it can both *answer* open questions and *act* on
+     natural-language commands the matcher didn't catch. Replies are kept short
+     because they're spoken aloud.
 
-Degrades gracefully: with no ``ANTHROPIC_API_KEY`` the local commands still work
-and open questions get a polite "my AI brain isn't connected" reply.
+Step 2 has two backends, chosen by ``backend``:
+  * ``"claude"`` — the Anthropic API. Best answers, needs internet.
+  * ``"local"``  — a local model via Ollama (``inmoov/local_brain.py``). Runs on
+    this machine with no network at all.
+  * ``"auto"``   — Claude when it's reachable, local when it isn't. FRED is
+    taken to events without reliable WiFi, so the fallback is the point: he gets
+    a worse answer instead of no answer.
+
+The local client deliberately mimics the Anthropic SDK's shape, so the streaming
+sentence splitter and the tool loop below are backend-agnostic — ``_ask_llm``
+runs identically either way.
+
+Degrades gracefully: with no ``ANTHROPIC_API_KEY`` and no local model the
+matcher still works and open questions get a polite "my AI brain isn't
+connected" reply.
 """
 from __future__ import annotations
 
+import base64
 import os
 import re
 import time
 
-from . import commands, sysinfo
+from . import commands, face_id, sysinfo
+from .local_brain import (DEFAULT_HOST as LOCAL_HOST, DEFAULT_MODEL as LOCAL_MODEL,
+                          LocalClient)
 
 try:
     import anthropic
@@ -27,14 +43,39 @@ except Exception as exc:  # noqa: BLE001
     anthropic = None
     _ANTHROPIC_ERR = exc
 
+BACKENDS = ("auto", "claude", "local")
+
+# In "auto", how long a Claude failure keeps us on the local model before we try
+# the cloud again. Without this, every utterance during an outage pays a full
+# network timeout before falling back — which the listener hears as a hang.
+CLOUD_RETRY_SECS = 60.0
+
+# Said once, the first time a Claude failure drops a turn onto the local model,
+# and not again until the cloud has been seen working (V1). Without it a 3B
+# model's flatter answers arrive with no signal at all, and a visitor cannot
+# tell "FRED is dumb" from "the WiFi died". Spoken before the local answer, so
+# it also covers the local model's first prompt read.
+CLOUD_LOST_LINE = "My internet brain is out of reach, so bear with me."
+
 # Haiku answers in ~0.7 s where Opus takes ~1.7 s (measured on this rig). FRED's
 # replies are one or two spoken sentences over a small tool set, which Haiku
 # handles well, and a talking head is judged on how fast it answers.
 MODEL = "claude-haiku-4-5-20251001"
 
+# The shortest gap between two *camera grabs*, in seconds. A look costs a camera
+# start and ~1 s of latency, and nothing stops Claude calling the tool on every
+# turn of a conversation about what it saw once. Inside this window the last
+# frame is re-sent instead (see Brain._look), so a follow-up question still gets
+# a real picture — this bounds the camera thrash, not the answers.
+LOOK_MIN_SECS = 12.0
+
 # Only some models accept output_config={"effort": ...}; Haiku 4.5 rejects it
 # with a 400, so we send it only where it's supported.
-_EFFORT_MODELS = ("claude-opus-4", "claude-sonnet-5", "claude-fable-5")
+# Model families whose requests carry output_config.effort. claude-opus-5 was
+# missing from this tuple while opus-4 was in it — so a swap to the newer Opus
+# would have silently stopped sending effort, with nothing failing anywhere.
+_EFFORT_MODELS = ("claude-opus-4", "claude-opus-5", "claude-sonnet-5",
+                  "claude-fable-5")
 
 # A sentence ends at .!?… possibly followed by a closing quote/bracket, then
 # whitespace. Requiring the trailing whitespace keeps "3.5" and "8 p.m." intact.
@@ -50,7 +91,11 @@ _CLAUSE_END = re.compile(r"(?<=[,;:—–])\s")
 _NEW_CONV = re.compile(
     r"\b(new conversation|start over|start fresh|starting over|"
     r"let'?s start (over|fresh|again)|forget (what|everything|all|that|it)|"
-    r"clear your memory|never ?mind (all )?(that|it))\b", re.I)
+    # "forget me" earns its place now that there is a face to forget as well as
+    # a transcript. Somebody who asks a robot at a public event to forget them
+    # should be able to say it the obvious way and have it actually happen.
+    r"forget (me|about me)|clear your memory|"
+    r"never ?mind (all )?(that|it))\b", re.I)
 
 # How much of the recent back-and-forth FRED replays into each Claude turn, so
 # follow-ups ("who was Einstein?" → "when was he born?") resolve. Exchanges, not
@@ -59,11 +104,20 @@ _NEW_CONV = re.compile(
 HISTORY_MAX_EXCHANGES = 6
 # Drop the whole history after this long with no interaction, so a fresh person
 # walking up to FRED isn't answered in the context of the last kid's questions.
+# The same number governs how long a *face* survives (see inmoov/face_id.py):
+# the two memories are halves of one conversation and expire together.
 HISTORY_IDLE_SECS = 180.0
 
 SYSTEM = (
-    "You are FRED, a friendly animatronic robot head — an InMoov build driven by "
-    "a Raspberry Pi. You hear people through a microphone and reply through a "
+    "You are FRED, a friendly animatronic robot head — an InMoov build, designed, "
+    "built and coded by Ryan Schultz. Three computers run you, so never call "
+    "yourself a Raspberry Pi robot: an ASUS NUC is your brain and runs your "
+    "speech, your vision and this conversation; a Raspberry Pi in your head "
+    "drives your servos and camera; a second Raspberry Pi in your chest handles "
+    "your sensors and touchscreen. That is all you know about your own build — "
+    "don't invent parts, materials or where anything is mounted, and keep the "
+    "answer to a sentence unless asked for more. "
+    "You hear people through a microphone and reply through a "
     "speaker, so your replies are spoken aloud: keep them short and natural, "
     "no markdown, no lists, no emoji, no stage directions. "
     # Every word costs time: the speech synthesiser runs slower than realtime, so
@@ -71,23 +125,138 @@ SYSTEM = (
     "Be brief — usually one sentence, never more than two, and under 30 words. "
     "Lead with the answer, then stop; don't pad with pleasantries or caveats. "
     "You have a body you can move with your tools — your jaw/mouth, your eyes, "
-    "turning your head/neck left and right, face tracking, and a red 'terminator' "
-    "LED. You may also have a 360-degree surround camera on a mast above you: "
-    "look_around returns real photos of any direction, and scan_surroundings "
-    "tells you where people are — use them whenever someone asks what you can "
-    "see or who is around, and describe what's actually in the pictures. You "
-    "may sit on a motorised cart: drive_cart makes short, safety-governed "
-    "moves when your operator allows it, and stop_cart always stops. "
+    "turning your head/neck left and right, tilting your head up, down or "
+    "sideways, nodding and shaking your head, a little dance, face tracking, "
+    "and a red 'terminator' LED. "
+    # Left to itself the model tells the same three robot puns to a whole queue
+    # and the fourth child hears the first child's joke. The book (jokes.py)
+    # deals without repeating; the rule here is that he reads from it.
+    "When someone asks for a joke, call tell_joke and say what it returns word "
+    "for word — never invent a joke of your own, and never add one after. "
+    "The screen on your chest shows whether you are listening, thinking or "
+    "speaking; tapping it changes the picture it shows, and swiping up on it "
+    "shows a card about you. "
+    # Brevity above is about the *talking*. Applied to the doing it produced a
+    # robot that moved to the first position it was asked for, said "moving
+    # right", and stopped — which reads as not having listened rather than as
+    # being concise.
+    "When you are asked for several movements in a row, do all of them, in "
+    "order, calling the tool once per step. Say NOTHING between the steps: no "
+    "commentary as each one happens, no 'now the next one'. Everything you "
+    "write is spoken aloud as you write it, so a remark before each call comes "
+    "out as one long run-on sentence. Stay silent until every step is done, "
+    "then say one short sentence about the whole sequence. Being brief is "
+    "about what you say, never about how much of the request you carry out. "
+    # The prompt above has always told FRED he has vision. Until the look tool
+    # existed that was a promise he couldn't keep, and he'd describe a room he
+    # had never seen. Now the sight is real, but only through the tool — so the
+    # rule that matters is that he must look before he claims to have looked.
+    f"You can see, but only by calling your {commands.VISION_TOOL} tool, which "
+    "shows you what your eye camera is pointed at right now. Call it before "
+    "answering anything about what is in front of you or what someone is "
+    "wearing, holding or showing you. Until you call it you have not seen "
+    "anything this turn: never describe, guess at or invent what is in front of "
+    "you, and if the look fails just say you couldn't see. "
+    # The 360 camera (built on the x5-surround-vision branch, not yet mounted).
+    f"You may also have a 360-degree camera on a mast above you: "
+    f"{commands.LOOK_360_TOOL} shows you any direction, behind you included, "
+    "and scan_surroundings tells you where people are around you. "
     "You can also sense things about yourself: the current date and time, "
     "your own network address, and the temperature of your processor — all in the "
     "facts below, which are read fresh every time you answer. Never claim you lack "
     "a sensor for something listed there. When someone asks you to do "
     "something you have a tool for, call the tool, then give a brief spoken "
     "confirmation. For general questions, just answer briefly and "
-    "conversationally. If you didn't catch what they meant, say so and ask them "
-    "to repeat. Your name is FRED, short for Facial Recognition and Expression "
+    "conversationally. "
+    # "Ask them to repeat" on its own is a licence to bail out of the one case
+    # the listener was built for. Listener.arm() holds the mic open after FRED
+    # ends a turn on a question precisely so the answer can be just the answer —
+    # no wake word, no sentence. Nothing told the brain that, so a bare "no" six
+    # seconds after he asked "did you not hear that?" came back as "I'm not sure
+    # what you mean", three times out of three. The person had answered him.
+    #
+    # Negative questions are the sharp edge: "did you *not* hear that?" makes
+    # "no" genuinely ambiguous in English, so he is told both to read it the way
+    # a person obviously meant it and to stop phrasing questions that way.
+    "If you didn't catch what they meant, say so and ask them to repeat — but "
+    "never when you just asked them a question. A short reply straight after "
+    "your own question is the answer to it: take yes, no, or a bare word as "
+    "answering what you asked, and act on it. If you asked something "
+    "negatively, read their answer the way the person plainly meant it rather "
+    "than asking again. Ask your questions plainly for that reason. "
+    "Your name is FRED, short for Facial Recognition and Expression "
     "Droid."
 )
+
+# What gets added to SYSTEM depends on which backend is answering, because the
+# two have genuinely different senses. Both are constants: the prefix has to stay
+# byte-identical turn to turn or the local model reprocesses the whole prompt —
+# that is the 28 s stall the note in _ask_llm is about.
+#
+# Claude's half exists because search results pull the wrong way: they arrive as
+# prose with citations and symbols, and the measured answer to "weather in 60440"
+# came back at ~60 words with a registered-trademark sign in it. FRED speaks his
+# answers, so the length and plainness rules have to be restated where the search
+# happens rather than left to the general brevity rule further up.
+SYSTEM_WEB = (
+    " For the weather — here, or anywhere someone names — call get_weather "
+    "with the place; never search the web for weather, which hands back "
+    "numbers days old. "
+    "You can look other things up on the internet when the answer depends on "
+    "something current — news, prices, scores, when something opens. "
+    "Say the answer in your own words, in one or two short spoken sentences: no "
+    "symbols like the degree or trademark sign, no lists, no reading out URLs. "
+    "For anything settled — history, arithmetic, how something works — just "
+    "answer, don't look it up."
+)
+# Covers both ways FRED can end up without the web: running on the local model,
+# which never gets the tool at all (see commands.web_search_tool), and the switch
+# being off. Deliberately doesn't name a reason, because the two reasons differ
+# and a wrong one is worse than none. Same voice as the vision refusal in _look,
+# for the same reason: "I can't" with no why sounds like a fault.
+SYSTEM_NO_WEB = (
+    " You have no way to look anything up on the internet right now. If someone "
+    "asks for something current, like the news, say that plainly rather than "
+    "guessing at it. The weather is the exception: call get_weather with the "
+    "place, and if that fails say so."
+)
+
+# Face recall's half. Two rules, and the second one is the important one: FRED
+# must never be the one to decide he recognises somebody. The facts either say
+# so or they don't, and "don't" includes every turn where the camera saw nothing
+# — which at an event is most of them. Without this he will happily greet the
+# first person of the day as an old friend.
+#
+# The honesty line is not decoration either. Children ask "will you remember
+# me?", and the true answer is a good one: for a few minutes, and then it is
+# gone and there is no copy. He should be able to say that.
+SYSTEM_FACES = (
+    " You can tell when the person in front of you is one you have already been "
+    "talking to in this conversation — but only when the facts below say so. "
+    "Never say you recognise, remember or have met anyone unless it is stated "
+    "there, and never guess at a name. Your memory for a face lasts only as "
+    "long as this conversation, a few minutes, and nothing about it is stored "
+    "anywhere or kept afterwards. Say that plainly if anyone asks."
+)
+
+
+def _web_place(location: dict | None) -> str:
+    """The 'you are here' line, or "" when no location is configured.
+
+    user_location on the tool only tilts which results rank highest — it is not
+    something the model can read. Without being told where he is, FRED searched
+    "weather today", got results for half the country and asked the visitor
+    where they were standing. He is the one who knows.
+    """
+    if not location:
+        return ""
+    where = ", ".join(str(location[k]) for k in ("city", "region")
+                      if location.get(k))
+    if not where:
+        return ""
+    return (f" You are in {where}. When someone asks about local conditions "
+            "without naming a place — the weather, what it's like outside — "
+            "that is the place they mean.")
 
 
 class _SentenceSplitter:
@@ -173,11 +342,49 @@ class Brain:
 
     def __init__(self, ctx, api_key: str | None = None, model: str | None = None,
                  history_exchanges: int = HISTORY_MAX_EXCHANGES,
-                 history_idle_secs: float = HISTORY_IDLE_SECS):
+                 history_idle_secs: float = HISTORY_IDLE_SECS,
+                 backend: str = "auto", local_model: str | None = None,
+                 local_host: str | None = None, vision: bool = True,
+                 look_min_secs: float = LOOK_MIN_SECS,
+                 web_search: bool = True, web_location: dict | None = None,
+                 face_recall: bool = True, face_hold_camera: bool = False):
         self.ctx = ctx
+        self.vision = bool(vision)
+        # Noticing a returning visitor. Rides on the same switch as vision — it
+        # is the same camera looking at the same person — and on the same idle
+        # timeout as the conversation, which is the promise the feature was
+        # agreed on. Nothing it holds is ever written down; see face_id.py.
+        self.face_recall = bool(face_recall)
+        # Off by default: face recall rides on frames the camera is producing
+        # anyway rather than asking for the camera itself. On a robot where face
+        # tracking is usually running that is free and sufficient; on one where
+        # it isn't, this is the switch that makes the feature work at all — at
+        # the price of the camera running because somebody spoke to him. See
+        # FaceId.attend.
+        self.face_hold_camera = bool(face_hold_camera)
+        self.faces = face_id.FaceId(idle_secs=history_idle_secs)
+        # Web search costs money per search and only works on Claude. Switchable
+        # like vision, and persisted the same way, because "no lookups today" is
+        # an event-day decision rather than a code change.
+        self.web_search = bool(web_search)
+        self._web_location = dict(web_location) if web_location else None
+        self._look_min_secs = max(0.0, float(look_min_secs))
+        # Per camera ("eyes"/"wide"): when it was last grabbed, and the frame
+        # itself, re-sent for repeat looks inside the rate-limit window. Held
+        # because the conversation memory drops tool blocks, so a follow-up
+        # question arrives with no picture in context at all.
+        self._last_look: dict[str, float] = {}
+        self._last_frame: dict[str, bytes] = {}
         self.model = model or MODEL
+        self.backend = backend if backend in BACKENDS else "auto"
         self._client = None
         self._ai_error = None
+        # The local model. Constructing this is free — it opens no connection and
+        # only probes the daemon when asked — so it's always built, and whether
+        # it's usable is answered by local_available() at call time.
+        self._local = LocalClient(host=local_host or LOCAL_HOST,
+                                  model=local_model or LOCAL_MODEL)
+        self._cloud_failed_at = 0.0      # monotonic; 0 = cloud not known-bad
         # Rolling conversation memory: the last few *final* user/assistant text
         # pairs (never the intermediate tool_use/tool_result blocks), replayed
         # into each Claude turn so FRED can follow "he/it/that" back-references.
@@ -196,14 +403,354 @@ class Brain:
         else:
             self._ai_error = "no ANTHROPIC_API_KEY"
 
+    # ---- faces ------------------------------------------------------------
+    def _face_recall_on(self) -> bool:
+        """Whether FRED is noticing faces at all right now."""
+        return self.face_recall and self.vision and self.faces.available()
+
+    def attend_faces(self) -> None:
+        """Somebody is talking: let the recogniser watch for a while.
+
+        Public because ``respond()`` is slightly too late to be the only caller.
+        A burst needs about five frames — two and a half seconds at the sampler's
+        pace — and respond() builds its message immediately, so a visitor who
+        walks back up is recognised on their *second* question rather than their
+        first. Calling this from the wake word instead (Assistant._on_wake) buys
+        the whole length of the utterance plus the transcription, which is
+        usually enough. It is idempotent and cheap: it extends the window if the
+        loop is already running.
+
+        The frame source hands back None unless the sensor is already running
+        for some other reason (face tracking, someone watching the panel), so by
+        default face recall is a passenger on frames that exist anyway and never
+        turns a camera on — the cheap thing and the defensible one. Set
+        ``face_hold_camera`` if this robot's face tracking is usually off and
+        the feature would otherwise never see anyone.
+        """
+        if not self._face_recall_on():
+            return
+        cam = getattr(self.ctx, "camera", None)
+        if cam is None:
+            return
+        # A hold whenever the sensor is already on, not only when
+        # face_hold_camera says to turn it on: since the relay's grayscale
+        # decode is gated on holds (camera.gray_wanted), a passenger with no
+        # hold reads None even while a viewer has the stream open. The hold
+        # costs nothing new — the camera is on and the privacy LED lit — and
+        # ends with the attend window. Without it, face_hold_camera off meant
+        # face recall saw nobody at all (found in review, 2026-09-13).
+        if self.face_hold_camera or cam.is_streaming():
+            hold = (cam.acquire, cam.release)
+        else:
+            hold = None
+        self.faces.attend(
+            lambda: cam.capture_gray() if cam.is_streaming() else None, hold=hold)
+
+    def _diagnostic_facts(self) -> str:
+        """The one line about whether he may debug himself, or "" for off.
+
+        This has to be a per-turn fact for the same reason the clock is: the
+        panel flips it mid-conversation. Without it the model was told in the
+        tool description that the mode might be off, had no way to check, and
+        so answered "diagnostic mode is off, turn it on" while it was on —
+        never calling the tool at all. A tool whose availability the model
+        cannot see is a tool it will decline on your behalf.
+
+        Says nothing when off. The tool refuses on its own then, and that
+        refusal is the honest answer; what was missing was the other direction.
+        """
+        mode = getattr(self.ctx, "diagnostic", None)
+        if mode is None or not mode.enabled:
+            return ""
+        line = ("\n\nDiagnostic mode is ON right now, so your diagnostic tool "
+                "will work — use it rather than saying you cannot check.")
+        if mode.unrestricted:
+            line += (" Unrestricted mode is also on, so run_shell works too; "
+                     "prefer the diagnostic tool for anything it covers.")
+        else:
+            line += (" Unrestricted mode is OFF, so run_shell will refuse — "
+                     "that switch is separate and is on the same panel.")
+        return line
+
+    def _face_facts(self) -> str:
+        """The one line about who is standing there, or "" for "no idea".
+
+        Only ever says somebody has come *back*. While they are still standing
+        there the conversation history already covers it, and the difference
+        between "I know you're here" and "I know you were here before" is the
+        whole feature.
+        """
+        if not self._face_recall_on():
+            return ""
+        who = self.faces.current()
+        if who is None or who.sightings < 2:
+            return ""
+        line = ("\n\nThe person in front of you now is the same one who was "
+                "talking to you earlier in this conversation, and has come "
+                "back.")
+        if who.notes:
+            said = "; ".join(f'"{n}"' for n in who.notes)
+            line += f" Earlier they said: {said}."
+        return line + " Mention it only if it fits naturally.\n"
+
+    def set_face_recall(self, on: bool) -> bool:
+        """Turn returning-visitor recognition on or off. Off forgets at once —
+        a switch that left the faces sitting in memory would be a lie."""
+        self.face_recall = bool(on)
+        if not self.face_recall:
+            self.faces.stop()
+            self.faces.forget_all()
+        return self.face_recall
+
+    # Tools after which the eye camera is pointed somewhere new. Within one
+    # turn, a second look inside the cache window re-sends the frame he
+    # already took — right when he has not moved, and a fabrication when he
+    # has: "turn left and tell me what you see" would describe the view from
+    # before the turn. The wide camera is on his chest and does not move with
+    # his head, so its frame survives everything but the cart.
+    # relax drops torque and the head sags; set_face_tracking hands the neck
+    # to the tracker. Both point the eyes somewhere new without "moving".
+    _EYES_MOVED = frozenset(("look", "turn_head", "tilt_head", "nod", "shake_head",
+                             "gesture", "reset_pose", "drive", "relax",
+                             "set_face_tracking"))
+    _ALL_MOVED = frozenset(("drive",))
+
+    def _after_tool(self, name: str) -> None:
+        """Forget a cached frame the tool just made stale."""
+        if name in self._EYES_MOVED:
+            self._last_frame.pop("eyes", None)
+            self._last_look.pop("eyes", None)
+        if name in self._ALL_MOVED:
+            self._last_frame.pop("wide", None)
+            self._last_look.pop("wide", None)
+
+    def _look(self, which: str, tool_input: dict | None = None):
+        """Answer the vision tool — with a picture, or with why there isn't one.
+
+        Returns either image content blocks for the tool_result or a plain
+        sentence. Every failure path returns a sentence: handing back nothing
+        would leave Claude to fill the gap, and the failure mode this whole
+        feature exists to fix is FRED describing a room he never saw.
+
+        Only Claude gets the image. local_brain._to_ollama flattens tool_result
+        content with str(), so an image block would reach the local model as a
+        page of base64 — a text-only backend has to be told it can't see.
+        """
+        if not self.vision:
+            return "My eyes are switched off at the moment."
+        if which != "claude":
+            return "I can't see right now — I'm running on my local brain."
+        # Cameras are rate-limited and cached separately: they point at
+        # different things, so a wide look must never be answered with the eye
+        # camera's frame just because that one is recent.
+        source = str((tool_input or {}).get("camera") or "eyes")
+        if source not in ("eyes", "wide"):
+            source = "eyes"
+        now = time.monotonic()
+        waited = now - self._last_look.get(source, 0.0)
+        cached = self._last_frame.get(source)
+        if cached is not None and waited < self._look_min_secs:
+            # Inside the window, re-send the frame he already took rather than
+            # grabbing a new one. It must be re-sent, not merely referred to:
+            # _history keeps only final text, so by the next turn the previous
+            # image is gone from the conversation entirely. Telling Claude to
+            # "answer from the look you already have" instead of handing the
+            # picture back got a confidently wrong shirt colour in testing —
+            # the exact fabrication this tool exists to stop.
+            return self._frame_blocks(cached, source,
+                                      f"a moment ago ({waited:.0f}s)")
+        jpeg, why = commands.capture_view(self.ctx, source=source)
+        if jpeg is None:
+            return why
+        self._last_look[source] = now
+        self._last_frame[source] = jpeg
+        if source == "eyes" and self._face_recall_on():
+            # A frame taken because somebody asked him to look is the best kind
+            # of evidence there is — he is pointed at the person. Only the eye
+            # camera: the wide one is a 3840x1080 panorama whose faces are small
+            # and lens-warped, and a cascade pass over it costs far more than
+            # the frame is worth.
+            self.faces.observe_jpeg(jpeg)
+        return self._frame_blocks(jpeg, source, "right now")
+
+    @staticmethod
+    def _frame_blocks(jpeg: bytes, source: str, when: str) -> list[dict]:
+        """Wrap a JPEG as the content blocks of a tool_result."""
+        lens = ("your wide chest camera, which takes in the whole room"
+                if source == "wide" else "your eye camera, pointed where you are facing")
+        return [
+            {"type": "image",
+             "source": {"type": "base64", "media_type": "image/jpeg",
+                        "data": base64.standard_b64encode(jpeg).decode("ascii")}},
+            {"type": "text",
+             "text": f"This is what {lens} saw {when}. Describe only what is "
+                     "actually in this picture."},
+        ]
+
     def ai_available(self) -> bool:
-        return self._client is not None
+        """True when *some* LLM backend can answer an open question."""
+        if self.backend == "claude":
+            return self._client is not None
+        if self.backend == "local":
+            return self._local.available()
+        return self._client is not None or self._local.available()
+
+    def local_available(self) -> bool:
+        return self._local.available()
+
+    def set_backend(self, backend: str) -> str:
+        """Switch backend at runtime. Unknown values fall back to 'auto'."""
+        self.backend = backend if backend in BACKENDS else "auto"
+        self._cloud_failed_at = 0.0        # a deliberate switch clears the sulk
+        return self.backend
+
+    def set_vision(self, on: bool) -> bool:
+        """Turn looking on or off at runtime.
+
+        Switching off drops the cached frames too: they are pictures of whoever
+        was in front of him, and "stop looking" should not leave the last one
+        sitting in memory ready to be re-sent.
+        """
+        self.vision = bool(on)
+        if not self.vision:
+            self._last_frame.clear()
+            self._last_look.clear()
+            # Same argument, one step further: the faces are a distillation of
+            # those same pictures, so "stop looking" has to drop them too.
+            self.faces.stop()
+            self.faces.forget_all()
+        return self.vision
+
+    def status(self) -> dict:
+        """What the admin panel shows about the brain."""
+        cam = getattr(self.ctx, "camera", None)
+        spotter = getattr(self.ctx, "spotter", None)
+        return {"backend": self.backend, "backends": list(BACKENDS),
+                "claude_model": self.model, "claude_ready": self._client is not None,
+                "claude_error": self._ai_error,
+                "local_model": self._local.model, "local_ready": self._local.available(),
+                "local_host": self._local.host, "local_models": self._local.models(),
+                "active": self._pick_backend(),
+                # Vision: the switch, and whether a look would actually work.
+                # Separate on purpose — "on but no camera" and "camera but
+                # switched off" are different problems and the panel should be
+                # able to say which. Cloud-only, hence the backend in the test.
+                "vision": self.vision,
+                "vision_ready": bool(self.vision and self._client is not None
+                                     and cam is not None and cam.available()),
+                "vision_wide_ready": bool(spotter is not None and spotter.is_running()),
+                "vision_min_seconds": self._look_min_secs,
+                # Faces: the switch, whether it could work, and how many people
+                # are in memory right now. Deliberately a count and not the
+                # visitors themselves — what somebody said to FRED is not
+                # something to put on a status page.
+                "face_recall": self.face_recall,
+                "face_recall_ready": self._face_recall_on(),
+                "faces_known": len(self.faces.status()["visitors"]),
+                # Same split as vision: the switch, and whether a lookup would
+                # land. Cloud-only, so a local-only robot reads "on, not ready"
+                # rather than looking broken.
+                "web_search": self.web_search,
+                "web_search_ready": bool(self.web_search and self._client is not None),
+                "web_search_location": self._web_location}
+
+    def set_web_search(self, on: bool) -> bool:
+        """Turn internet lookups on or off. Returns the new state."""
+        self.web_search = bool(on)
+        return self.web_search
+
+    def _system_for(self, which: str) -> str:
+        """The system prompt this backend gets, told the truth about the web.
+
+        Face recall is in here rather than in the per-turn facts because the
+        rule that matters is the *prohibition* — never claim to recognise
+        anybody unless told — and a rule that only appears on the turns where
+        somebody was recognised is no rule at all. Both backends get it: the
+        fact it guards is plain text, so the local model can use it too.
+        """
+        faces = SYSTEM_FACES if self._face_recall_on() else ""
+        if which == "claude" and self.web_search and not self._shell_armed():
+            return SYSTEM + faces + SYSTEM_WEB + _web_place(self._web_location)
+        return SYSTEM + faces + SYSTEM_NO_WEB
+
+    def _shell_armed(self) -> bool:
+        """Is the diagnostic shell live right now?
+
+        Asked per turn because the panel arms and disarms it mid-conversation.
+        While it is armed, the web tool is withdrawn — see _tools_for.
+        """
+        diag = getattr(self.ctx, "diagnostic", None)
+        return bool(diag is not None and diag.unrestricted)
+
+    def _tools_for(self, which: str) -> list:
+        """The tool list that backend may actually use.
+
+        The web tool is Claude's alone — it is executed by Anthropic, so handing
+        it to the local model would advertise a capability nothing on this robot
+        can carry out. See commands.web_search_tool.
+
+        It is also withdrawn — along with its system-prompt half, above — while
+        the unrestricted diagnostic shell is armed. Search results are text
+        written by strangers, and handing them to a tool loop that can run
+        arbitrary commands is the one injection path the panel gate does not
+        already bound: everything else in diagnostic mode is reachable only by
+        somebody the operator can see. diagnostic.py's own word list is
+        explicitly not a security control, so the fix is to never have the two
+        capabilities in one turn — the same shape as unrestricted refusing to
+        arm during event mode. The panels' brain/diagnostic status pages both
+        keep working; only the model's tool list changes.
+        """
+        if which != "claude" or not self.web_search or self._shell_armed():
+            return commands.CLAUDE_TOOLS
+        return commands.CLAUDE_TOOLS + [commands.web_search_tool(self._web_location)]
+
+    def _pick_backend(self) -> str:
+        """Which backend a question would actually go to right now."""
+        if self.backend == "claude":
+            return "claude" if self._client is not None else "none"
+        if self.backend == "local":
+            return "local" if self._local.available() else "none"
+        # auto: prefer Claude, unless it just failed us or isn't configured.
+        cloud_sulking = (self._cloud_failed_at
+                         and time.monotonic() - self._cloud_failed_at < CLOUD_RETRY_SECS)
+        if self._client is not None and not cloud_sulking:
+            return "claude"
+        if self._local.available():
+            return "local"
+        return "claude" if self._client is not None else "none"
+
+    def warm_local(self) -> None:
+        """Pre-load the local model and the prompt prefix it will reuse (see
+        LocalClient.warm). Safe on any thread — this is the one place that knows
+        both halves of that prefix, so it hands them over.
+
+        The prefix is composed exactly as a live local turn composes it —
+        _system_for/_tools_for, not the bare constants. Warming with bare
+        SYSTEM violated warm()'s own contract ("pass the *same* system prompt")
+        and left the ~28 s prefix read to land on whoever asked the first real
+        question, which is precisely the bill warming exists to pay early.
+
+        One residual: _system_for's faces clause follows _face_recall_on(),
+        which can flip when face recall is toggled or the camera goes away —
+        and each flip changes the prefix, costing the local model one reread.
+        That is the honest price of the prompt actually changing; what this
+        fixes is paying it when nothing changed at all.
+        """
+        if self.backend in ("auto", "local"):
+            self._local.warm(self._system_for("local"), self._tools_for("local"))
 
     # ---- conversation memory ---------------------------------------------
     def clear_history(self) -> None:
         """Forget the running conversation (idle timeout, reset phrase, or an
-        explicit control from the web panel)."""
+        explicit control from the web panel).
+
+        Takes the faces with it. "Let's start over" and "a new person walked
+        up" are the same event as far as this robot is concerned, and half a
+        reset — a cleared transcript with the last visitor's face still in
+        memory — would be the worst of both.
+        """
         self._history = []
+        self.faces.forget_all()
 
     def _remember(self, user_text: str, reply: str) -> None:
         """Append one completed exchange, trimmed to the last N. Stores plain
@@ -217,7 +764,7 @@ class Brain:
         if len(self._history) > keep:
             self._history = self._history[-keep:]
 
-    def respond(self, text: str, on_sentence=None) -> dict:
+    def respond(self, text: str, on_sentence=None, on_thinking=None) -> dict:
         """Return {reply, source, actions}. ``source`` is local|claude|none|error.
 
         ``on_sentence`` (optional) is called with each sentence of the reply the
@@ -225,8 +772,15 @@ class Brain:
         still streaming*, so the caller can start speaking early. Every path calls
         it for everything it will return in ``reply``, so a caller that speaks
         from the callback must not also speak the return value.
+
+        ``on_thinking`` (optional) is called once, the moment a turn is handed to
+        a language model — i.e. the matcher missed and an answer is now seconds
+        away rather than milliseconds. The assistant hangs the thinking earcon
+        off it (V1). Never called for matched commands, the conversation reset,
+        or the no-brain apology, all of which answer at once.
         """
         emit = on_sentence or (lambda _s: None)
+        pondering = on_thinking or (lambda: None)
         text = (text or "").strip()
         if not text:
             return {"reply": "", "source": "none", "actions": []}
@@ -236,14 +790,32 @@ class Brain:
         now = time.monotonic()
         if self._history and (now - self._history_at) > self._idle_secs:
             self._history = []
+            self.faces.forget_all()
         self._history_at = now
+        # A new question is a new look. The frame cache below exists to stop the
+        # model spending money taking the same picture twice inside one answer,
+        # and that is all it should ever do: across turns, the person in front
+        # of him may not be the person who was there last time. A child asked
+        # him what he could see and was described her father, because he still
+        # had a picture of her father and it was less than the window old.
+        #
+        # The window stays for repeat looks *within* a turn; it can no longer
+        # reach across one.
+        self._last_frame.clear()
+        self._last_look.clear()
+        # Somebody is talking to him, so somebody is standing in front of him:
+        # the one moment worth spending frames on. (FaceId expires faces on its
+        # own clock as well — the promise has to hold even if nobody ever speaks
+        # to him again.)
+        self.attend_faces()
 
         # "Let's start over" — an explicit spoken reset of the memory.
         if _NEW_CONV.search(text):
             self.clear_history()
             reply = "Okay, let's start fresh. What would you like to know?"
             emit(reply)
-            return {"reply": reply, "source": "local", "actions": ["new_conversation"]}
+            return {"reply": reply, "source": "local", "matched": "new_conversation",
+                    "actions": ["new_conversation"]}
 
         local = commands.match_local(text)
         if local:
@@ -259,45 +831,176 @@ class Brain:
                         "error": str(exc)}
             if reply:
                 emit(reply)
-            return {"reply": reply, "source": "local", "actions": [name]}
+            if name in commands.REMEMBERED_ACTIONS:
+                # A matched joke is the one offline answer a follow-up refers
+                # back to — "another one", "I don't get it" — so it goes into
+                # the conversation the way a spoken answer would. The rest of
+                # the matcher's replies are confirmations, which are noise there.
+                self._remember(text, reply)
+            # ``matched`` marks the offline fast path for the heard log: a row
+            # without it is a row the matcher recognised nothing in, which is
+            # the set worth reviewing after an event.
+            return {"reply": reply, "source": "local", "matched": name,
+                    "actions": [name]}
 
-        if self._client is None:
+        choice = self._pick_backend()
+        if choice == "none":
             reply = ("Sorry, I can't answer that — my A.I. brain isn't "
                      "connected yet.")
             emit(reply)
             return {"reply": reply, "source": "none", "actions": []}
 
-        return self._ask_claude(text, emit)
+        pondering()
+        if choice == "claude":
+            result = self._ask_llm(text, emit, "claude")
+            # In auto, a Claude failure is exactly the case this whole module
+            # exists for: fall through to the local model rather than apologise.
+            # Only when nothing was spoken yet — cutting in mid-reply would be
+            # worse than the truncated answer.
+            if (result.get("source") == "error" and self.backend == "auto"
+                    and not result.get("spoke") and self._local.available()):
+                print("[Brain] Claude failed — falling back to the local model.")
+                # Announce the outage once. ``_cloud_failed_at`` is zero only
+                # while the cloud is believed good (a success clears it, see
+                # _ask_llm), so the retry that fails after the sulk expires is
+                # the same outage and stays quiet; the first failure after a
+                # success is a new one and is announced again.
+                fresh = not self._cloud_failed_at
+                self._cloud_failed_at = time.monotonic()
+                if fresh:
+                    emit(CLOUD_LOST_LINE)
+                result = self._ask_llm(text, emit, "local")
+                if fresh:
+                    result["reply"] = f"{CLOUD_LOST_LINE} {result.get('reply', '')}".strip()
+                    result["announced"] = True
+                return result
+            return result
+        return self._ask_llm(text, emit, "local")
 
-    # ---- Claude fallback --------------------------------------------------
-    def _ask_claude(self, text: str, emit) -> dict:
+    # ---- LLM turn (identical for both backends) ---------------------------
+    def _ask_llm(self, text: str, emit, which: str) -> dict:
         # Replay the recent exchanges so back-references resolve. This is a fresh
         # list; the tool loop appends its intermediate turns here without
         # touching self._history, which only ever holds final text pairs.
-        messages = self._history + [{"role": "user", "content": text}]
+        # The live facts (clock, chip temperature) ride on *this turn's* user
+        # message rather than in the system prompt, and that placement is a
+        # latency decision, not a style one. A local model re-reads its whole
+        # prompt from the first byte that differs from the last one, and the
+        # system block plus the tool schemas is ~1150 of the ~1240 tokens. With a
+        # clock in it, every utterance changed byte ~1100 and re-read the lot:
+        # 28 s before FRED said a word, measured, every single time. Static, the
+        # prefix is cached and only the facts and the question are read: ~1.5 s.
+        # Claude doesn't care either way — it reads the same tokens — so both
+        # backends share this one shape.
+        # Event mode's answer cap, or None. Asked for per turn rather than held,
+        # because the switch is thrown from the panel mid-event.
+        cap = getattr(getattr(self.ctx, "event", None), "max_words", None)
+        brief = ("\n\nYou are at a public event: answer in one short sentence, "
+                 f"under {cap} words. Someone is waiting behind this person.\n"
+                 if cap else "")
+        # Who is standing there, when he has come back — a per-turn fact like
+        # the clock and the chip temperature, and here for the same reason: it
+        # changes every turn, so it must not be in the cached prefix.
+        messages = self._history + [
+            {"role": "user",
+             "content": f"{sysinfo.context_block()}{brief}{self._face_facts()}"
+                        f"{self._diagnostic_facts()}\n\n{text}"}]
         actions: list[str] = []
         said: list[str] = []                 # every sentence handed to emit()
-        system = f"{SYSTEM}\n\n{sysinfo.context_block()}"   # live facts, fixed for this turn
+        # Static per backend: see the note above. What the suffix says depends on
+        # the backend and the switch, but for any one of them it is the same
+        # bytes every turn, so neither prompt cache is churned.
+        system = self._system_for(which)
+        tools = self._tools_for(which)
+        spoken_words = 0
+        capped = False
 
         def ship(sentence: str) -> None:
+            # The cap is on what is *spoken*, not on what is generated: the cost
+            # being managed is the listener's time. The mic is paused while he
+            # talks (the USB codec wedges if capture and playback overlap), so a
+            # long answer cannot be cut short by voice and a child has to wait it
+            # out. Tokens are already bounded by max_tokens; attention is not.
+            #
+            # It stops at the first sentence boundary *past* the cap, so one long
+            # sentence still gets said in full. That is deliberate — half a
+            # spoken sentence sounds like a fault, not like brevity — and it
+            # means this is a backstop against rambling, not a word-exact limit.
+            # The instruction in the prompt is what actually keeps answers short;
+            # measured, it took a 48-word answer to 23 against a cap of 25. This
+            # is here for the turn where that instruction is ignored.
+            nonlocal spoken_words, capped
+            if capped:
+                return
             said.append(sentence)
             emit(sentence)
+            if cap is not None:
+                spoken_words += len(sentence.split())
+                capped = spoken_words >= cap
+
+        # Both clients expose the same messages.stream(...) surface — that is the
+        # whole design of local_brain — so everything below is backend-agnostic.
+        client = self._client if which == "claude" else self._local
+        model = self.model if which == "claude" else self._local.model
 
         try:
-            for _ in range(4):                       # bounded tool loop
-                kwargs = dict(model=self.model, max_tokens=400, system=system,
-                              messages=messages, tools=commands.CLAUDE_TOOLS)
-                if self.model.startswith(_EFFORT_MODELS):
-                    kwargs["output_config"] = {"effort": "low"}  # snappy — it's spoken
+            # Was 4, which is three tool rounds and a final answer. "Right,
+            # then centre, then left, then centre" is four moves, and if the
+            # model takes them one at a time it runs out before it can speak —
+            # so the person sees the first move and hears nothing about the
+            # rest. Only multi-step requests ever get near this.
+            for _ in range(8):                       # bounded tool loop
+                kwargs = dict(model=model, max_tokens=400, system=system,
+                              messages=messages, tools=tools)
+                if which == "claude":
+                    # Cache the tools+system prefix. Render order is
+                    # tools -> system -> messages, so a breakpoint on the system
+                    # block covers both, and everything volatile — the per-turn
+                    # facts and the question — sits after it in messages, uncached.
+                    # The prefix is deterministic per (backend, web switch, shell
+                    # armed), which is exactly what _system_for/_tools_for already
+                    # guarantee, so repeat turns read it at ~0.1x instead of
+                    # paying full input price for ~1200 tokens of prompt and tool
+                    # schemas every single turn and every tool-loop iteration.
+                    #
+                    # Claude only: the local shim's _to_ollama wants `system` as a
+                    # plain string and has no notion of cache_control, so the
+                    # block form and the breakpoint go on this path alone.
+                    kwargs["system"] = [{"type": "text", "text": system,
+                                         "cache_control": {"type": "ephemeral"}}]
+                    if model.startswith(_EFFORT_MODELS):
+                        kwargs["output_config"] = {"effort": "low"}  # snappy — spoken
                 splitter = _SentenceSplitter(ship)
                 # Stream so the first sentence reaches the speaker while the rest
                 # is still being written. Text blocks arrive before tool_use ones,
                 # so FRED says "Sure," and *then* the servo moves.
-                with self._client.messages.stream(**kwargs) as stream:
-                    for delta in stream.text_stream:
-                        splitter.feed(delta)
+                with client.messages.stream(**kwargs) as stream:
+                    # Events, not text_stream, for the sake of one character. A
+                    # web search splits the reply into two text blocks — one
+                    # before the search, one after — and text_stream concatenates
+                    # them with nothing in between, so "...zip code." + "Thunder-
+                    # storms..." arrives as "code.Thunderstorms". _SENTENCE_END
+                    # needs whitespace after the full stop, so without this the
+                    # two sentences are spoken as one long run-on. A block that
+                    # ends is a sentence that ended; say so.
+                    for event in stream:
+                        if event.type == "text":
+                            splitter.feed(event.text)
+                        elif (event.type == "content_block_stop"
+                                and event.content_block.type == "text"):
+                            splitter.feed("\n")
                     resp = stream.get_final_message()
                 splitter.flush()
+                if resp.stop_reason == "pause_turn":
+                    # A server-side search ran long and the API parked the turn
+                    # part-way. It is not finished — the old `!= "tool_use"` test
+                    # read this as "done" and stopped FRED mid-answer, which
+                    # sounds like he lost his train of thought. Hand the paused
+                    # turn straight back, unchanged: the blocks carry the
+                    # encrypted search results the API needs to resume, so they
+                    # must not be filtered or rebuilt on the way through.
+                    messages.append({"role": "assistant", "content": resp.content})
+                    continue
                 if resp.stop_reason != "tool_use":
                     break
                 messages.append({"role": "assistant", "content": resp.content})
@@ -306,7 +1009,23 @@ class Brain:
                     if block.type == "tool_use":
                         actions.append(block.name)
                         try:
-                            out = commands.run_tool(self.ctx, block.name, block.input)
+                            if block.name == commands.VISION_TOOL:
+                                # Returns image blocks, not a sentence — the one
+                                # tool whose result Claude looks at rather than
+                                # reads. See Brain._look.
+                                out = self._look(which, block.input)
+                            elif block.name == commands.LOOK_360_TOOL and which != "claude":
+                                # Image blocks too, and for the same reason as
+                                # _look: the local model would get base64 text.
+                                out = "I can't see right now — I'm running on my local brain."
+                            else:
+                                try:
+                                    out = commands.run_tool(self.ctx, block.name, block.input)
+                                finally:
+                                    # Even a tool that raised may have moved
+                                    # him first: a gesture that failed halfway
+                                    # still left the head somewhere new.
+                                    self._after_tool(block.name)
                         except Exception as exc:  # noqa: BLE001 - a wedged servo or I2C
                             # glitch shouldn't kill the turn. Hand the failure back and
                             # let FRED tell the user, mid-conversation, what went wrong.
@@ -321,13 +1040,31 @@ class Brain:
                 # "didn't catch that" fillers, which would just add noise to the
                 # replayed context.
                 self._remember(text, reply)
+                # ...and pin what they asked to the face in front of him, so
+                # "you were asking me about servos" has something to name. A
+                # no-op when no face has been seen: a note with nobody attached
+                # to it is just an unlabelled record of what a child said.
+                if self._face_recall_on():
+                    self.faces.remember(text)
             else:
                 reply = "Done." if actions else "Sorry, I didn't catch that."
                 emit(reply)
-            return {"reply": reply, "source": "claude", "actions": actions}
+            if which == "claude":
+                # The cloud answered: any outage is over, and the next failure
+                # is a new one worth announcing (respond's fallback branch).
+                self._cloud_failed_at = 0.0
+            return {"reply": reply, "source": which, "actions": actions}
         except Exception as exc:  # noqa: BLE001 - network/API hiccup shouldn't crash the loop
-            trouble = "I'm having trouble reaching my brain right now."
-            if not said:            # already talking? don't cut in with an apology
-                emit(trouble)
-            return {"reply": " ".join(said).strip() or trouble,
-                    "source": "error", "actions": actions, "error": str(exc)}
+            # Don't apologise out loud yet: in auto, respond() may still retry
+            # this turn on the local model. ``spoke`` tells it whether cutting in
+            # would interrupt something already being said.
+            print(f"[Brain] {which} turn failed: {exc}")
+            if said or self.backend != "auto" or which == "local":
+                trouble = "I'm having trouble reaching my brain right now."
+                if not said:        # already talking? don't cut in with an apology
+                    emit(trouble)
+                return {"reply": " ".join(said).strip() or trouble,
+                        "source": "error", "actions": actions,
+                        "spoke": bool(said), "error": str(exc)}
+            return {"reply": "", "source": "error", "actions": actions,
+                    "spoke": False, "error": str(exc)}

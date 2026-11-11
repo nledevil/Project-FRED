@@ -4,11 +4,24 @@ __pycache__/
 *.log
 captures/
 config/secrets.env
-models/
+models/*
+# ...but YuNet's weights are a small, version-pinned code dependency of
+# inmoov/face_detect.py, not a bulky out-of-band model, so they ship.
+!models/yunet/
 # Terminator movie clips are copyrighted — keep them local, out of the repo.
 sounds/terminator/*.wav
 
 # Machine-local runtime state: persisted bench tuning (face-tracking gains),
 # device paths, and API tokens. Defaults live in inmoov/settings.py, so a fresh
 # checkout still runs without this file.
+config/phrases.json
 config/settings.json
+
+# Compiled chest-panel animations: built per-machine from deploy/display/*.c
+# Generated from theme.py by the Makefile, beside the binary above.
+verify-*.raw
+deploy/display/shaders/*.qsb
+# heard.jsonl and friends: data, not source. The comment is on its own line
+# because git has no trailing comments — with one appended, the whole line
+# became the pattern and this directory was never ignored at all.
+logs/

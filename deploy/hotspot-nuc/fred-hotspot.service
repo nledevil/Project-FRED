@@ -1,0 +1,30 @@
+[Unit]
+Description=FRED access point "fred" (hostapd on the NUC's Intel radio)
+# Enabled at boot: FRED is taken to venues, and an access point you have to
+# reach the panel to switch on is no use when the panel is what you cannot
+# reach. It was off by default at first, on the reasoning that parking the Intel
+# radio in AP mode at home earns nothing -- true, and worth less than turning up
+# somewhere with no way in. The panel and the touchscreen still stop it.
+#
+# Nothing contends for the radio: wlo1 is unmanaged by systemd-networkd (netplan
+# describes it as this AP, not a client), so hostapd is the only thing that
+# configures it.
+After=network.target
+Wants=fred-hotspot-dns.service
+Before=fred-hotspot-dns.service
+
+[Service]
+Type=simple
+# The address the panel is reached on while joined to this AP.
+ExecStartPre=-/usr/sbin/ip addr flush dev wlo1
+ExecStartPre=/usr/sbin/ip addr add 192.168.50.1/24 dev wlo1
+ExecStartPre=/usr/sbin/ip link set wlo1 up
+ExecStart=/usr/sbin/hostapd /etc/hostapd/fred.conf
+# Hand the radio back cleanly, or the next client join finds a half-configured
+# interface holding an address that no longer means anything.
+ExecStopPost=-/usr/sbin/ip addr flush dev wlo1
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

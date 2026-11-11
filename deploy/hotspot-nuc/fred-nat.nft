@@ -1,0 +1,82 @@
+#!/usr/sbin/nft -f
+#
+# Give clients on the "fred" access point a way out to the internet, and nothing
+# else. Installed as /etc/nftables.conf and applied by nftables.service at boot.
+#
+# Joining "fred" used to reach the robot and stop there. That is fine at a bench
+# and surprising at a venue: a phone joins to drive FRED, loses the internet
+# entirely, and Android quietly hands the data connection back, at which point
+# the panel stops loading. So the NUC now routes for them, out whichever card
+# has the uplink.
+#
+# **AP clients must not reach the robot LAN.** That is the rule this file exists
+# to enforce, and it is why forwarding could not simply be switched on. 10.0.0/24
+# carries the servo bus, the chest daemon and the cart's Pico, several of which
+# answer without a token; the panel's PIN also treats that subnet as the robot's
+# own machines and lets it past without asking. A route from the guest WiFi into
+# that would undo both. Guests get the uplink and a wall.
+#
+# Forwarding was off entirely before this (net.ipv4.ip_forward=0), so a default
+# policy of drop takes nothing away that used to work — see 99-fred-nat.conf,
+# which turns it on.
+#
+# The uplink is matched as "not one of ours" rather than by name. It is
+# wlx34e894c8315c today, a name derived from that USB card's MAC, so naming it
+# here would mean a silent loss of internet the day the card is replaced or the
+# uplink moves to a cable.
+
+# Careful with `nft -f` on a running machine: the flush below drops *every*
+# table, including the ip/ip6 filter and nat tables that Tailscale installs
+# through the iptables-nft compatibility layer. At boot that is harmless —
+# nftables.service runs before tailscaled — but reloading this by hand takes the
+# tailnet's routing with it until tailscaled reinstates it. To change a rule on
+# a live machine, add or replace that rule rather than reloading the file.
+
+flush ruleset
+
+table inet fred {
+  chain forward {
+    type filter hook forward priority filter; policy drop;
+
+    ct state established,related accept
+    ct state invalid drop
+
+    # The wall. Explicit and first, so it cannot be reached past the accept
+    # below, and counted so "can the AP see the Pis?" has an answer rather than
+    # an opinion: nft list ruleset should show this at zero.
+    iifname "wlo1" oifname "br0" counter drop comment "AP guests: no robot LAN"
+
+    # ...and the way out, to anything that is not ours.
+    iifname "wlo1" oifname != { "wlo1", "br0" } counter accept comment "AP guests: uplink only"
+
+    # Tailscale is the opposite case to the AP: these are Ryan's own devices,
+    # authenticated by the tailnet before a packet arrives, so they get the
+    # robot LAN — which is the entire point of advertising the route. Without
+    # this the subnet route resolves, hands out no error, and every packet dies
+    # on the policy below.
+    iifname "tailscale0" oifname "br0" counter accept comment "tailnet: robot LAN"
+
+    # The robot LAN's own way out. The Pis are ours rather than guests, and both
+    # of them need the archive occasionally — the chest has no pip by design, so
+    # apt is the only way anything gets installed there. Without this they have
+    # no route to it at all: the policy below is drop, so 10.0.0/24 was being
+    # discarded here long before the missing masquerade mattered.
+    #
+    # They do not get the AP, for the same reason the AP does not get them.
+    # Redundant against the policy, and explicit anyway so that "can the robot
+    # see the guest WiFi?" has a counter to answer it rather than an argument.
+    iifname "br0" oifname "wlo1" counter drop comment "robot LAN: no AP guests"
+    iifname "br0" oifname != { "wlo1", "br0" } counter accept comment "robot LAN: uplink only"
+  }
+}
+
+table ip fred-nat {
+  chain postrouting {
+    type nat hook postrouting priority srcnat; policy accept;
+    ip saddr 192.168.50.0/24 oifname != { "wlo1", "br0" } counter masquerade
+    # ...and the same for the robot LAN. Outbound only: this lets the Pis reach
+    # the internet and lets nothing reach them, which is the same trade the line
+    # above makes for AP clients.
+    ip saddr 10.0.0.0/24 oifname != { "wlo1", "br0" } counter masquerade
+  }
+}

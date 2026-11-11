@@ -24,6 +24,8 @@ import os
 import time
 from pathlib import Path
 
+import theme
+
 import numpy as np
 
 from font5x7 import CHAR_H, draw_text, text_width
@@ -41,9 +43,10 @@ PAD = 8
 MARGIN = 12
 DIM = 0.25                  # how far to knock back the animation behind the panel
 
-TITLE_RGB = (90, 150, 190)
-VALUE_RGB = (120, 210, 255)
-ALERT_RGB = (230, 120, 90)
+_RAMP = theme.ramp()
+TITLE_RGB = _RAMP.at(0.33)             # labels: present, not competing
+VALUE_RGB = _RAMP.at(0.5)              # the reading itself, at full accent
+ALERT_RGB = _RAMP.bad                  # a fault reads as a fault on every theme
 
 
 def publish(data: dict, path: Path = METRICS_PATH) -> None:

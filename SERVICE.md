@@ -58,185 +58,296 @@ There is no separate build step. If you edit the unit file itself, run
   sudo systemctl daemon-reload && sudo systemctl restart inmoov
   ```
 
-# MyRobotLab service (headless, WebGui)
+## Rebuilding the brain (2026-09-09)
 
-[MyRobotLab](https://myrobotlab.org/) (MRL) runs alongside our own stack as a
-second systemd service — the InMoov community's Java robotics framework, headless
-(no Swing GUI), with its **WebGui** browser interface on port **8888**. Installed
-2026-07-10.
+The NUC is the machine whose loss kills everything — bridge, DHCP/DNS/NTP for
+the robot LAN, the AP, the brain, the terminals. This is the order that gets a
+fresh Ubuntu install back to being FRED, assuming a `tools/backup.sh` archive
+(which holds every secret and every hand-derived tuning) and this repo.
 
-- **Version:** Nixie **1.1.1611** (develop branch build). Java: **OpenJDK 21**
-  headless (`openjdk-21-jdk-headless`; MRL needs "Java 11 or newer").
-- **Install dir:** `/home/dietpi/mrl/myrobotlab-1.1.1611`, reached via the stable
-  symlink `/home/dietpi/mrl/current` (so an upgrade is just a re-point — no unit
-  edit). ~2.7 GB in `~/mrl` + ~1.7 GB of resolved deps cached in `~/.ivy2`.
-- **Unit file:** `/etc/systemd/system/myrobotlab.service` (repo copy at
-  `deploy/myrobotlab.service`). Runs `current/myrobotlab.sh` as `dietpi`,
-  `WorkingDirectory=current` (the script sets a *relative* `java.library.path`,
-  so cwd must be the install root). Auto-start at boot: **enabled**. Restart on
-  failure after 10 s.
-- **URL:** http://<pi-ip>:8888  — served by the WebGui service.
-- **Footprint:** ~231 MB RSS at idle; JVM heap left at the default ergonomic cap
-  (~25% of RAM ≈ 460 MB). Leaves ~900 MB free with the InMoov app also running.
+1. **Clone the repo** to `~/fred/Project-FRED`; make the venv and restore its
+   packages from `deploy/requirements-nuc.txt` (`pip install -r`).
+2. **Network first** — nothing else is reachable without it. Copy from
+   `deploy/net-nuc/` (or the backup's live copies): the netplan bridge to
+   `/etc/netplan/00-installer-config.yaml`, the robot-LAN dnsmasq to
+   `/etc/dnsmasq.d/fred.conf`, chrony to `/etc/chrony/conf.d/robot-lan.conf`;
+   `netplan apply`, restart dnsmasq + chrony. The Pis should reappear at
+   10.0.0.10/.11 (their leases are MAC-reserved). NAT/sysctl files are in
+   `deploy/hotspot-nuc/`; the AP is `deploy/hotspot-nuc/`'s install notes.
+3. **Secrets** — from the backup archive: `config/settings.json` (PIN digest,
+   device tokens, every device-name tuning), `config/phrases.json`,
+   `/etc/fred/anthropic.env` (root-only, the API key).
+4. **Units** — the backup's `nuc/systemd/` holds what was actually installed
+   (repo copies can lag the machine); `sudo cp`, `daemon-reload`, enable
+   `fred-panel` and the terminal units you use.
+5. **udev** — `deploy/99-respeaker-xvf3800.rules` to `/etc/udev/rules.d/`,
+   reload + trigger, or the mic's direction readout runs root-only.
+6. **Prove it** — `tools/preflight.py`. Every hidden-degradation case this
+   rebuild can produce (Ollama on CPU, deaf mic, frozen camera, missing key)
+   is a line in its output; do not trust a rebuild that has not run it.
+
+The Pis need no rebuild step beyond `deploy/push-role.sh <role>` plus their
+unit files and token drop-ins from the backup's `head/` and `chest/` trees.
+
+# Local LLM brain (Ollama, Intel Arc iGPU)
+
+FRED goes places without reliable WiFi, so the cloud can't be the only brain. A
+local model runs on the NUC and answers the open questions the command matcher
+doesn't catch — no network, no API cost, nothing leaving the robot. Built
+2026-08-11.
+
+- **Runtime:** Ollama (`systemctl status ollama`, enabled at boot), bound to
+  **127.0.0.1:11434 only**. Models are cached under
+  `/usr/share/ollama/.ollama/models`, so this works with the uplink unplugged.
+- **Model:** `qwen2.5:3b`. Chosen by benchmark, not vibes — see below.
+- **Backend switch:** admin panel → "Brain backend", or
+  `POST /api/brain {"backend": "auto"|"claude"|"local"}`. `GET /api/brain` reports
+  what's reachable; `/api/state` carries a `brain` block. Persisted under
+  `brain.backend` in `config/settings.json`.
+  - `auto` (default) — Claude when reachable, local when not. After a cloud
+    failure it stays local for 60 s (`CLOUD_RETRY_SECS`) rather than paying a
+    network timeout on every utterance, which the listener would hear as a hang.
+  - `claude` — cloud only. `local` — never touches the network.
+
+### Using the Intel Arc iGPU
+
+Ollama ships a **Vulkan** backend (`/usr/local/lib/ollama/vulkan/`), but
+integrated GPUs are opt-in — out of the box it logs "No NVIDIA/AMD GPU detected"
+and runs CPU-only. The fix is one env var. The drop-in is kept in the repo as
+`deploy/ollama-igpu.conf` and installed to
+`/etc/systemd/system/ollama.service.d/igpu.conf` (`sudo cp`, then
+`sudo systemctl daemon-reload && sudo systemctl restart ollama`):
+
+```ini
+[Service]
+Environment="OLLAMA_IGPU_ENABLE=1"
+```
+
+It then reports `library=Vulkan … Intel(R) Graphics (PTL) … type=iGPU
+total=22.7 GiB` and offloads to the Arc B390. Measured on a 4B model:
+**11.9 tok/s CPU → 20.6 tok/s GPU** (1.7x) generating, and **43 → 1075 tok/s**
+reading a prompt, which is the number that decides how long FRED stands there
+before answering. No oneAPI/SYCL or Level Zero install needed — Mesa's Vulkan
+driver is enough. The NPU at `/dev/accel0` is *not* used; that would need
+OpenVINO, which Ollama can't drive.
+
+**The env var alone is not enough — it has to win a race at boot.** Ollama probes
+for devices exactly once, at startup, and keeps that answer for the life of the
+process. On a cold boot on 2026-08-12 the `xe` driver was still loading GuC/HuC
+firmware at 00:48:33 while Ollama started at :31 and probed at :32; it found
+nothing, logged a single `library=cpu` line, and ran on the CPU for the whole
+uptime. Nothing looked broken — `OLLAMA_IGPU_ENABLE` was set, the driver worked,
+`vulkaninfo` listed the GPU, the model answered. It was just 25x slower at
+reading a prompt, which is how FRED came to take 28 seconds to answer a question.
+
+So the same drop-in waits for the GPU to be genuinely usable before Ollama looks:
+
+```ini
+ExecStartPre=/bin/sh -c 'for i in $(seq 1 60); do vulkaninfo --summary 2>/dev/null | grep -q "deviceType.*_GPU" && exit 0; sleep 1; done; exit 0'
+```
+
+`vulkaninfo` (from **vulkan-tools**, a real dependency of this unit now) is the
+honest test — `/dev/dri/renderD128` appears well before the GPU can be used, so
+waiting on the node would not have helped. `_GPU` matches
+`..._INTEGRATED_GPU`/`..._DISCRETE_GPU` but not the llvmpipe software device,
+which is always present and reports `..._CPU`. It gives up after 60 s rather than
+blocking boot, so a machine with no GPU still starts Ollama on the CPU. Costs
+0.1 s when the GPU is already up.
+
+**Check it after any reboot** — this is the failure that hides:
 
 ```bash
-sudo systemctl {start,stop,restart,status} myrobotlab
-sudo journalctl -u myrobotlab -f
-curl -s -o /dev/null -w '%{http_code}\n' http://localhost:8888/   # 200 when WebGui is up
+journalctl -u ollama -b | grep "inference compute"   # want library=Vulkan, NOT library=cpu
+curl -s localhost:11434/api/ps | grep -o '"size_vram":[0-9]*'   # want non-zero
 ```
 
-## Notes / gotchas
+### Why this model (measured through FRED's own system prompt + 10 tools)
 
-- **First run is slow (~20 min, one-time).** With no `libraries/repo.json`,
-  `myrobotlab.sh` runs `Runtime --install`, resolving+downloading the full
-  dependency tree (~1.9 GB) from Maven Central. Once `repo.json` exists,
-  subsequent starts skip it and WebGui comes up in ~25 s.
-- **Do NOT set `_JAVA_OPTIONS`/`JAVA_TOOL_OPTIONS`** in the unit to force `-Xmx`.
-  The JVM prints a `Picked up ...` banner that MRL's `java -version | head -1`
-  version check parses, so it mis-reads the version and refuses to start
-  ("incompatible version of java"). To cap the heap, append `-Xmx` to
-  `JAVA_OPTIONS` *inside* `myrobotlab.sh` instead. (Cost us one failed boot.)
-- **Ports:** MRL 8888, InMoov panel 8080, ttyd terminal 7681 — no clash.
-- **Hardware coexistence — NOT yet solved.** MRL and our app must not both drive
-  the PCA9685/I2C servos, the USB audio card, or the Pi camera at once. Today
-  nothing enforces that; the planned **hardware handoff toggle** in the InMoov
-  app (see `TODO.md`) is what will release those to MRL on demand. Until then,
-  don't arm both stacks against the hardware simultaneously.
-- **Reboot check:** the service is `enabled`, so it starts at boot via
-  `multi-user.target`. A reboot to confirm boot-start wasn't performed during
-  install (it would drop the remote session); do `sudo reboot` when convenient
-  and verify `systemctl is-active myrobotlab` + port 8888.
-- Reinstall the unit from the repo copy:
-  ```bash
-  sudo cp deploy/myrobotlab.service /etc/systemd/system/myrobotlab.service
-  sudo systemctl daemon-reload && sudo systemctl restart myrobotlab
-  ```
+| model | first word | tool calls | tokens/reply |
+|---|---|---|---|
+| **qwen2.5:3b** | **1.05 s** | **8/8** | **~17** |
+| llama3.2:3b | 1.04 s | 6/8 | ~13 |
+| qwen3:4b | 0.65 s | 4/8 | ~152 |
 
-## Hardware handoff toggle (InMoov ⇄ MyRobotLab)
+`llama3.2:3b` reaches for `read_sensors` on general-knowledge questions.
+`qwen3:4b` is a **reasoning** model: it burns 150+ tokens thinking, that thinking
+leaks into `content` (so FRED would say it aloud — `think:false` and `/no_think`
+both failed to suppress it on this build), and its tool calls get lost. **Don't
+put a reasoning model behind a talking head.**
 
-The InMoov app and MRL both want the *same* physical hardware — the PCA9685
-servos on I2C, the USB audio card, and the Pi camera — and only one process may
-drive each at a time. The **admin panel** ("MyRobotLab handoff" panel) has a live
-toggle that releases all three from the InMoov app so MRL can take them, and takes
-them back on toggle-off. Built 2026-07-10.
+End-to-end through the full pipeline the local brain is *level with Claude*
+(4.30 s vs 4.01 s per exchange) — speech synthesis and playback dominate, so the
+model is not the bottleneck.
 
-- **API:** `GET /api/handoff` → state; `POST /api/handoff {"release": true|false}`.
-  `/api/state` also carries a `handoff` block.
-- **What "release" does** (each hardware object grew `suspend()`/`resume()`):
-  - **Servos** (`ServoController.suspend`): relaxes every servo (cuts pulses),
-    `deinit()`s the PCA9685, and drops the I2C handle. `set_angle`/`relax` become
-    no-ops. `resume()` re-opens I2C, re-applies ranges, returns to rest.
-  - **Audio** (`Sound.suspend`): stops playback and refuses new playback. The
-    mic/`arecord` is held by the voice **Listener**, so the coordinator also calls
-    `assistant.stop()` to free it.
-  - **Camera** (`Camera.suspend`): force-stops the sensor (even under viewers),
-    reports `available() == False` so streams 503. The coordinator also stops the
-    **face tracker** so its sensor hold is dropped.
-- **While released**, the hardware-actuating endpoints (`/api/move`, `/rest`,
-  `/relax`, `/channel`, `/identify`, `/camera`, `/voice`, `/track`, `/say`,
-  `/command`, sound playback) return **409** with a clear message; the camera
-  stream/snapshot return 503.
-- **Persistence:** the choice is saved to `config/settings.json` under
-  `hardware.released` and re-applied at boot (the app starts suspended, without a
-  servo-rest sweep), so an event set-up survives a reboot.
-- **Note:** this only frees *our* side. It does **not** start/stop the `myrobotlab`
-  service — do that separately (`sudo systemctl start myrobotlab`). Wiring the two
-  together is a noted follow-up in `TODO.md`.
-- **I2C access for MRL is confirmed at the OS level:** MRL runs as `dietpi`, which
-  is in the `i2c` group, and `/dev/i2c-1` is `crw-rw---- root i2c` — so MRL can
-  open the bus. Verified 2026-07-10 (`i2c-tools` installed): with the InMoov app
-  released, `i2cdetect -y -r 1` as `dietpi` sees the PCA9685 at **0x40** and
-  `i2cget -y 1 0x40 0x00` reads its MODE1 register. (i2cdetect/i2cget live in
-  `/usr/sbin` — not on the default user PATH; use the full path or `sudo`.)
+### How it plugs in
 
-### MRL driving the PCA9685 — the WiringPi fix (REQUIRED)
-
-MRL's Pi-native I2C is the **`RasPi`** service (an `I2CController`), and the
-`Adafruit16CServoDriver` (the PCA9685) attaches to it. Out of the box on this Pi,
-starting `RasPi` failed with:
-```
-java.lang.UnsatisfiedLinkError: 'int com.pi4j.wiringpi.Gpio.wiringPiSetup()'
-```
-**Cause:** MRL's `RasPi` uses **Pi4J 1.4**, whose native `libpi4j-aarch64.so`
-*dynamically links* `libwiringPi.so` / `libwiringPiDev.so` (Pi4J 1.4 dropped its
-bundled WiringPi and expects a **system** WiringPi). None was installed, so
-`wiringPiSetup` and the `wiringPiI2C*` symbols were unresolved.
-
-**Fix (done 2026-07-10):** built + installed the maintained WiringPi (which does
-support Pi 4 / 64-bit / recent kernels):
-```bash
-git clone --depth 1 https://github.com/WiringPi/WiringPi.git ~/mrl/WiringPi
-cd ~/mrl/WiringPi && sudo ./build && sudo /usr/sbin/ldconfig
-gpio -v          # sanity: should report "Pi 4B" and user-level GPIO access
-```
-This installs **WiringPi 3.18** → `/usr/local/lib/libwiringPi.so.3.18` (+ the
-unversioned `/usr/lib/libwiringPi.so` symlink Pi4J links against) and survives a
-reboot (standard lib path + ld.so cache). It does **not** affect the InMoov
-Python app, which uses `adafruit_servokit`, not WiringPi.
-
-**After installing WiringPi, restart MRL** (a running JVM has already cached the
-failed native load): `sudo systemctl restart myrobotlab`. Then `RasPi` starts and
-the PCA9685 attaches. Verified end-to-end: `RasPi` inits, `Adafruit16CServoDriver`
-attaches on `bus 1 / 0x40`, and MRL wrote the chip (MODE2=0x04, PRESCALE=0x79 =
-50 Hz). Minimal MRL (Python) setup:
-```python
-raspi = runtime.start("raspi", "RasPi")
-head  = runtime.start("HeadDriver", "Adafruit16CServoDriver")
-head.setDeviceBus("1"); head.setDeviceAddress("0x40")
-head.attach("raspi")
-# then attach Servo services to channels on HeadDriver
-```
-NB: MRL services created in a session are **not persisted** unless you save the
-MRL config (or a startup script). And MRL driving the PCA9685 requires the InMoov
-app to be **released** (handoff on) — only one owner of the I2C bus at a time.
-
-### Camera into MyRobotLab (libcamera → OpenCV via an MJPEG stream)
-
-MRL's OpenCV service **works on this Pi** (bytedeco JavaCV, OpenCV 4.10 arm64 — it
-needs `libunicap2` installed). But it can't grab the camera *directly*: MRL's
-`Webcam` service (sarxos/v4l4j) has no arm64 native, and the camera is a **Pi
-Camera 3 (imx708) — libcamera/CSI**, not a V4L2 webcam. `VideoCapture(0)` fails
-with "Could not read frame". (The old myrobotlab.org "pi camera + opencv" guide is
-Jessie-era `bcm2835-v4l2` — that legacy stack doesn't support the imx708.)
-
-**Solution: feed OpenCV an MJPEG stream from libcamera.** A standalone streamer
-owns *only* the camera and serves MJPEG; MRL's built-in `MJpegFrameGrabber` reads
-the URL. (We evaluated writing a custom MRL "Libcamera" FrameGrabber plugin —
-possible but not worth it: libcamera has no Java binding so the plugin would shell
-out to `rpicam-vid` anyway, adding a new grabber type needs an MRL source patch,
-and MRL *already ships* an MJPEG grabber. See the git history of this file.)
-
-- **Streamer:** `deploy/camera_stream.py` (picamera2/libcamera → MJPEG), run by
-  **`camera-stream.service`** (repo copy `deploy/camera-stream.service`), serving
-  **:8081** — `GET /stream.mjpg`, `/snapshot.jpg`, `/`. Owns only the camera (no
-  I2C/audio), so it coexists with MRL driving the servos. Enabled at boot. Tuning
-  via env in the unit (`CAM_STREAM_SIZE=640x480`, `CAM_STREAM_FPS=15`,
-  `CAM_AF_MODE=0` manual, `CAM_LENS_POSITION=2.0`, `CAM_FLIP=0`).
-  ```bash
-  sudo systemctl {start,stop,restart,status} camera-stream
-  curl -s -o /dev/null -w '%{http_code}\n' http://localhost:8081/snapshot.jpg   # 200
-  ```
-- **Wire MRL's OpenCV to it** (Python tab, or REST):
-  ```python
-  cv = runtime.start("cv", "OpenCV")
-  cv.setGrabberType("MJpeg")
-  cv.setInputSource("imagefile")                              # INPUT_SOURCE_FILE
-  cv.setInputFileName("http://localhost:8081/stream.mjpg")
-  cv.capture()
-  ```
-  Verified end-to-end: `MJpegFrameGrabber` connects, `cv.isCapturing()==true`, and
-  OpenCV pulls ~18 KB JPEG frames from the imx708. Face detection etc. then run on
-  those frames like any OpenCV input.
-- **Note:** this camera path is independent of the servo/I2C handoff — the camera
-  and the I2C bus are different resources. So MRL can have the camera (via the
-  stream) *and* the servos (via `raspi`/`Adafruit16CServoDriver`) at the same time,
-  while the full InMoov app stays stopped.
+`inmoov/local_brain.py` deliberately mimics the slice of the Anthropic SDK that
+`brain.py` already drives — `client.messages.stream(...)` yielding `.text_stream`
+then `.get_final_message()` with `.stop_reason` / `.content[].type|name|input|id`.
+So the streaming sentence splitter, the bounded tool loop and the conversation
+memory are **backend-agnostic**: `Brain._ask_llm` runs identically either way, and
+the only difference is which client object it's handed. Wire-format translation
+(tool schemas, system message, tool results) lives in `_to_ollama`.
 
 ```bash
-curl -s localhost:8080/api/handoff                                   # state
-curl -sX POST localhost:8080/api/handoff -d '{"release":true}'  -H 'Content-Type: application/json'   # hand off to MRL
-curl -sX POST localhost:8080/api/handoff -d '{"release":false}' -H 'Content-Type: application/json'   # take it back
+curl -s localhost:8080/api/brain                                     # backend + what's reachable
+curl -sX POST localhost:8080/api/brain -d '{"backend":"local"}'  -H 'Content-Type: application/json'
+curl -sX POST localhost:8080/api/brain -d '{"backend":"auto"}'   -H 'Content-Type: application/json'
+ollama list                                                          # installed models
+journalctl -u ollama -n 50 | grep -i vulkan                          # confirm GPU offload
 ```
+
+## SSH between the three machines
+
+Every machine can reach every other by the **same three names** — `nuc`, `head`,
+`chest` — whichever box you are sitting on, with `nuc-wifi` / `head-wifi` /
+`chest-wifi` as the rescue path when the robot LAN is down. Set up 2026-08-12;
+before that only the NUC could reach the Pis, which is why `make install-chest`
+failed from the head.
+
+- Each machine has its own `~/.ssh/id_ed25519`; both Pis' public keys are in the
+  NUC's `authorized_keys`, labelled `dietpi@head-pi` / `dietpi@chest-pi`. Both
+  Pis call themselves `DietPi`, so the stock comments were identical and told you
+  nothing about which machine you were trusting — hence the relabel.
+- The Pis' `~/.ssh/config` mirrors the NUC's, including
+  `StrictHostKeyChecking accept-new`. Not `no`: a first connection is trusted
+  without a prompt (there is no human to answer one, and non-interactive
+  `scp`/`rsync` simply dies on it), while a key that *changes* later still stops
+  us — which is the case actually worth catching.
+- **The `-wifi` addresses drift.** They come from house DHCP, unlike the robot
+  LAN's pinned reservations. `chest-wifi` was already stale (`.63`, now `.74`)
+  when this was written. Treat them as a hint; `hostname -I` on the box is the
+  fact.
+
+This grants each Pi a shell on the brain, which is what makes `make
+install-chest` and any Pi-to-Pi copy work. It is a closed robot LAN; if that
+ever stops being true, these are the keys to pull.
+
+```bash
+ssh head 'ssh chest hostname'      # prove a Pi-to-Pi hop works
+ssh head 'cd ~/cogbuild && make install-chest'   # the case that motivated it
+```
+
+## Settings menu on the chest panel
+
+The 7" panel is a touchscreen, so it is also the quickest way to ask FRED
+whether he is healthy without finding a laptop. A cog sits in the bottom-right
+corner of every animation; tapping it opens a menu, and the X returns to
+whatever was showing. Built 2026-08-12.
+
+- **STATUS** — one row per part: NUC, head, chest, cart. The rows are about
+  *links*, not boxes: the interesting failure is almost never "a Pi is off", it
+  is "the Pi is fine and nobody can reach it". The HEAD row therefore reports two
+  different things — whether the *chest* can reach the head's servo server, and
+  whether the *brain* can (`servo_link` in `GET /api/state`, added for this).
+  Those come apart, and when they do it says `NO BRAIN LINK`: the head is up,
+  answering us, and FRED still will not move.
+  The CART row calls out **e-stop** and **PS2 remote** by name, because both look
+  exactly like a broken cart from the brain's side — commands accepted, nothing
+  moves — and neither is a fault. An *unattached* cart is dim, not red: it is
+  optional and spends most of its life off the robot, and a row that is
+  permanently red is a row you stop reading.
+- **VOICE** — the wake-word listener, on or off. It paints the state the brain
+  reports rather than the state you asked for, so a tap shows `PENDING` until
+  the brain confirms; an optimistic toggle would claim "listening" for a robot
+  that never started.
+- **SERVOS** — a slider per servo, plus REST. Deliberately the *same* behaviour
+  as the web panel's sliders rather than a second opinion, because the two get
+  used in one session on one robot and any difference reads as a fault: a 60 ms
+  trailing throttle per servo with the last value always sent (the number in
+  `move()` in index.html), and a slider you just touched ignores the 2 s poll
+  for a moment so it can't be yanked back mid-drag. Limits come from the brain's
+  calibration, so this page cannot ask for an angle calibration says is unsafe,
+  and there is no raw/ignore-limits mode on purpose — that belongs on the panel
+  where you can see what you are doing, not on a screen you are prodding while
+  leaning over the robot. The three states that stop a move (audit, mock,
+  no link) are shown rather than discovered by pressing.
+
+`settings_menu.py --page servos` opens straight onto a tab, for testing a page
+without a finger. The daemon never passes it.
+
+### How it is put together
+
+The animation child mmaps `/dev/fb0` **exclusively**, so nothing else can draw
+while one is alive. That single fact decides the whole design:
+
+| piece | where | why there |
+|---|---|---|
+| `cog_hud.py` | called by every animation | the daemon cannot draw over a child, so each animation paints the cog itself — one line, next to the sensor HUD's |
+| `touch.py` | daemon **and** menu | two readers of one evdev node each get their own queue, so neither steals events |
+| `CogWatcher` | `display_control.py` | the one process that is always running, already root, and root is what `/dev/input/event0` needs |
+| `settings_menu.py` | a supervised child | it takes the screen the way an animation does, and hands it back on close |
+
+The menu is a preset like any other, marked `"hidden": True` so it never appears
+in the head panel's dropdown, is never written to `state.json`, and is never the
+pick at boot. `POST /api/animation/restore` is how it leaves.
+
+The cog is a **bitmap, not geometry**, drawn by `cog_hud.py` into the overlay
+texture the panel composites over every look. (A native C voice HUD used to
+carry its own copy, held pixel-identical by a verifier; both retired on
+2026-09-10 when the HUD became a shader hosted by the panel like every other
+look — see `deploy/display/shaders/voice_hud.frag` and `tools/verify_shaders.py`.)
+
+```bash
+curl -sX POST -H 'Content-Type: application/json' \
+     -d '{"animation":"settings"}' http://10.0.0.11:8081/api/animation   # open it
+curl -sX POST -H 'Content-Type: application/json' \
+     -d '{}' http://10.0.0.11:8081/api/animation/restore                 # close it
+ssh chest 'sudo cat /dev/fb0' > fb.raw    # what is actually on the panel, 800x480 RGB565
+```
+
+That last one is worth knowing: the menu shipped green-and-magenta the first
+time because text is *added* into the frame and `astype(uint8)` wraps rather
+than saturates. It reads exactly like a channel-order bug and is not one — every
+animation clips before the blit for this reason, and so must anything new.
+
+Adding a page is one file (`page_*.py`, with `title`, `draw`, `on_tap`) plus one
+entry in `settings_menu.py`'s list. The display picker, servo sliders and access
+point controls all fit that shape.
+
+## Audit mode (dry run)
+
+Talk to FRED through the web panel with **nothing physical happening**: no audio
+out of the speaker, no pulse to a servo, no cart motion. Everything else runs
+exactly as normal — the brain answers, the transcript fills, speech is really
+synthesised, and the on-screen face lip-syncs to it in real time. The servo
+readouts keep tracking the *commanded* angles, so the panel shows what FRED
+would have done. Admin panel → "Audit mode". Built 2026-08-11.
+
+- **API:** `GET /api/audit` → state; `POST /api/audit {"audit": true|false}`.
+  `/api/state` also carries an `audit` block, and `/api/sounds` an `audit` flag.
+- **Not a mute.** `sound.enabled = false` makes playback *fail*, which tells
+  the lip-sync layer no audio is coming and kills the jaw and the on-screen
+  mouth with it. Audit does not: it simulates a *successful* playback of exactly
+  the right length, so the whole pipeline runs against a silent speaker.
+- **How each object suppresses** (each grew `set_audit()` / `is_audit()`):
+  - **Audio** (`Sound`): `play_file()` opens no device and spawns no `aplay`. It
+    stamps `audio_epoch()` as usual (lead-in + sync offset included) and keeps
+    `is_playing()` true for the clip's real duration off the clock, which is what
+    the jaw and mouth animations schedule against. `render_tts()` still runs for
+    real — the envelope has to come from somewhere.
+  - **Servos** (`ServoController` / `RemoteServoController`): `set_angle` still
+    clamps to the configured limits and still records the result, so `get_angle()`
+    and the panel keep moving; the I2C write / HTTP POST to the head is skipped.
+    `relax` and `identify` are suppressed; `rest()` moves the readout only.
+    `set_channel`/`push_config` are **not** gated — remapping a port commands no
+    angle, and blocking it would break calibration for no safety gain.
+  - **Cart** (`CartClient`): `drive()` is acknowledged but never sent, which also
+    neuters `nudge()`. `stop()`/`clear_estop()` are deliberately **never**
+    suppressed — a stop that doesn't reach the hardware is the one failure this
+    class must not have.
+- **Entering does not relax the servos.** They hold their pose. Cutting the
+  pulses would let the head sag under its own weight, and visible motion is
+  precisely what the mode exists to prevent. The cart *is* really stopped on the
+  way in, since a rolling cart must not coast on a watchdog nobody is feeding.
+- **Leaving returns the servos to rest.** During an audit the readouts track
+  commanded angles while the hardware sat still, so the two have diverged; rest is
+  the one pose both are known to agree on. Skipped if the hardware is released.
+- **Persistence:** saved to `config/settings.json` under `audit.enabled` and
+  re-applied at boot — including skipping the startup rest sweep, so booting into
+  an audit moves nothing.
+- **Endpoints are NOT blocked.** Every control still returns success and reports
+  what it would have done. That is the point: the panel stays fully interactive.
 
 # Spoken IP announcement at boot
 
@@ -268,7 +379,7 @@ sudo journalctl -u inmoov-announce-ip -b    # what it announced this boot
 Tuning lives in `config/settings.json` under `sound` (`device`, `enabled`) —
 the announcement and the web app share it.
 
-# Voice assistant — "Hey FRED" (2026-07-04)
+# Voice assistant — "Fred" (2026-07-04)
 
 FRED can listen for a wake word, run spoken commands, answer questions, and talk
 back with his mouth moving in time with the audio.
@@ -278,8 +389,10 @@ back with his mouth moving in time with the audio.
   `inmoov/commands.py` (the command vocabulary), `inmoov/assistant.py`
   (ties it together + lip-sync). Owned by `web/app.py` as `_assistant`.
 - **How it listens:** always-on `arecord` on the USB mic (`plughw:0,0`) → Vosk
-  (`models/vosk-model-small-en-us-0.15`, ~40 MB, git-ignored). Say **"Hey FRED,
-  <command>"**; a bare "Hey FRED" makes him say "Yes?" and wait ~6 s for the
+  (`models/vosk-model-small-en-us-0.15`, ~40 MB, git-ignored). Say **"Fred,
+  <command>"** (a leading "hey" is optional and always was — `_strip_wake` scans
+  for the name anywhere in the utterance); a bare "Fred" makes him say "Yes?" and
+  wait ~6 s for the
   command.
 - **Brain (hybrid):** built-in commands (open/close mouth, track face on/off,
   terminator mode on/off, look left/right/up/down/center with the eyes, turn
@@ -355,12 +468,26 @@ curl localhost:8080/api/voice   # status: listening / speaking / ai_available / 
 
 ## Notes / gotchas
 
+> **Superseded (2026-09-09): audio is on the reSpeaker Flex (XVF3800) now, not
+> the P10S.** Both capture and playback are the array (`plughw:C16K6Ch,0`, 6
+> beamformed channels at 16 kHz; `sound.device` and `voice.mic_channels` in
+> settings). The XVF3800 does **on-device echo cancellation**, so FRED's own
+> voice is removed from the capture and he can be interrupted *through* a reply
+> (barge-in) rather than going deaf while he talks — verified for this device in
+> commit 4304641. On-array gain/AGC is now settable and re-applied at boot
+> (`inmoov/xvf_params.py`, `tools/xvf_tune.py`). The P10S notes below are kept
+> for reference but describe the **departed** USB speakerphone.
+
 - The mic and speaker on the P10S are **not** acoustically coupled, so the
   listener never hears FRED's own voice (no echo); the listener is also muted
   while he speaks. A real microphone element must be on the P10S mic input —
   confirm with `arecord -D plughw:0,0 -d 3 t.wav` then check the level while
   speaking.
-- Wake words accepted: fred / friend / fread / frayed (Vosk mishears the name).
+- Wake words accepted: **fred / alfred / frayed / fraud** (Vosk mishears the
+  name these ways). This is `WAKE_WORDS` in `inmoov/listener.py` — the authority,
+  measured against the model's own lexicon by `tools/wake_audit.py`. "friend" and
+  "bread" were dropped 2026-08-19 (a room says them by accident); "fread" is not
+  in the model's vocabulary, so nothing can ever emit it.
 - Requirements installed in the venv: `vosk`, `anthropic` (+ espeak-ng, already
   present). The Vosk model lives in `models/` (git-ignored — re-download from
   alphacephei.com/vosk/models if setting up fresh).
@@ -469,9 +596,10 @@ admin page picks the look at runtime.
     to a new animation is three lines: import, construct, draw.
   - The relay feeds it via an `on_payload` hook, *before* the payload is queued
     for the head — so the panel keeps updating even when the head is unreachable.
-- **Deploy an update:** `scp deploy/display/display_control.py
-  dietpi@192.168.68.81:/home/dietpi/display/ && ssh dietpi@192.168.68.81
-  'sudo systemctl restart inmoov-display'`.
+- **Deploy an update:** `deploy/push-role.sh chest dietpi@10.0.0.11` — syncs the
+  chest's whole file set from its manifest, stamps `DEPLOYED`, and restarts the
+  service. (The old hand-scp to a WiFi address is gone; the chest is static at
+  `10.0.0.11` on the wired LAN, and `tools/check_deploy.sh` reports drift.)
 - **Security:** plain HTTP on the LAN. **Don't port-forward :8081.** The head
   treats this Pi as a decoration: a 2s timeout, and an unreachable panel shows
   as offline rather than hanging or failing the admin page.
@@ -542,3 +670,139 @@ Two HC-SR04 ultrasonics and an HC-SR501 PIR, read by a Pico that plugs into the
 - **A node may name its own `transport`.** `/api/sensors/ingest` used to hardcode
   `"wifi"`, which would have mislabelled everything coming through here; the
   relay stamps `"serial-relay"` so the panel shows the real path.
+
+# Browser terminals — two doors into each one (2026-08-13)
+
+The three NUC-hosted terminals (`fred-terminal{,-head,-chest}.service`) each
+answer on **two** ports now, and the panel picks the right one per browser. This
+supersedes the single `:7681-7683` story in the 2026-07-05 section above — that
+section still describes the head Pi's own untouched `inmoov-terminal.service`.
+
+- **Through Tailscale — 8081/8082/8083.** The ttyds bind `-i lo` and
+  `tailscale serve --bg --http 8081 127.0.0.1:7681` publishes them to the
+  tailnet. No password: `-H Tailscale-User-Login` trusts the identity header
+  Serve injects, which is safe only because nothing on any network can reach a
+  loopback port to forge it. Installing the unit is half the job — without the
+  `serve` line the port is unreachable by everyone, including you.
+- **Direct — 7691/7692/7693.** `fred-terminal*-local.service`, bound to every
+  interface, HTTP basic auth as user `fred`. This is the door for the `fred`
+  access point and for any venue with no uplink, where Tailscale cannot reach
+  its coordination server and the tailnet does not exist at all. Both doors run
+  `tmux new-session -A` on the same session name, so it is one terminal with two
+  entrances — work started on one is on screen at the other.
+- **Why not basic auth on both.** ttyd 1.7.7 checks basic auth on the WebSocket
+  upgrade as well as the page, and browsers do not reliably attach cached
+  credentials to an upgrade that has crossed a proxy. Through Serve the page
+  rendered, `/token` returned, and the terminal then sat at "enter to connect"
+  with nothing logged. Hit directly it is fine — verified: `101 Switching
+  Protocols` with credentials, refused without them.
+- **`--check-origin` only on the direct units.** Serve rewrites Host to
+  `fred:8081` while ttyd sees `127.0.0.1:7681`, so the check compares two names
+  that can never match and rejects every websocket. On the loopback side the
+  bind already provides what the check would: a stranger's browser cannot reach
+  a loopback port cross-site. On the direct side the check is live and works —
+  a foreign `Origin` is refused.
+- **Which door am I getting?** `GET /api/terminals` answers with the URLs for
+  the asking browser, keyed on whether its address is in Tailscale's
+  `100.64.0.0/10` / `fd7a:115c:a1e0::/48`. A tailnet device coming in *through*
+  the subnet route is SNATed to the NUC's LAN address and is told to use the
+  direct ports — correct, since from there they are reachable and one hop
+  shorter.
+- **Still never port-forward any of these.** Six ports now, all plain HTTP, all
+  a full shell as `nledevil`.
+
+# Wide camera in the panel — and the group that stopped it (2026-08-13)
+
+The panel's camera card now switches between the head camera and the PanaCast's
+~180 degree view. Two things came out of building it.
+
+**The wide spotter had never run.** `/dev/video0` is `root:video` mode 0660 and
+`nledevil` is not in `video`, so `cv2.VideoCapture` failed at every start with
+`cannot open /dev/video0`. `WideSpotter` degrades to silence on purpose — no
+bearing is a legitimate answer — so it reported that in `/api/state` and
+otherwise said nothing, and `_bearing_hint()` fell through to the chest
+ultrasonics every time. Fixed with `SupplementaryGroups=video` in
+`fred-panel.service` rather than `usermod`, so a rebuilt machine gets it from
+the repo. It now opens the real 3840x1080 panorama.
+
+**It costs about 4 of the NUC's 16 cores, standing.** Measured over 20 s:
+4.26 cores with the spotter running and nobody watching. That is the Haar
+cascade — OpenCV fans `detectMultiScale` across its thread pool, and the worker
+threads inherit the spawning thread's name, so `top -H` shows a dozen
+`wide-spotter` rows and the per-thread view is easy to misread. `detect_ms` in
+`/api/state` is *wall* time (~90 ms), which understates the machine cost by
+roughly the thread count. Capping threads does not help — it trades latency for
+latency, not CPU. Resolution does, and `spotter.detect_width` in settings.json
+is the knob:
+
+| detect_width | face px at 2 m | CPU per detect | cores at 4 Hz |
+|---|---|---|---|
+| 1920 (current) | 49 | 416 ms | 1.7 |
+| 1280 | 33 | 195 ms | 0.8 |
+| 960 | 24 | 108 ms | 0.4 |
+| 640 | 16 | 49 ms | 0.2 |
+
+`min_face_px` is 24, so 960 puts a face at 2 m exactly on the floor and 640 is
+below it. 1280 is the honest middle. (Those are bench numbers on one frame; the
+live figure is higher because Haar cost tracks scene detail.)
+
+- **Viewing rides along, and is nearly free.** A V4L2 node streams to one opener
+  and the spotter holds it, so a second `VideoCapture` for the panel cannot
+  work, and stopping the spotter to look through the camera would switch off the
+  thing that finds people in order to watch for people. So the spotter's own
+  loop publishes JPEGs and `frames()` serves them. It is viewer-counted: with
+  nobody watching, not one extra frame is decoded, and when somebody is, the
+  detector shares the frame instead of paying for a second retrieve. The
+  measured difference between 0 and 1 viewer is inside the scene-to-scene
+  variance of the detector.
+- **Frames are downscaled to 1280x360 at 10 Hz**, from 3840x1080 at ~20. Full
+  resolution would cost more to encode than to detect on, for a feed no panel
+  displays at that size.
+- **The red eye LED stays off for the wide camera.** It is a privacy light for
+  the camera in his *head*; lighting it for one bolted to the chest would make
+  it mean two things, which is the same as meaning nothing.
+- **Focus, flip and face-tracking hide when wide is selected** — they all drive
+  the head camera through `/api/camera`, and the PanaCast has none of them.
+  Tracking also forces the view back to the head camera, since that is the one
+  that moves.
+
+# POWER
+
+The rescue manual was missing the one section you need when the robot is on a
+cart at a venue and something browns out. This is the pack-up sequence (which is
+code, so it is correct) and the electrical layout (which needs filling in from
+the actual supplies — see the marked stub; do not guess it during an incident).
+
+## Pack-up / shut-down order
+
+The chest panel's **POWER** menu (`deploy/display/power_menu.py`) encodes the
+order, and draws it in the order it happens, so "SHUT DOWN ALL" is safe to trust:
+
+1. **HEAD PI** (`10.0.0.10`) — servos and camera.
+2. **BRAIN / NUC** (`10.0.0.1`) — speech, vision, the panel.
+3. **CHEST PI** (`10.0.0.11`) — this screen, **last**.
+
+The chest fires `POST /api/poweroff` at the head and the NUC in turn (each gets a
+few seconds to actually go down before the next one loses its network), then
+powers **itself** off last — nothing runs after that line, because the screen it
+is drawn on is about to go. If the head or NUC **refuses or is unreachable**, the
+chest stops before powering itself off and shows `WOULD NOT SHUT DOWN: <machine>`
+— so a head left running in a crate is a line you read, not a surprise later.
+Doing it by hand instead: `ssh` each machine and `sudo systemctl poweroff` in the
+same order (head, then NUC, then chest).
+
+## Electrical layout — TO FILL IN
+
+> This part is not in the repo and must not be guessed. Fill it from the actual
+> supplies on the cart; an accurate line here is what turns a brownout from a
+> mystery into a five-minute fix.
+
+- **Rails and supplies:** _(voltage / current of each — e.g. the servo rail, the
+  logic/5 V rail, the NUC's brick — and which physical supply feeds which.)_
+- **What browns out first:** _(the servos are the large, spiky draw; note which
+  rail sags under a full-body move and what that starves — the most useful line
+  in this whole file when it happens.)_
+- **Draw notes already known from elsewhere in this doc:** the wide PanaCast
+  camera costs ~4 cores on the NUC when streaming; the Intel Arc iGPU under the
+  local LLM is a real power draw; a full-body servo move is the peak mechanical
+  load. These are CPU/heat notes, not measured amps — replace with real numbers.
