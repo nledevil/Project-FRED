@@ -366,6 +366,12 @@ class ServoBoards:
             raise ServoBoardError(f"board {uid} is not connected")
         return link.request(cmd)
 
+    def ping(self, uid: str) -> dict:
+        """Ask board ``uid`` for a fresh status line. Moves nothing; refreshes
+        the link's online/enabled/pca flags that describe() reports. For the
+        self-test, which must not trust a flag from the last exchange."""
+        return self._send(uid, {"op": "ping"})
+
     # ---- assignment (the admin page) --------------------------------------
     def set_side(self, uid: str, side: str) -> None:
         """Say which arm this board is: "right", "left", or "" for neither."""

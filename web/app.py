@@ -22,6 +22,7 @@ import sys
 import tempfile
 import threading
 import time
+from types import SimpleNamespace
 from functools import wraps
 from pathlib import Path
 
@@ -63,6 +64,7 @@ from inmoov.event import EventMode  # noqa: E402
 from inmoov.settings import load_settings, save_settings  # noqa: E402
 from inmoov import auth  # noqa: E402
 from inmoov import whoami as whoami_mod  # noqa: E402
+from inmoov.selftest import SelfTest, MotionTest  # noqa: E402
 from inmoov.mic_doa import MicDoa, TUNABLE as DOA_TUNABLE  # noqa: E402
 from inmoov import xvf_params              # noqa: E402
 from inmoov.diagnostic import DiagnosticMode, Refused as DiagRefused  # noqa: E402
@@ -355,6 +357,19 @@ _assistant.ctx.arms = _boards
 # told when it changes — one source of truth, and no way for the two to drift.
 _cart.speed_ceiling = lambda: _event.cart_speed
 _lock = threading.Lock()                     # serialize hardware access
+
+# The one-button self-test (inmoov/selftest.py): every part of him asked
+# directly, then FRED says the verdict. Handed the live objects rather than
+# importing this module, so the checks can be tested with fakes.
+_selftest_parts = SimpleNamespace(
+    ctrl=_ctrl, led=_status_led, camera=_camera, boards=_boards,
+    display=_display, sensors=_sensors, cart=_cart, spotter=_spotter,
+    mic_doa=_mic_doa, assistant=_assistant, transcriber=_transcriber,
+    sound=_sound, settings=_settings, lock=_lock,
+    hotspot_state=hotspot_mod.state, uplink_state=uplink_mod.state,
+    inference_device=whoami_mod.inference_device)
+_selftest = SelfTest(_selftest_parts, speak=_assistant.speak, log=_log)
+_motiontest = MotionTest(_selftest_parts, log=_log)
 
 # Audit (dry run) mode. This blocks NOTHING at the API layer:
 # every control still works and still reports what it would have done. The
@@ -1469,6 +1484,37 @@ def api_diagnostic():
     except DiagRefused as why:
         return jsonify({"error": str(why), **_diagnostic.status()}), 409
     return jsonify(st)
+
+
+@app.get("/api/selftest")
+def api_selftest_status():
+    """The last (or running) self-test's results. Open, like /api/state: it is
+    a read of how he is, and the chest panel polls it."""
+    return jsonify(_selftest.status())
+
+
+@app.post("/api/selftest")
+@protected
+def api_selftest():
+    """Start a self-test. Moves nothing, but ends with FRED speaking, so gated
+    like /api/say's free text — the chest is on the trusted LAN anyway."""
+    started = _selftest.start()
+    return jsonify({**_selftest.status(), "started": started})
+
+
+@app.get("/api/selftest/motion")
+def api_motiontest_status():
+    return jsonify(_motiontest.status())
+
+
+@app.post("/api/selftest/motion")
+@protected
+def api_motiontest():
+    """Wiggle each head joint, and each switched-on arm joint, a few degrees."""
+    if _selftest.status()["running"]:
+        return jsonify({"error": "the self-test is still running"}), 409
+    started = _motiontest.start()
+    return jsonify({**_motiontest.status(), "started": started})
 
 
 @app.get("/api/mic")

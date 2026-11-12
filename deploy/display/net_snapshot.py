@@ -78,6 +78,9 @@ class Net:
         self._networks: list = []
         self._scanning = False
         self._scanned_at = 0.0
+        # Set by the panel while the TEST tab is showing: the self-test's
+        # results are only worth fetching when somebody is looking at them.
+        self.watch_selftest = False
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._loop, name="net-poll",
                                         daemon=True)
@@ -116,6 +119,10 @@ class Net:
                 # Names, addresses, versions and the inference device,
                 # for the INFO tab. Brain-side because only it knows.
                 snap["whoami"] = _get(f"{NUC}/api/whoami", timeout=1.5)
+                if self.watch_selftest:
+                    snap["selftest"] = _get(f"{NUC}/api/selftest", timeout=1.5)
+                    snap["motiontest"] = _get(f"{NUC}/api/selftest/motion",
+                                              timeout=1.5)
 
             head = _get(f"{HEAD}/api/health", timeout=1.5)
             snap["head"] = head
@@ -231,6 +238,15 @@ class Net:
                 self._scanned_at = time.monotonic()
                 self._scanning = False
         threading.Thread(target=work, name="uplink-scan", daemon=True).start()
+
+    def post_selftest(self) -> None:
+        """Start the brain's self-test. It runs there — every part of him is
+        reachable from the NUC — and the poller picks up the results."""
+        self._fire(f"{NUC}/api/selftest", {})
+
+    def post_motiontest(self) -> None:
+        """Wiggle each joint a few degrees. The page asks twice first."""
+        self._fire(f"{NUC}/api/selftest/motion", {})
 
     def scan_state(self) -> dict:
         with self._lock:

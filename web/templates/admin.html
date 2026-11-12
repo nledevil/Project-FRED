@@ -77,6 +77,25 @@
   }
 
   /* chest display link status */
+  /* self-test results: one row per check, grouped head to base */
+  .stverdict { font-size:18px; font-weight:700; padding:10px 14px; border-radius:10px;
+               margin:4px 0 12px; border:1px solid var(--border); }
+  .stverdict.ready { background:#04310f; border-color:#0a5; color:var(--ok); }
+  .stverdict.not_ready { background:#3a0d0d; border-color:#a33; color:var(--bad); }
+  .stverdict.running { color:var(--mut); }
+  .stgroup { color:var(--mut); font-size:12px; text-transform:uppercase;
+             letter-spacing:.06em; margin:14px 0 4px; }
+  .strow { display:grid; grid-template-columns:62px minmax(120px,190px) 1fr; gap:10px;
+           align-items:baseline; padding:5px 0; border-top:1px solid var(--border);
+           font-size:13.5px; }
+  .strow .det { color:var(--mut); }
+  .stchip { font-size:11px; font-weight:700; text-align:center; border-radius:999px;
+            padding:2px 0; border:1px solid var(--border); color:var(--mut); }
+  .stchip.pass { color:var(--ok); border-color:#0a5; }
+  .stchip.warn { color:var(--warn); border-color:#7a5a10; }
+  .stchip.fail { color:var(--bad); border-color:#a33; background:#3a0d0d; }
+  @media (max-width:600px) { .strow { grid-template-columns:54px 1fr; }
+                             .strow .det { grid-column:2; } }
   .linkstat { display:flex; align-items:center; gap:8px; color:var(--mut); font-size:12.5px; }
   .dot { width:8px; height:8px; border-radius:50%; background:var(--mut); flex:none; }
   .dot.on { background:var(--ok); box-shadow:0 0 7px var(--ok); }
@@ -217,6 +236,7 @@
 
   <div class="shell">
     <nav class="secnav" aria-label="Settings sections">
+      <a href="#sec-selftest" data-sec="sec-selftest">Self-test</a>
       <a href="#sec-pin" data-sec="sec-pin">Panel PIN</a>
       <a href="#sec-brain" data-sec="sec-brain">Brain</a>
       <a href="#sec-event" data-sec="sec-event">Event mode</a>
@@ -235,6 +255,29 @@
       <a href="#sec-dev" data-sec="sec-dev">Developer</a>
     </nav>
     <div class="content">
+
+  <section class="panel" id="sec-selftest">
+    <p class="phead">Self-test</p>
+    <div class="row" style="margin-bottom:12px">
+      <div class="label"><b>Is FRED all there?</b>
+        <span>asks every camera, board, sensor and link — moves nothing, then he says the result</span></div>
+      <div class="grow"></div>
+      <button class="primary" id="stRun" onclick="runSelfTest()">&#9654; Run self-test</button>
+    </div>
+    <div class="row" style="margin-bottom:12px">
+      <div class="label"><b>Motion test</b>
+        <span>wiggles each head joint, and each switched-on arm joint, a few degrees &mdash; stand clear</span></div>
+      <div class="grow"></div>
+      <button id="stMotion" onclick="runMotionTest()">&#8645; Run motion test</button>
+    </div>
+    <div id="stVerdict" class="stverdict" hidden></div>
+    <div id="stList"></div>
+    <p class="hint"><b>Fail</b> means something he needs is not working. <b>Warn</b> means he
+       works, but know it before the doors open (no internet, hotspot off, wide camera not
+       running). The same test is on the chest screen's menu, under SELF TEST. The motion test
+       never switches an arm joint on &mdash; enabling sends a joint to rest at full speed &mdash;
+       so arm joints that are off are skipped.</p>
+  </section>
 
   <section class="panel" id="sec-pin">
     <p class="phead">Panel PIN</p>
@@ -1539,6 +1582,7 @@ function initDropzone() {
 initDropzone();
 loadClips();
 loadTerminals();
+loadSelfTest();
 
 // ---- arm servo boards ---------------------------------------------------
 let BOARDS = null;
@@ -1911,6 +1955,62 @@ async function onDoaInvert(on) {
 refreshDoa();
 
 // ---- section tabs -------------------------------------------------------
+// ---- self-test -------------------------------------------------------------
+// Start, then poll until it finishes, drawing rows as they arrive. The same
+// renderer shows the motion test's rows; whichever ran last is on screen.
+let ST_POLL = null;
+function renderSelfTest(d, motion) {
+  if (!d || !d.results) return;
+  const v = document.getElementById('stVerdict');
+  const c = d.counts || {};
+  if (d.running) {
+    v.hidden = false; v.className = 'stverdict running';
+    v.textContent = `${motion ? 'Motion test' : 'Testing'}… ${d.done} of ${d.total || '?'}`;
+  } else if (d.results.length) {
+    v.hidden = false;
+    v.className = 'stverdict ' + (motion ? (c.fail ? 'not_ready' : 'ready') : d.verdict);
+    const when = d.finished_at ? new Date(d.finished_at * 1000).toLocaleTimeString() : '';
+    v.textContent = (motion ? (c.fail ? 'MOTION TEST: PROBLEMS' : 'MOTION TEST DONE')
+                            : (d.verdict === 'ready' ? 'READY' : 'NOT READY'))
+      + ` — ${c.pass || 0} pass, ${c.warn || 0} warn, ${c.fail || 0} fail`
+      + (c.skip ? `, ${c.skip} skipped` : '') + (when ? ` · ${when}` : '');
+  } else { v.hidden = true; }
+  let html = '', group = null;
+  for (const r of d.results) {
+    if (r.group !== group) { group = r.group; html += `<div class="stgroup">${esc(group)}</div>`; }
+    html += `<div class="strow"><span class="stchip ${r.status}">${r.status.toUpperCase()}</span>
+      <b>${esc(r.name)}</b><span class="det">${esc(r.detail || '')}</span></div>`;
+  }
+  document.getElementById('stList').innerHTML = html;
+  document.getElementById('stRun').disabled = !!d.running;
+  document.getElementById('stMotion').disabled = !!d.running;
+}
+async function pollSelfTest(path, motion) {
+  clearTimeout(ST_POLL);
+  const d = await api(path);
+  renderSelfTest(d, motion);
+  if (d.running) ST_POLL = setTimeout(() => pollSelfTest(path, motion), 700);
+}
+async function runSelfTest() {
+  const d = await api('/api/selftest', {});
+  if (d.error) { toast(d.error, true); return; }
+  pollSelfTest('/api/selftest', false);
+}
+async function runMotionTest() {
+  if (!confirm('FRED will move each joint a few degrees. Stand clear of his arms and head.')) return;
+  const d = await api('/api/selftest/motion', {});
+  if (d.error) { toast(d.error, true); return; }
+  pollSelfTest('/api/selftest/motion', true);
+}
+async function loadSelfTest() {
+  const [a, m] = await Promise.all([api('/api/selftest'), api('/api/selftest/motion')]);
+  // Show whichever ran most recently; carry on polling one that is mid-run.
+  const motion = (m.started_at || 0) > (a.started_at || 0);
+  const d = motion ? m : a;
+  renderSelfTest(d, motion);
+  if (d.running) pollSelfTest(motion ? '/api/selftest/motion' : '/api/selftest', motion);
+}
+
 // One section shown at a time. Everything stays in the DOM — Save reads
 // fields from every section, shown or not — only visibility changes. The
 // hash tracks the tab so a URL can carry #sec-wifi, and the last tab is

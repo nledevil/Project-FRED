@@ -55,13 +55,15 @@ from page_display import DisplayPage                     # noqa: E402
 from page_servos import ServosPage                       # noqa: E402
 from page_cart import CartPage                           # noqa: E402
 from page_wireless import WirelessPage                   # noqa: E402
+from page_selftest import SelfTestPage                   # noqa: E402
 from power_menu import PowerMenu                         # noqa: E402
 import pin_gate                                          # noqa: E402
 
 # The tabs, left to right. This is the one copy: it moved here from
 # settings_menu.py when the numpy menu retired.
 MENU_PAGES = (StatusPage, VoicePage, ServosPage, CartPage,
-              DisplayPage, WirelessPage, InfoPage)
+              DisplayPage, WirelessPage, InfoPage, SelfTestPage)
+SELFTEST_PAGE = MENU_PAGES.index(SelfTestPage)
 
 
 def _pages():
@@ -318,6 +320,7 @@ class Panel(QObject):
         self._servos_page = ServosPage()
         self._cart_page = CartPage()
         self._wifi_page = WirelessPage()
+        self._selftest_page = SelfTestPage()
         self._power = PowerMenu()
         # Asked once, here, rather than on every frame — and so a slow answer
         # costs the menu's opening beat instead of its frame rate.
@@ -702,6 +705,9 @@ class Panel(QObject):
         dicts of the same), so the whole-dict compare in _refresh_views is both
         cheap and exact.
         """
+        # The poller fetches self-test results only while their tab is up.
+        self._net.watch_selftest = (self._scene == "menu"
+                                    and self._page == SELFTEST_PAGE)
         if self._scene != "menu":
             return {}
         snap = self._snap
@@ -731,6 +737,8 @@ class Panel(QObject):
         elif page == 5:
             out["wifi"] = self._wifi_page.view(snap)
             out["uplink"] = self._uplink()
+        elif page == SELFTEST_PAGE:
+            out["selftest"] = self._selftest_page.view(snap)
         else:
             iv = self._info.view(snap)
             out["info"] = [{"label": lab, "value": val,
@@ -838,6 +846,10 @@ class Panel(QObject):
     @Property("QVariantMap", notify=viewsChanged)
     def uplinkView(self):
         return self._views.get("uplink", {})
+
+    @Property("QVariantMap", notify=viewsChanged)
+    def selftestView(self):
+        return self._views.get("selftest", {})
 
     @Property("QVariantMap", notify=viewsChanged)
     def gateView(self):
@@ -985,6 +997,21 @@ class Panel(QObject):
     @Slot(str)
     def powerTap(self, key):
         self._power.tap(key, self._net)
+
+    @Slot()
+    def runSelfTest(self):
+        self._selftest_page.run(self._net)
+        self._refresh_views()
+
+    @Slot()
+    def tapMotionTest(self):
+        self._selftest_page.motion_tap(self._net)
+        self._refresh_views()
+
+    @Slot(int)
+    def turnSelfTestPage(self, delta):
+        self._selftest_page.turn_page(delta)
+        self._refresh_views()
 
     @Slot()
     def scanUplink(self):

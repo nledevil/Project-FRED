@@ -135,7 +135,7 @@ def main() -> int:
     for _ in range(20):
         p.tick()
     check("and it is quiet again", views.n == 4, str(views.n))
-    for page in range(7):
+    for page in range(len(panel.MENU_PAGES)):
         p.page = page
         p.tick()
     check("every tab builds without error", True)
@@ -173,7 +173,8 @@ def main() -> int:
     check("the page views all notify on viewsChanged",
           {"statusRows", "voiceView", "servosView", "cartView", "displayView",
            "wifiView", "uplinkView", "infoRows", "infoPaging", "gateView",
-           "powerView", "brainReachable", "snapAge"} <= set(slow), str(sorted(slow)))
+           "powerView", "brainReachable", "snapAge", "selftestView"} <= set(slow),
+          str(sorted(slow)))
     check("the full snapshot is no longer a property at all",
           mo.indexOfProperty("snap") < 0)
 

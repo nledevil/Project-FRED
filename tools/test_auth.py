@@ -100,6 +100,9 @@ GATED = [
     "/api/diagnostic",
     # Cuts power to a USB port. Reached over HTTP, but it is a physical act.
     "/api/camera/wide/reset",
+    # Starting the self-test makes him speak; the motion test moves every
+    # joint. Reading either's results stays open — the chest panel polls them.
+    "/api/selftest", "/api/selftest/motion",
 ]
 OPEN = [
     "/api/cart/stop",       # never, ever gated

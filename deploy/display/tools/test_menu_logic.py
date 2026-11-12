@@ -32,6 +32,7 @@ from page_servos import ServosPage                   # noqa: E402
 from page_status import StatusPage                   # noqa: E402
 from page_voice import VoicePage                     # noqa: E402
 from page_wireless import WirelessPage               # noqa: E402
+from page_selftest import SelfTestPage               # noqa: E402
 
 FAILURES: list[str] = []
 
@@ -327,6 +328,49 @@ def main() -> int:                                    # noqa: PLR0915
     order, menu = drive(taps=1)
     menu.tap("cancel", None)
     check("cancel closes and fires nothing", not menu.view()["open"] and order == [])
+
+    print("self-test: problems first, and motion takes two taps")
+    class FakeNet:
+        def __init__(self):
+            self.sent = []
+        def post_selftest(self):
+            self.sent.append("selftest")
+        def post_motiontest(self):
+            self.sent.append("motion")
+    stp = SelfTestPage()
+    v = stp.view({})
+    check("no brain: says so rather than an empty list",
+          v["headline"] == "NO LINK TO THE BRAIN" and v["rows"] == [], v["headline"])
+    done = {"running": False, "started_at": 10, "verdict": "not_ready",
+            "counts": {"pass": 6, "warn": 1, "fail": 1},
+            "results": [{"name": f"Part {i}", "status": "pass", "seq": i}
+                        for i in range(6)]
+                       + [{"name": "Wide camera", "status": "warn", "seq": 6},
+                          {"name": "Right arm board", "status": "fail", "seq": 7,
+                           "detail": "not connected"}]}
+    v = stp.view({"nuc": {}, "selftest": done})
+    check("a failed run reads NOT READY", v["headline"] == "NOT READY", v["headline"])
+    check("the fail is the first row, the warning second",
+          [r["state"] for r in v["rows"][:2]] == ["FAIL", "WARN"]
+          and v["rows"][0]["name"] == "RIGHT ARM BOARD", str(v["rows"][:2]))
+    check("8 rows page as 5 + 3", v["pages"] == 2 and len(v["rows"]) == 5)
+    net = FakeNet()
+    stp.run(net)
+    v = stp.view({"nuc": {}, "selftest": done})
+    check("right after RUN, the old result is not shown as the new one",
+          v["headline"] == "STARTING..." and net.sent == ["selftest"], v["headline"])
+    stp.motion_tap(net)
+    v = stp.view({"nuc": {}})
+    check("first MOTION TEST tap only arms it", net.sent == ["selftest"]
+          and v["motionLabel"] == "TAP AGAIN TO MOVE")
+    stp.motion_tap(net)
+    check("second tap sends it", net.sent == ["selftest", "motion"])
+    stp2 = SelfTestPage()
+    stp2.motion_tap(net)
+    stp2._armed_at -= SelfTestPage.CONFIRM_S + 1
+    stp2.motion_tap(net)
+    check("a second tap after the window re-arms instead of moving",
+          net.sent == ["selftest", "motion"])
 
     print()
     if FAILURES:

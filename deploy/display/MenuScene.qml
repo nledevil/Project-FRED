@@ -14,7 +14,7 @@ Item {
     anchors.fill: parent
 
     readonly property var titles: ["STATUS", "VOICE", "SERVOS", "CART",
-                                   "DISPLAY", "WIFI", "INFO"]
+                                   "DISPLAY", "WIFI", "INFO", "TEST"]
 
     Rectangle { anchors.fill: parent; color: Th.bg }
 
@@ -87,6 +87,7 @@ Item {
                            : P.page === 3 ? cartPage
                            : P.page === 4 ? displayPage
                            : P.page === 5 ? wifiPage
+                           : P.page === 7 ? selftestPage
                            : infoPage
         }
     }
@@ -98,6 +99,7 @@ Item {
     Component { id: servosPage; ServosPage {} }
     Component { id: cartPage;   CartPage {} }
     Component { id: wifiPage;   WifiPage {} }
+    Component { id: selftestPage; SelfTestPage {} }
     Component { id: pinGate;    PinGate {} }
 
 
